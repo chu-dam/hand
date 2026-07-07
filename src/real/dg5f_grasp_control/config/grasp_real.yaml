@@ -1,0 +1,36 @@
+grasp_real:
+  ros__parameters:
+    joint_state_topic: /dg5f_s_left/joint_states
+    effort_topic: /dg5f_s_left/effort_controller/commands
+    command_topic: /dg5f_grasp_control/finger_count_cmd
+    alpha1_topic: /dg5f_grasp_control/alpha1_cmd
+    rotation_matrix_topic: /dg5f_grasp_control/rotation_matrix_cmd
+
+    dt: 0.005
+    hand_limit: 7.5
+    log_dt: 0.25
+
+    use_finger_count: 3
+
+    normal_pose_time: 2.0
+    pre_grasp_pose_time: 2.0
+    groped_grasp_time: 20.0
+
+    pose_kp: 0.4
+    pose_kd: 0.05
+    pose_pd_limit: 0.25
+
+    fric_scale: 0.7
+    fric_tanh_k: 20.0
+    fric_limit: 0.5
+    qdot_alpha: 0.5
+
+    alpha1: 3.0
+    groped_tau_limit: 3.0
+    groped_force_direction_sign: 1.0
+    thumb_centroid_bias: 0.5
+    jacobian_eps: 0.000001
+
+    min_tip_distance: 0.018
+    collision_repel_gain: 100.0
+    collision_repel_limit: 0.8
