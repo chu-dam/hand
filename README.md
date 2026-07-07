@@ -47,28 +47,6 @@ hand/
 - `src/vendor`: 기존 DG5F-S driver/description/hardware 관련 package
 - `rb5_payload_gc_rotation_pub.py`: RB5에서 hand rotation matrix topic을 보내기 위한 test code
 
-## Build
-
-새 터미널에서 먼저 ROS2 환경을 source합니다.
-
-```bash
-source /opt/ros/humble/setup.bash
-```
-
-workspace build:
-
-```bash
-cd /home/chu/hand
-colcon build --symlink-install
-source install/setup.bash
-```
-
-이후 새 터미널을 열 때마다 아래 명령을 실행해야 합니다.
-
-```bash
-cd /home/chu/hand
-source install/setup.bash
-```
 
 ## Run
 
