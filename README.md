@@ -158,7 +158,7 @@ t = envelop_joint_delay × 3
 관련 설정은 `src/real/dg5f_grasp_control/config/grasp_real.yaml`에서 조절합니다.
 
 ```yaml
-envelop_tau_scale: 0.10
+envelop_tau_scale: 0.025
 envelop_joint_delay: 0.20
 envelop_non_thumb_tau_sign: 1.0
 envelop_thumb_tau_sign: -1.0
@@ -179,10 +179,10 @@ envelop_thumb_tau_sign: -1.0
 torque = alpha1 × envelop_tau_scale
 ```
 
-예를 들어 `alpha1 = 3.0`, `envelop_tau_scale = 0.05`이면:
+예를 들어 `alpha1 = 3.0`, `envelop_tau_scale = 0.025`이면:
 
 ```text
-torque = 3.0 × 0.05 = 0.15
+torque = 3.0 × 0.025 = 0.075
 ```
 
 힘을 줄이고 싶으면 `envelop_tau_scale` 값을 낮추면 됩니다.
@@ -190,7 +190,7 @@ torque = 3.0 × 0.05 = 0.15
 예시:
 
 ```yaml
-envelop_tau_scale: 0.05
+envelop_tau_scale: 0.025
 ```
 
 엄지가 반대로 움직이면 아래 값을 반대로 바꿉니다.
