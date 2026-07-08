@@ -56,7 +56,7 @@ hand/
 hand driver와 grasp controller를 한 번에 실행합니다.
 
 ```bash
-cd /home/chu/hand
+cd hand
 source install/setup.bash
 ros2 launch dg5f_grasp_control grasp_with_effort.launch.py
 ```
@@ -66,7 +66,7 @@ ros2 launch dg5f_grasp_control grasp_with_effort.launch.py
 Terminal 1: DG5F-S effort controller 실행
 
 ```bash
-cd /home/chu/hand
+cd hand
 source install/setup.bash
 ros2 launch dg5f_s_driver dg5f_s_left_effort_controller.launch.py
 ```
@@ -74,7 +74,7 @@ ros2 launch dg5f_s_driver dg5f_s_left_effort_controller.launch.py
 Terminal 2: grasp controller 실행
 
 ```bash
-cd /home/chu/hand
+cd hand
 source install/setup.bash
 ros2 launch dg5f_grasp_control grasp_real.launch.py
 ```
@@ -262,7 +262,7 @@ RB5는 hand 제어와 별도로 실행합니다.
 Terminal 1: hand 실행
 
 ```bash
-cd /home/chu/hand
+cd hand
 source install/setup.bash
 ros2 launch dg5f_grasp_control grasp_with_effort.launch.py
 ```
@@ -270,7 +270,7 @@ ros2 launch dg5f_grasp_control grasp_with_effort.launch.py
 Terminal 2: RB5 rotation publisher 실행
 
 ```bash
-cd /home/chu/hand
+cd hand
 source install/setup.bash
 python3 rb5_payload_gc_rotation_pub.py
 ```
