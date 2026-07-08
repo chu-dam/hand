@@ -2,11 +2,25 @@
 
 import os
 import time
+import atexit
+import threading
 from enum import Enum
 
 import numpy as np
 import mujoco
 import mujoco.viewer
+
+try:
+    import rclpy
+    from rclpy.node import Node
+    from rclpy.executors import SingleThreadedExecutor
+    from std_msgs.msg import Float64, Int32
+except ImportError:
+    rclpy = None
+    Node = object
+    SingleThreadedExecutor = None
+    Float64 = None
+    Int32 = None
 
 
 # =====================================================
@@ -21,12 +35,21 @@ XML_PATH = os.path.join(
 # =====================================================
 # Finger selection
 # =====================================================
-# 사용할 손가락 개수
-# 2: thumb + index
+COMMAND_TOPIC = "/dg5f_grasp_control/finger_count_cmd"
+ALPHA1_TOPIC = "/dg5f_grasp_control/alpha1_cmd"
+
+# 손 단독 MuJoCo에서는 real-hand gravity 방향 보정용 회전행렬을
+# 외부에서 받지 않고 항등행렬로 고정한다.
+ROTATION_MATRIX_IDENTITY = np.eye(3, dtype=np.float64)
+
+# 시작 시 사용할 손가락 명령.
+# 0: pre-grasp
+# 1: thumb + index
+# 2: thumb + middle
 # 3: thumb + index + middle
 # 4: thumb + index + middle + ring
 # 5: all fingers
-NUM_USE_FINGERS = 5
+DEFAULT_FINGER_COMMAND = 3
 
 # 손가락 번호 정의
 # 1: thumb
@@ -37,16 +60,22 @@ NUM_USE_FINGERS = 5
 FINGER_ORDER = [1, 2, 3, 4, 5]
 
 FINGER_SELECTIONS = {
-    2: [1, 2],
+    1: [1, 2],
+    2: [1, 3],
     3: [1, 2, 3],
     4: [1, 2, 3, 4],
     5: [1, 2, 3, 4, 5],
 }
 
-if NUM_USE_FINGERS not in FINGER_SELECTIONS:
-    raise ValueError("NUM_USE_FINGERS must be one of: 2, 3, 4, 5")
 
-USE_FINGERS = FINGER_SELECTIONS[NUM_USE_FINGERS]
+def selected_fingers(command: int):
+    if command not in FINGER_SELECTIONS:
+        raise ValueError("finger command must be one of: 1, 2, 3, 4, 5")
+    return FINGER_SELECTIONS[command]
+
+
+FINGER_COMMAND = DEFAULT_FINGER_COMMAND
+USE_FINGERS = selected_fingers(FINGER_COMMAND)
 
 
 # =====================================================
@@ -56,13 +85,48 @@ USE_FINGERS = FINGER_SELECTIONS[NUM_USE_FINGERS]
 NORMAL_POSE_TIME = 3.0
 PRE_GRASP_POSE_TIME = 1.0
 
-# 논문 식 기반 groped grasp:
-# tau_i = -D_i qdot_i + alpha_i J_i^T fhat_i
-GROPED_DAMPING = 0.01
-GROPED_FORCE_TARGET = 0.03       # 처음에는 작게 시작
-GROPED_FORCE_RAMP_TIME = 2.0
-GROPED_TAU_LIMIT = 0.04
+# real/dg5f_grasp_control의 RuntimeConfig와 같은 의미의 제어 파라미터.
+# MuJoCo XML motor ctrlrange도 [-7.5, 7.5]이므로 최종 effort limit을 동일하게 둔다.
+HAND_TAU_LIMIT = 7.5
+POSE_KP = 0.4
+POSE_KD = 0.05
+POSE_PD_LIMIT = 0.25
+
+# Groped grasp policy.
+# real 쪽 GraspPolicy는 별도 damping/ramp 없이 alpha1과 Jacobian transpose를 바로 쓴다.
+GROPED_FORCE_TARGET = 1.0       # alpha1_cmd로 런타임 변경 가능
+GROPED_TAU_LIMIT = 5.0
 GROPED_FORCE_DIRECTION_SIGN = 1.0
+
+# 손가락 추가 시 실물 코드와 동일하게 새 손가락만 짧게 pre-grasp 자세로 보낸 뒤
+# grasp torque에 포함한다. 전체 손을 초기화하지 않는다.
+FINGER_SWITCH_VIA_THREE_DELAY = 0.5
+ADD_FINGER_PRE_GRASP_DELAY = 0.15
+ADD_FINGER_PRE_GRASP_KP_SCALE = 1.4
+ADD_FINGER_PRE_GRASP_KD_SCALE = 1.2
+
+# real/dg5f_grasp_control.grasp_policy와 동일한 per-finger scale/충돌 회피 항.
+FINGER_FORCE_SCALE = {
+    1: 1.0,
+    2: 1.0,
+    3: 0.9,
+    4: 0.55,
+    5: 0.35,
+}
+
+COLLISION_AVOID_PAIRS = [
+    (3, 4),
+    (4, 5),
+]
+
+MIN_TIP_DISTANCE = 0.018
+COLLISION_REPEL_GAIN = 100.0
+COLLISION_REPEL_LIMIT = 0.8
+
+BASE_JOINT_TAU_LIMIT = {
+    12: 0.8,
+    16: 0.5,
+}
 
 # Tesollo Jacobian torque와 MuJoCo actuator 방향이 다르면 여기서 보정한다.
 # 우선 전부 +1로 두고, 특정 조인트만 반대로 움직이면 해당 원소를 -1로 바꾼다.
@@ -71,7 +135,7 @@ GRASP_TAU_SIGN = np.ones(20, dtype=np.float64)
 # Cg에서 엄지 쪽으로 당긴 virtual centroid를 제어 중심으로 사용한다.
 # 0.0: 단순 평균 중심 Cg
 # 0.3: Cg에서 엄지 방향으로 30% 이동한 Cv
-THUMB_CENTROID_BIAS = 0.3
+THUMB_CENTROID_BIAS = 0.5
 
 # Tesollo에서 제공한 fingertip FK를 기준으로 grasp Jacobian을 계산한다.
 # Jacobian은 FK를 유한차분해서 얻는다. 해석식 직접 이식보다 오타 위험이 낮다.
@@ -80,12 +144,8 @@ TESOLLO_JAC_EPS = 1e-6
 
 # Test object in the fixed XML.
 GRASP_OBJECT_JOINT = "grasp_object_free"
-GRASP_OBJECT_POS = np.array([0.0662, -0.0288, 0.1488], dtype=np.float64)
+GRASP_OBJECT_POS = np.array([0.0782, -0.0288, 0.1400], dtype=np.float64)
 GRASP_OBJECT_QUAT = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-
-# 몇 개 손가락이 닿았는지 확인하기 위한 표시용 조건.
-# 제어기는 접촉 전/후 모두 같은 groped grasp 식을 사용한다.
-MIN_CONTACT_FINGERS = NUM_USE_FINGERS
 
 # contact가 한 번만 튀는 경우를 막기 위한 안정 카운트
 CONTACT_STABLE_COUNT = 5
@@ -163,6 +223,66 @@ class GraspState(Enum):
     PRE_GRASP_POSE = 1
     GROPED_GRASP = 2
     HOLD = 3
+
+
+# =====================================================
+# ROS command interface
+# =====================================================
+class GraspSimCommandNode(Node):
+    def __init__(self):
+        super().__init__("grasp_sim")
+        self._lock = threading.Lock()
+        self.pending_finger_command = None
+        self.pending_force_target = None
+
+        self.create_subscription(
+            Int32,
+            COMMAND_TOPIC,
+            self.finger_command_cb,
+            10,
+        )
+        self.create_subscription(
+            Float64,
+            ALPHA1_TOPIC,
+            self.alpha1_cb,
+            10,
+        )
+
+    def finger_command_cb(self, msg):
+        command = int(msg.data)
+        if command < 0 or command > 5:
+            self.get_logger().warn(
+                f"Ignore invalid finger command: {command}. Use 0, 1, 2, 3, 4, or 5."
+            )
+            return
+
+        with self._lock:
+            self.pending_finger_command = command
+        self.get_logger().info(f"RX finger_count_cmd={command}")
+
+    def alpha1_cb(self, msg):
+        force_target = float(msg.data)
+        if force_target < 0.0:
+            self.get_logger().warn(
+                f"Ignore invalid alpha1 command: {force_target}. Use alpha1 >= 0.0."
+            )
+            return
+
+        with self._lock:
+            self.pending_force_target = force_target
+        self.get_logger().info(f"RX alpha1_cmd={force_target:.4f}")
+
+    def take_pending_finger_command(self):
+        with self._lock:
+            command = self.pending_finger_command
+            self.pending_finger_command = None
+        return command
+
+    def take_pending_force_target(self):
+        with self._lock:
+            force_target = self.pending_force_target
+            self.pending_force_target = None
+        return force_target
 
 
 # =====================================================
@@ -576,6 +696,52 @@ def lerp_pose(q0, q1, s):
     return (1.0 - s) * q0 + s * q1
 
 
+def pose_pd(q_target, q, qdot, kp=POSE_KP, kd=POSE_KD, limit=POSE_PD_LIMIT):
+    err = q_target - q
+    pd = kp * err - kd * qdot
+    return np.clip(pd, -limit, limit), err
+
+
+def inactive_pre_grasp_pd(active_fingers, qdot, pre_grasp_fingers=None):
+    """
+    real GraspRealRunner._inactive_pre_grasp_pd와 같은 역할.
+
+    - active_fingers: 현재 grasp torque를 받는 손가락
+    - pre_grasp_fingers: 새로 추가되기 직전이라 HAND_PRE_GRASP_POSE로 잠깐 보내는 손가락
+    - 나머지 inactive finger는 실물 코드처럼 0 rad 기준으로 PD 유지
+    """
+    q = data.qpos[QPOS_ADR]
+    inactive_pd = np.zeros(20, dtype=np.float64)
+    active_set = set(active_fingers)
+    pre_grasp_set = set(pre_grasp_fingers or [])
+
+    for finger, idxs in FINGER_JOINT_INDEX.items():
+        if finger in active_set:
+            continue
+
+        idxs = np.asarray(idxs, dtype=int)
+        if finger in pre_grasp_set:
+            target = HAND_PRE_GRASP_POSE[idxs]
+            kp = POSE_KP * ADD_FINGER_PRE_GRASP_KP_SCALE
+            kd = POSE_KD * ADD_FINGER_PRE_GRASP_KD_SCALE
+        else:
+            target = np.zeros(len(idxs), dtype=np.float64)
+            kp = POSE_KP
+            kd = POSE_KD
+
+        pd, _ = pose_pd(
+            target,
+            q[idxs],
+            qdot[idxs],
+            kp=kp,
+            kd=kd,
+            limit=POSE_PD_LIMIT,
+        )
+        inactive_pd[idxs] = pd
+
+    return inactive_pd
+
+
 # =====================================================
 # Gravity compensation
 # =====================================================
@@ -617,59 +783,234 @@ def compute_groped_centroids():
     return cg, cv, tip_pos
 
 
-def compute_groped_grasp_tau(elapsed):
+def compute_groped_alpha_and_forces():
     """
-    접촉 전/후를 나누지 않고 같은 식으로 제어한다.
+    real/dg5f_grasp_control의 GraspPolicy.calc_alpha_and_forces와 같은 구조.
 
-        tau_i = -D_i qdot_i + alpha_i J_i^T fhat_i
-        fhat_i = (Cv - Pi) / ||Cv - Pi||
-
-    접촉 전에는 tip들이 Cv 방향으로 모이면서 닫히고,
-    접촉 후에는 같은 힘 방향으로 grasp를 유지한다.
+    alpha1_cmd로 받은 값은 첫 번째 finger의 alpha1로 쓰고,
+    나머지 alpha는 fingertip-Cv 거리 비와 힘 평형 조건으로 자동 계산한다.
     """
-    qdot = data.qvel[DOF_ADR]
-    tau = np.zeros(20)
+    tip_pos = {
+        finger: get_tip_position(finger)
+        for finger in USE_FINGERS
+    }
 
-    _, cv, tip_pos = compute_groped_centroids()
+    points = np.array([tip_pos[finger] for finger in USE_FINGERS])
+    cg = np.mean(points, axis=0)
 
-    force_scale = min(elapsed / GROPED_FORCE_RAMP_TIME, 1.0)
-    alpha = GROPED_FORCE_TARGET * force_scale
+    if 1 in tip_pos:
+        thumb_pos = tip_pos[1]
+        cv = cg + THUMB_CENTROID_BIAS * (thumb_pos - cg)
+    else:
+        cv = cg
+
+    dist = {}
+    fhat = {}
+    for finger in USE_FINGERS:
+        diff = cv - tip_pos[finger]
+        dist[finger] = max(np.linalg.norm(diff), 1e-6)
+        fhat[finger] = GROPED_FORCE_DIRECTION_SIGN * diff / dist[finger]
+
+    alpha = {}
+    if len(USE_FINGERS) == 2:
+        alpha[USE_FINGERS[0]] = GROPED_FORCE_TARGET
+        alpha[USE_FINGERS[1]] = GROPED_FORCE_TARGET
+        return alpha, fhat, cg, cv, tip_pos
+
+    first_finger = USE_FINGERS[0]
+    pivot_finger = USE_FINGERS[-1]
+    alpha[first_finger] = GROPED_FORCE_TARGET
+
+    for finger in USE_FINGERS[1:-1]:
+        alpha[finger] = dist[first_finger] / dist[finger] * GROPED_FORCE_TARGET
+
+    force_sum = np.zeros(3, dtype=np.float64)
+    for finger in USE_FINGERS[:-1]:
+        force_sum += alpha[finger] * fhat[finger]
+
+    alpha[pivot_finger] = np.linalg.norm(force_sum)
+    return alpha, fhat, cg, cv, tip_pos
+
+
+def calc_collision_avoidance_forces(tip_pos):
+    repel = {
+        finger: np.zeros(3, dtype=np.float64)
+        for finger in tip_pos
+    }
+
+    for finger_a, finger_b in COLLISION_AVOID_PAIRS:
+        if finger_a not in tip_pos or finger_b not in tip_pos:
+            continue
+
+        diff = tip_pos[finger_a] - tip_pos[finger_b]
+        dist = np.linalg.norm(diff)
+        if dist < 1e-9 or dist >= MIN_TIP_DISTANCE:
+            continue
+
+        direction = diff / dist
+        mag = COLLISION_REPEL_GAIN * (MIN_TIP_DISTANCE - dist)
+        mag = min(mag, COLLISION_REPEL_LIMIT)
+
+        repel[finger_a] += mag * direction
+        repel[finger_b] -= mag * direction
+
+    return repel
+
+
+def compute_groped_grasp_tau(_elapsed=None):
+    """
+    real/dg5f_grasp_control.grasp_policy.GraspPolicy.calc_grasp_tau와 같은 구조.
+
+        alpha, fhat, cg, cv, tip_pos = calc_alpha_and_forces(q)
+        total_force_i = finger_scale_i * alpha_i * fhat_i + repel_i
+        tau_i = J_i^T total_force_i
+
+    손가락 command가 바뀌어도 전체 qpos를 초기화하지 않고,
+    현재 q에서 바로 새 USE_FINGERS 집합에 대한 torque만 계산한다.
+    """
+    tau = np.zeros(20, dtype=np.float64)
+    alpha_raw, fhat, cg, cv, tip_pos = compute_groped_alpha_and_forces()
+    repel = calc_collision_avoidance_forces(tip_pos)
 
     for finger in USE_FINGERS:
-        p_tip = tip_pos[finger]
-        f_hat = GROPED_FORCE_DIRECTION_SIGN * normalize(cv - p_tip)
-
         _, J_finger = get_tip_jacobian(finger)
+        finger_joint_indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
 
-        finger_joint_indices = FINGER_JOINT_INDEX[finger]
-        grasp_joint_indices = FINGER_GRASP_JOINT_INDEX[finger]
-        grasp_cols = [
-            finger_joint_indices.index(joint_idx)
-            for joint_idx in grasp_joint_indices
-        ]
+        grasp_force = FINGER_FORCE_SCALE[finger] * alpha_raw[finger] * fhat[finger]
+        total_force = grasp_force + repel[finger]
+        tau_finger = J_finger.T @ total_force
 
-        J_grasp = J_finger[:, grasp_cols]
-        tau_grasp = J_grasp.T @ (alpha * f_hat)
-
-        # damping 추가
-        grasp_dof_indices = np.array(grasp_joint_indices, dtype=int)
-        tau_damp = -GROPED_DAMPING * qdot[grasp_dof_indices]
-
-        tau[grasp_dof_indices] = (
-            tau_grasp + tau_damp
-        ) * GRASP_TAU_SIGN[grasp_dof_indices]
+        tau[finger_joint_indices] = (
+            tau_finger * GRASP_TAU_SIGN[finger_joint_indices]
+        )
 
     tau = np.clip(tau, -GROPED_TAU_LIMIT, GROPED_TAU_LIMIT)
 
-    return tau
+    for joint_idx, limit in BASE_JOINT_TAU_LIMIT.items():
+        tau[joint_idx] = np.clip(tau[joint_idx], -limit, limit)
+
+    return tau, alpha_raw
+
+
+def make_contact_state():
+    return (
+        {finger: 0 for finger in FINGER_ORDER},
+        {finger: False for finger in FINGER_ORDER},
+    )
+
+
+def apply_finger_command(command: int, now: float, current_state: GraspState):
+    """
+    real GraspRealRunner의 finger_count 처리와 같은 의미로 동작한다.
+
+    중요:
+    - command 0만 PRE_GRASP_POSE로 보낸다.
+    - command 1~5는 전체 손을 초기화하지 않는다.
+    - 현재 자세에서 USE_FINGERS 집합만 바꾸고 GROPED_GRASP torque를 바로 적용한다.
+    - 새로 추가된 손가락만 짧게 pre-grasp PD를 받은 뒤 grasp torque에 들어간다.
+    """
+    global FINGER_COMMAND, USE_FINGERS
+    global ACTIVE_FINGER_COUNT
+    global deferred_finger_count, deferred_finger_count_at
+    global adding_finger_target_count, adding_pre_grasp_fingers, adding_ready_at
+    global skip_add_pre_grasp_once
+
+    command_count = command
+
+    if command == 0:
+        ACTIVE_FINGER_COUNT = 0
+        deferred_finger_count = None
+        deferred_finger_count_at = None
+        adding_finger_target_count = None
+        adding_pre_grasp_fingers = []
+        adding_ready_at = None
+        skip_add_pre_grasp_once = False
+
+        if current_state != GraspState.PRE_GRASP_POSE:
+            print("[COMMAND] finger_count=0 -> PRE_GRASP_POSE")
+            return GraspState.PRE_GRASP_POSE, now
+
+        print("[COMMAND] finger_count=0, already PRE_GRASP_POSE")
+        return current_state, now
+
+    if (
+        ACTIVE_FINGER_COUNT in (1, 2)
+        and command in (1, 2)
+        and command != ACTIVE_FINGER_COUNT
+    ):
+        command_count = 3
+        deferred_finger_count = command
+        deferred_finger_count_at = None
+        print(
+            f"[COMMAND] finger_count={command} requested, "
+            f"switch via 3"
+        )
+
+    prev_fingers = set(USE_FINGERS) if ACTIVE_FINGER_COUNT > 0 else set()
+    target_fingers = selected_fingers(command_count)
+    new_fingers = set(target_fingers)
+    added = sorted(new_fingers - prev_fingers)
+
+    if (
+        ACTIVE_FINGER_COUNT > 0
+        and added
+        and not skip_add_pre_grasp_once
+    ):
+        adding_finger_target_count = command_count
+        adding_pre_grasp_fingers = added
+        adding_ready_at = now + ADD_FINGER_PRE_GRASP_DELAY
+        print(
+            f"[COMMAND] finger_count={command_count} prepare added fingers "
+            f"{added} at PRE_GRASP for {ADD_FINGER_PRE_GRASP_DELAY:.2f}s"
+        )
+        return GraspState.GROPED_GRASP, now
+
+    skip_add_pre_grasp_once = False
+    USE_FINGERS = target_fingers
+    FINGER_COMMAND = command_count
+    ACTIVE_FINGER_COUNT = command_count
+
+    adding_finger_target_count = None
+    adding_pre_grasp_fingers = []
+    adding_ready_at = None
+
+    removed = sorted(prev_fingers - new_fingers)
+
+    if (
+        deferred_finger_count is not None
+        and deferred_finger_count_at is None
+        and command_count == 3
+    ):
+        deferred_finger_count_at = now + FINGER_SWITCH_VIA_THREE_DELAY
+        print(
+            f"[COMMAND] hold finger_count=3 for "
+            f"{FINGER_SWITCH_VIA_THREE_DELAY:.2f}s before "
+            f"finger_count={deferred_finger_count}"
+        )
+
+    print(
+        f"[COMMAND] finger_count={command_count} -> "
+        f"GROPED_GRASP, USE_FINGERS={USE_FINGERS}, "
+        f"added={added}, removed={removed}"
+    )
+    print_model_contact_setup()
+    return GraspState.GROPED_GRASP, now
 
 
 # =====================================================
 # Main
 # =====================================================
 # contact 상태
-finger_contact_counter = {finger: 0 for finger in FINGER_ORDER}
-finger_contact_confirmed = {finger: False for finger in FINGER_ORDER}
+finger_contact_counter, finger_contact_confirmed = make_contact_state()
+
+# real GraspRealRunner의 finger_count runtime 상태와 같은 의미.
+ACTIVE_FINGER_COUNT = 0
+deferred_finger_count = None
+deferred_finger_count_at = None
+adding_finger_target_count = None
+adding_pre_grasp_fingers = []
+adding_ready_at = None
+skip_add_pre_grasp_once = False
 
 state = GraspState.NORMAL_POSE
 
@@ -679,17 +1020,57 @@ start_time = time.time()
 state_start_time = start_time
 last_print_time = 0.0
 last_contact_debug_time = 0.0
+ros_node = None
+ros_executor = None
+ros_spin_thread = None
+
+if rclpy is not None:
+    rclpy.init(args=None)
+    ros_node = GraspSimCommandNode()
+    ros_executor = SingleThreadedExecutor()
+    ros_executor.add_node(ros_node)
+    ros_spin_thread = threading.Thread(
+        target=ros_executor.spin,
+        daemon=True,
+        name="grasp_sim_ros_spin",
+    )
+    ros_spin_thread.start()
+
+    def shutdown_ros_node():
+        if ros_executor is not None:
+            ros_executor.shutdown()
+        if ros_node is not None:
+            ros_node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+    atexit.register(shutdown_ros_node)
+else:
+    print("[WARN] rclpy/std_msgs not found. ROS command topics are disabled.")
 
 print("=" * 80)
 print("[GRASP SIM START]")
 print(f"XML_PATH          : {XML_PATH}")
-print(f"NUM_USE_FINGERS   : {NUM_USE_FINGERS}")
+print(f"FINGER_COMMAND    : {FINGER_COMMAND}")
+print(f"ACTIVE_COUNT      : {ACTIVE_FINGER_COUNT}")
 print(f"USE_FINGERS       : {USE_FINGERS}")
-print(f"MIN_CONTACT       : {MIN_CONTACT_FINGERS}")
+print(f"ALPHA1            : {GROPED_FORCE_TARGET}")
+print(f"GROPED_TAU_LIMIT  : {GROPED_TAU_LIMIT}")
+print(f"HAND_TAU_LIMIT    : {HAND_TAU_LIMIT}")
+print(f"POSE_KP/KD/LIMIT  : {POSE_KP}, {POSE_KD}, {POSE_PD_LIMIT}")
+print(f"ROS_ENABLED       : {ros_node is not None}")
+print(f"ROS_DOMAIN_ID     : {os.environ.get('ROS_DOMAIN_ID', '<unset>')}")
+print(f"COMMAND_TOPIC     : {COMMAND_TOPIC}")
+print(f"ALPHA1_TOPIC      : {ALPHA1_TOPIC}")
+print(
+    "ROTATION_MATRIX   : "
+    f"{ROTATION_MATRIX_IDENTITY.reshape(-1).astype(int).tolist()} "
+    "(fixed identity)"
+)
 print(f"THUMB_CENTROID_BIAS: {THUMB_CENTROID_BIAS}")
 print(f"FORCE_DIRECTION_SIGN: {GROPED_FORCE_DIRECTION_SIGN}")
-print(f"NORMAL_POSE_TIME  : {NORMAL_POSE_TIME}")
-print(f"PRE_GRASP_TIME    : {PRE_GRASP_POSE_TIME}")
+print("AUTO_SEQUENCE     : disabled, real-like topic command mode")
+print("[COMMAND] 0=pre-grasp, 1=thumb+index, 2=thumb+middle, 3=thumb+index+middle, 4=+ring, 5=+pinky")
 print("=" * 80)
 print_model_contact_setup()
 
@@ -706,14 +1087,62 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         now = time.time()
         elapsed = now - start_time
         state_elapsed = now - state_start_time
+        alpha_debug = None
+
+        if ros_node is not None:
+            new_force_target = ros_node.take_pending_force_target()
+            if new_force_target is not None:
+                GROPED_FORCE_TARGET = new_force_target
+                print(f"[COMMAND] alpha1={GROPED_FORCE_TARGET:.4f}")
+
+            new_finger_command = ros_node.take_pending_finger_command()
+        else:
+            new_finger_command = None
+
+        if (
+            new_finger_command is None
+            and adding_finger_target_count is not None
+            and adding_ready_at is not None
+            and now >= adding_ready_at
+        ):
+            new_finger_command = adding_finger_target_count
+            adding_finger_target_count = None
+            adding_pre_grasp_fingers = []
+            adding_ready_at = None
+            skip_add_pre_grasp_once = True
+
+        if (
+            new_finger_command is None
+            and deferred_finger_count is not None
+            and deferred_finger_count_at is not None
+            and adding_finger_target_count is None
+            and now >= deferred_finger_count_at
+        ):
+            new_finger_command = deferred_finger_count
+            deferred_finger_count = None
+            deferred_finger_count_at = None
+
+        elif (
+            new_finger_command is not None
+            and deferred_finger_count is not None
+            and not skip_add_pre_grasp_once
+        ):
+            deferred_finger_count = None
+            deferred_finger_count_at = None
+
+        if new_finger_command is not None:
+            state, state_start_time = apply_finger_command(
+                new_finger_command,
+                now,
+                state,
+            )
+            state_elapsed = 0.0
+            finger_contact_counter, finger_contact_confirmed = make_contact_state()
 
         # -------------------------------------------------
         # 1. Gravity compensation
         # -------------------------------------------------
-        if state == GraspState.GROPED_GRASP:
-            apply_gravity_compensation()
-        else:
-            data.qfrc_applied[:] = 0.0
+        apply_gravity_compensation()
 
         # -------------------------------------------------
         # 2. Contact detection
@@ -742,37 +1171,44 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         # -------------------------------------------------
         # 3. State machine
         # -------------------------------------------------
-        if state == GraspState.NORMAL_POSE:
-            set_hand_pose_kinematic(HAND_NORMAL_POSE)
-            tau_ctrl = np.zeros(20)
+        q = data.qpos[QPOS_ADR]
+        qdot = data.qvel[DOF_ADR]
 
-            if state_elapsed >= NORMAL_POSE_TIME:
-                state = GraspState.PRE_GRASP_POSE
-                state_start_time = now
-                print("[STATE] NORMAL_POSE -> PRE_GRASP_POSE")
+        if state == GraspState.NORMAL_POSE:
+            tau_ctrl, _ = pose_pd(
+                HAND_NORMAL_POSE,
+                q,
+                qdot,
+                kp=POSE_KP,
+                kd=POSE_KD,
+                limit=POSE_PD_LIMIT,
+            )
 
         elif state == GraspState.PRE_GRASP_POSE:
-            s = state_elapsed / PRE_GRASP_POSE_TIME
-            pre_q = lerp_pose(HAND_NORMAL_POSE, HAND_PRE_GRASP_POSE, s)
-            set_hand_pose_kinematic(pre_q)
-            tau_ctrl = np.zeros(20)
-
-            if state_elapsed >= PRE_GRASP_POSE_TIME:
-                set_hand_pose_kinematic(HAND_PRE_GRASP_POSE)
-                finger_contact_counter = {finger: 0 for finger in FINGER_ORDER}
-                finger_contact_confirmed = {finger: False for finger in FINGER_ORDER}
-                state = GraspState.GROPED_GRASP
-                state_start_time = now
-                print("[STATE] PRE_GRASP_POSE -> GROPED_GRASP")
+            tau_ctrl, _ = pose_pd(
+                HAND_PRE_GRASP_POSE,
+                q,
+                qdot,
+                kp=POSE_KP,
+                kd=POSE_KD,
+                limit=POSE_PD_LIMIT,
+            )
 
         elif state == GraspState.GROPED_GRASP:
-            tau_ctrl = compute_groped_grasp_tau(state_elapsed)
+            tau_ctrl, alpha_debug = compute_groped_grasp_tau(state_elapsed)
+            tau_ctrl += inactive_pre_grasp_pd(
+                USE_FINGERS,
+                qdot,
+                adding_pre_grasp_fingers,
+            )
 
         elif state == GraspState.HOLD:
             tau_ctrl = np.zeros(20)
 
         else:
             tau_ctrl = np.zeros(20)
+
+        tau_ctrl = np.clip(tau_ctrl, -HAND_TAU_LIMIT, HAND_TAU_LIMIT)
 
         # -------------------------------------------------
         # 4. Apply actuator torque
@@ -790,7 +1226,11 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         # -------------------------------------------------
         if time.time() - last_print_time > 0.5:
             last_print_time = time.time()
-            cg, cv, _ = compute_groped_centroids()
+            alpha_now, _, cg, cv, _ = compute_groped_alpha_and_forces()
+            alpha_str = "{" + ", ".join(
+                f"F{finger}:{alpha_now[finger]:.3f}"
+                for finger in USE_FINGERS
+            ) + "}"
 
             contact_str = " ".join(
                 f"F{finger}:{int(finger_contact_confirmed[finger])}"
@@ -802,7 +1242,10 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
                 f"t={elapsed:5.2f}  "
                 f"state_t={state_elapsed:5.2f}  "
                 f"ncon={data.ncon}  "
-                f"contacts={num_confirmed}/{MIN_CONTACT_FINGERS}  "
+                f"active_count={ACTIVE_FINGER_COUNT}  "
+                f"contacts={num_confirmed}/{len(USE_FINGERS)}  "
+                f"alpha1={GROPED_FORCE_TARGET:.4f}  "
+                f"alpha={alpha_str}  "
                 f"tau_max={np.max(np.abs(tau_ctrl)):.4f}  "
                 f"{contact_str}  "
                 f"Cg={np.round(cg, 3)}  "
