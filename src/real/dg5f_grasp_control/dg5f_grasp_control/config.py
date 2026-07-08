@@ -37,3 +37,24 @@ class RuntimeConfig:
     min_tip_distance: float = 0.018
     collision_repel_gain: float = 100.0
     collision_repel_limit: float = 0.8
+
+    # finger_count_cmd=6: enveloping grasp mode
+    # - Time-only joint-stage sequence:
+    #   1) non-thumb 2nd joints
+    #   2) non-thumb 3rd joints
+    #   3) non-thumb 4th joints + thumb 3rd joint
+    #   4) thumb 4th joint
+    # - Previous alpha1*0.25 was too strong on hardware, so the default is reduced.
+    envelop_tau_scale: float = 0.10
+    envelop_joint_delay: float = 0.20
+    envelop_non_thumb_tau_sign: float = 1.0
+    envelop_thumb_tau_sign: float = -1.0
+
+    # Legacy parameters kept for compatibility with older YAML files.
+    # The current finger_count_cmd=6 logic does not use them.
+    envelop_finger_delay: float = 0.0
+    envelop_thumb_joint_delay: float = 0.20
+    envelop_stall_qdot: float = 0.03
+    envelop_stall_hold_time: float = 0.25
+    envelop_thumb_trigger_after: float = 0.40
+    envelop_thumb_force_start_after: float = 1.20
