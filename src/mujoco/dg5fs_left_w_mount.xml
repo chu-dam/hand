@@ -8,7 +8,6 @@
   <option timestep="0.0005" gravity="0 0 -9.81" iterations="200" noslip_iterations="50" ccd_iterations="100" solver="Newton" />
   <asset>
     <material name="dg5fs_default_mat" rgba="0.75 0.75 0.75 1" />
-    <material name="grasp_object_mat" rgba="0.95 0.25 0.15 1" />
     <mesh name="link_mount_mesh" file="meshes/link_mount.STL" />
     <mesh name="link_base_mesh" file="meshes/link_base.STL" />
     <mesh name="link_1_1_mesh" file="meshes/link_1_1.STL" />
@@ -175,13 +174,6 @@
           </body>
         </body>
       </body>
-    </body>
-    <!-- Grasp test object: floating dynamic sphere.
-         The freejoint name matches grasp_sim.py: GRASP_OBJECT_JOINT = "grasp_object_free".
-         gravcomp="0" keeps normal gravity; high friction/condim reduce slipping during grasp. -->
-    <body name="grasp_object" pos="0.0782 -0.0288 0.150" quat="1 0 0 0" gravcomp="0">
-      <freejoint name="grasp_object_free" />
-      <geom name="grasp_object_geom" type="sphere" size="0.04" mass="0.05" material="grasp_object_mat" contype="1" conaffinity="1" condim="6" friction="8.0 0.30 0.05" solref="0.006 1" solimp="0.99 0.999 0.0005" />
     </body>
   </worldbody>
   <contact>

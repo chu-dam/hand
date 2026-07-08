@@ -33,9 +33,9 @@ ROTATION_MATRIX_TOPIC = "/dg5f_grasp_control/rotation_matrix_cmd"
 GRAVITY_WORLD = np.array([0.0, 0.0, -9.81], dtype=np.float64)
 DEFAULT_ROTATION_MATRIX = np.eye(3, dtype=np.float64)
 
-# MuJoCo motion-check에서는 object는 없지만, 손가락 STL mesh끼리 self-collision은 사용한다.
-# contact point/force 시각화는 끄고, 물리 충돌만 켠다.
-ENABLE_STL_SELF_COLLISION = True
+# Motion-check demo에서는 물체/contact task를 포함하지 않는다.
+# visual mesh는 그대로 두고, 숨은 collision 때문에 손가락이 멈추는 현상을 막는다.
+DISABLE_PHYSICS_CONTACT = True
 
 DEFAULT_FINGER_COMMAND = 3
 FINGER_SELECTIONS = {
@@ -117,34 +117,6 @@ ENVELOP_NON_THUMB_TAU_SIGN = 1.0
 ENVELOP_THUMB_TAU_SIGN = -1.0
 
 LOG_PERIOD = 0.5
-
-
-
-
-def enable_all_stl_mesh_collisions(model):
-    """
-    현재 MuJoCo model 안의 모든 mesh geom, 즉 STL 기반 geom끼리 물리 충돌을 켠다.
-    visual contact 표시와는 별개로 physics contact만 활성화한다.
-    """
-    mesh_geom_ids = np.flatnonzero(model.geom_type == mujoco.mjtGeom.mjGEOM_MESH)
-
-    # 이 demo에서는 STL mesh끼리의 self-collision만 사용한다.
-    # sphere/capsule/debug geom 등 non-mesh collision은 꺼둔다.
-    model.geom_contype[:] = 0
-    model.geom_conaffinity[:] = 0
-
-    if ENABLE_STL_SELF_COLLISION and mesh_geom_ids.size > 0:
-        model.geom_contype[mesh_geom_ids] = 1
-        model.geom_conaffinity[mesh_geom_ids] = 1
-
-        # 접촉 constraint 차원을 기본 3 이상으로 둔다.
-        # 마찰까지 안정적으로 보고 싶으면 XML에서 condim/friction을 조정하면 된다.
-        try:
-            model.geom_condim[mesh_geom_ids] = np.maximum(model.geom_condim[mesh_geom_ids], 3)
-        except Exception:
-            pass
-
-    return int(mesh_geom_ids.size)
 
 
 class GraspState(Enum):
@@ -390,7 +362,9 @@ class GraspSimCommandNode(Node):
 class GraspSim:
     def __init__(self):
         self.model = mujoco.MjModel.from_xml_path(XML_PATH)
-        self.stl_collision_geom_count = enable_all_stl_mesh_collisions(self.model)
+        if DISABLE_PHYSICS_CONTACT:
+            self.model.geom_contype[:] = 0
+            self.model.geom_conaffinity[:] = 0
 
         self.rotation_matrix = DEFAULT_ROTATION_MATRIX.copy()
         self.gravity_in_hand = self.rotation_matrix.T @ GRAVITY_WORLD
@@ -762,8 +736,7 @@ class GraspSim:
         print(f"ACTIVE_COUNT      : {self.active_count}")
         print(f"USE_FINGERS       : {self.use_fingers}")
         print(f"ALPHA1            : {self.alpha1}")
-        print(f"CONTACT_PHYSICS   : {'STL mesh self-collision enabled' if ENABLE_STL_SELF_COLLISION else 'disabled'}")
-        print(f"STL_COLLISION_GEOMS: {self.stl_collision_geom_count}")
+        print(f"CONTACT_PHYSICS   : {'disabled' if DISABLE_PHYSICS_CONTACT else 'enabled'}")
         print(f"ROS_ENABLED       : {self.ros_node is not None}")
         print(f"ROS_DOMAIN_ID     : {os.environ.get('ROS_DOMAIN_ID', '<unset>')}")
         print(f"COMMAND_TOPIC     : {COMMAND_TOPIC}")
