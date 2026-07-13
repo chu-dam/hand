@@ -9,6 +9,7 @@ class RuntimeConfig:
     pose_topic: str = "/pose_type"
     alpha1_topic: str = "/dg5f_grasp_control/alpha1_cmd"
     rotation_matrix_topic: str = "/dg5f_grasp_control/rotation_matrix_cmd"
+    teaching_mode_topic: str = "/dg5f_grasp_control/teaching_mode"
 
     dt: float = 0.005
     hand_limit: float = 7.5

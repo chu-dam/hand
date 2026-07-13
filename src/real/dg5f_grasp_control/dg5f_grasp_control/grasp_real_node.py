@@ -7,10 +7,10 @@ import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64, Float64MultiArray, Int32
+from std_msgs.msg import Bool, Float64, Float64MultiArray, Int32
 
 from dg5f_grasp_control.config import RuntimeConfig
-from dg5f_grasp_control.control_utils import publish_effort, zero_effort
+from dg5f_grasp_control.control_utils import pose_pd, publish_effort, zero_effort
 from dg5f_grasp_control.friction import calc_friction
 from dg5f_grasp_control.grasp_controller import (
     GraspController,
@@ -23,6 +23,9 @@ from dg5f_grasp_control.hand_model import (
 )
 from dg5f_grasp_control.mujoco_gravity import MujocoGravityCompensator
 from dg5f_grasp_control.poses import POSE_TYPE_TARGETS
+
+
+FINGER_NAMES = ("thumb", "index", "middle", "ring", "pinky")
 
 
 def _default_model_path():
@@ -55,7 +58,12 @@ class GraspRealRunner:
         self.got_state = False
         self.pending_finger_count = None
         self.pending_pose_type = None
+        self.pending_teaching_mode = None
         self.gravity_in_hand_frame = None
+
+        self.teaching_mode = False
+        self.teaching_hold_active = False
+        self.teaching_hold_pose = np.zeros(JOINT_COUNT, dtype=np.float64)
 
         self.controller = GraspController(cfg, log=print)
         self.gravity_comp = MujocoGravityCompensator(model_xml_path)
@@ -65,6 +73,12 @@ class GraspRealRunner:
         node.create_subscription(Int32, cfg.command_topic, self.command_cb, 10)
         node.create_subscription(Int32, cfg.pose_topic, self.pose_type_cb, 10)
         node.create_subscription(Float64, cfg.alpha1_topic, self.alpha1_cb, 10)
+        node.create_subscription(
+            Bool,
+            cfg.teaching_mode_topic,
+            self.teaching_mode_cb,
+            10,
+        )
         node.create_subscription(
             Float64MultiArray,
             cfg.rotation_matrix_topic,
@@ -80,6 +94,12 @@ class GraspRealRunner:
         self.got_state = True
 
     def command_cb(self, msg):
+        if self.teaching_mode or self.pending_teaching_mode is True:
+            self.node.get_logger().warn(
+                "Ignore grasp_type command while Teaching Mode is active."
+            )
+            return
+
         command = int(msg.data)
         if command < -1 or command > 7:
             self.node.get_logger().warn(
@@ -90,6 +110,12 @@ class GraspRealRunner:
         self.pending_finger_count = command
 
     def pose_type_cb(self, msg):
+        if self.teaching_mode or self.pending_teaching_mode is True:
+            self.node.get_logger().warn(
+                "Ignore pose_type command while Teaching Mode is active."
+            )
+            return
+
         pose_type = int(msg.data)
         if pose_type not in POSE_TYPE_TARGETS:
             self.node.get_logger().warn(
@@ -97,6 +123,9 @@ class GraspRealRunner:
             )
             return
         self.pending_pose_type = pose_type
+
+    def teaching_mode_cb(self, msg):
+        self.pending_teaching_mode = bool(msg.data)
 
     def alpha1_cb(self, msg):
         alpha1 = float(msg.data)
@@ -125,7 +154,48 @@ class GraspRealRunner:
             f"{np.round(self.gravity_in_hand_frame, 4).tolist()}"
         )
 
+    def _apply_pending_teaching_mode(self):
+        if self.pending_teaching_mode is None:
+            return
+
+        enable = self.pending_teaching_mode
+        self.pending_teaching_mode = None
+
+        if enable:
+            if self.teaching_mode:
+                return
+
+            self.teaching_mode = True
+            self.teaching_hold_active = False
+            self.pending_finger_count = None
+            self.pending_pose_type = None
+            print(
+                "[TEACHING_MODE] ON -> gravity + friction compensation only; "
+                "grasp/pose commands are ignored"
+            )
+            return
+
+        if not self.teaching_mode:
+            return
+
+        self.teaching_mode = False
+        self.teaching_hold_pose = self.hand_q.copy()
+        self.teaching_hold_active = True
+        print(
+            "[TEACHING_MODE] OFF -> capture current pose and hold by PD; "
+            "waiting for /grasp_type or /pose_type"
+        )
+        self._print_joint_values(self.teaching_hold_pose, label="TEACHING_HOLD_TARGET")
+
     def _apply_pending_commands(self, now):
+        command_received = (
+            self.pending_pose_type is not None
+            or self.pending_finger_count is not None
+        )
+        if command_received and self.teaching_hold_active:
+            self.teaching_hold_active = False
+            print("[TEACHING_HOLD] released by new grasp/pose command")
+
         if self.pending_pose_type is not None:
             pose_type = self.pending_pose_type
             self.pending_pose_type = None
@@ -143,6 +213,7 @@ class GraspRealRunner:
         print(f"[POSE_TYPE_TOPIC] {self.cfg.pose_topic}")
         print(f"[ALPHA1_TOPIC] {self.cfg.alpha1_topic}")
         print(f"[ROTATION_MATRIX_TOPIC] {self.cfg.rotation_matrix_topic}")
+        print(f"[TEACHING_MODE_TOPIC] {self.cfg.teaching_mode_topic}")
         print(
             "[GRASP_TYPE] -1=normal, 0=selected pre-grasp, "
             "1=thumb+index, 2=thumb+middle, 3=thumb+index+middle, "
@@ -155,6 +226,47 @@ class GraspRealRunner:
         print(
             "[POSE_KP/KD/LIMIT] "
             f"{self.cfg.pose_kp}, {self.cfg.pose_kd}, {self.cfg.pose_pd_limit}"
+        )
+
+    @staticmethod
+    def _print_joint_values(q, label="CURRENT_HAND_JOINT_VALUES"):
+        q = np.asarray(q, dtype=np.float64)
+        q_rounded = np.round(q, 4)
+
+        print("")
+        print("=====================================================")
+        print(f"[{label}]")
+        print("HAND_TARGET = np.array([")
+        for finger_index, finger_name in enumerate(FINGER_NAMES):
+            start = finger_index * 4
+            values = q_rounded[start:start + 4]
+            print(
+                f"    {values[0]: .4f}, {values[1]: .4f}, "
+                f"{values[2]: .4f}, {values[3]: .4f},    # {finger_name}"
+            )
+        print("], dtype=np.float64)")
+        print("=====================================================")
+
+    def _print_teaching_status(self, gravity, friction, effort, qdot):
+        print(
+            "[TEACHING_MODE] "
+            f"q_max={np.max(np.abs(self.hand_q)):.3f} | "
+            f"qdot_max={np.max(np.abs(qdot)):.3f} | "
+            f"gc_max={np.max(np.abs(gravity)):.3f} | "
+            f"fric_max={np.max(np.abs(friction)):.3f} | "
+            f"effort_max={np.max(np.abs(effort)):.3f}"
+        )
+        self._print_joint_values(self.hand_q)
+
+    def _print_teaching_hold_status(self, hold_err, hold_pd, gravity, friction, effort, qdot):
+        print(
+            "[TEACHING_HOLD] "
+            f"err_max={np.max(np.abs(hold_err)):.4f} | "
+            f"qdot_max={np.max(np.abs(qdot)):.4f} | "
+            f"pd_max={np.max(np.abs(hold_pd)):.4f} | "
+            f"gc_max={np.max(np.abs(gravity)):.3f} | "
+            f"fric_max={np.max(np.abs(friction)):.3f} | "
+            f"effort_max={np.max(np.abs(effort)):.3f}"
         )
 
     def _print_status(self, output, gravity, friction, effort, qdot):
@@ -238,8 +350,9 @@ class GraspRealRunner:
                 previous_time = now
 
                 self.controller.sync_joint_state(self.hand_q)
-                self._apply_pending_commands(now)
-                output = self.controller.step(self.hand_q, qdot, now)
+                self._apply_pending_teaching_mode()
+                if not self.teaching_mode:
+                    self._apply_pending_commands(now)
 
                 gravity = self.gravity_comp.compute(
                     self.hand_q,
@@ -251,8 +364,33 @@ class GraspRealRunner:
                     tanh_k=self.cfg.fric_tanh_k,
                     limit=self.cfg.fric_limit,
                 )
+
+                output = None
+                hold_pd = np.zeros(JOINT_COUNT, dtype=np.float64)
+                hold_err = np.zeros(JOINT_COUNT, dtype=np.float64)
+
+                if self.teaching_mode:
+                    # Teaching Mode: remove all grasp/pose control and leave only
+                    # gravity and friction compensation for manual hand motion.
+                    effort = gravity + friction
+                elif self.teaching_hold_active:
+                    # After Teaching Mode is turned off, capture and hold the
+                    # taught pose until a new grasp_type or pose_type arrives.
+                    hold_pd, hold_err = pose_pd(
+                        self.teaching_hold_pose,
+                        self.hand_q,
+                        qdot,
+                        kp=self.cfg.pose_kp,
+                        kd=self.cfg.pose_kd,
+                        limit=self.cfg.pose_pd_limit,
+                    )
+                    effort = gravity + friction + hold_pd
+                else:
+                    output = self.controller.step(self.hand_q, qdot, now)
+                    effort = gravity + friction + output.tau
+
                 effort = np.clip(
-                    gravity + friction + output.tau,
+                    effort,
                     -self.cfg.hand_limit,
                     self.cfg.hand_limit,
                 )
@@ -260,7 +398,19 @@ class GraspRealRunner:
 
                 if now - last_log >= self.cfg.log_dt:
                     last_log = now
-                    self._print_status(output, gravity, friction, effort, qdot)
+                    if self.teaching_mode:
+                        self._print_teaching_status(gravity, friction, effort, qdot)
+                    elif self.teaching_hold_active:
+                        self._print_teaching_hold_status(
+                            hold_err,
+                            hold_pd,
+                            gravity,
+                            friction,
+                            effort,
+                            qdot,
+                        )
+                    else:
+                        self._print_status(output, gravity, friction, effort, qdot)
 
                 sleep_time = self.cfg.dt - (time() - loop_start)
                 if sleep_time > 0.0:

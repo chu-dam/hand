@@ -13,6 +13,7 @@ DG5F-S 5-finger hand를 ROS 2에서 실행하고, 토픽 명령으로 grasp mode
 - 비사용 손가락 PD 자세 유지
 - `grasp_type=6`: Sequential Torque-Based Enveloping Grasp
 - `grasp_type=7`: 4손가락 파지 기반 rotation 및 순차 finger transition
+- 실제 hand 전용 Teaching Mode: 중력·마찰보상 상태에서 수동 관절 티칭 및 현재 자세 유지
 - 실제 hand와 MuJoCo가 동일한 공통 제어 코어 사용
 
 ---
@@ -123,6 +124,8 @@ real과 MuJoCo는 각각 별도의 grasp 알고리즘을 구현하지 않습니�
 | Contact | 실제 손과 물체 | MuJoCo collision/contact model |
 | Command topics | 동일 | 동일 |
 
+> Teaching Mode는 실제 hand에서 사람이 관절을 직접 움직이기 위한 하드웨어 전용 기능입니다. `/dg5f_grasp_control/teaching_mode` 토픽은 `grasp_real_node.py`에서만 처리하며 MuJoCo에는 적용하지 않습니다.
+
 ---
 ### Clean build
 
@@ -215,6 +218,7 @@ MuJoCo를 source tree에서 직접 실행하면 `src/real/dg5f_grasp_control`을
 | Pose command | `/pose_type` | `std_msgs/msg/Int32` |
 | Grasp force coefficient | `/dg5f_grasp_control/alpha1_cmd` | `std_msgs/msg/Float64` |
 | Hand rotation matrix | `/dg5f_grasp_control/rotation_matrix_cmd` | `std_msgs/msg/Float64MultiArray` |
+| Teaching Mode (real hand only) | `/dg5f_grasp_control/teaching_mode` | `std_msgs/msg/Bool` |
 | Real hand joint state | `/dg5f_s_left/joint_states` | `sensor_msgs/msg/JointState` |
 | Real hand effort command | `/dg5f_s_left/effort_controller/commands` | `std_msgs/msg/Float64MultiArray` |
 
@@ -486,7 +490,105 @@ grasp_type7_repeat_transition_cycle: true
 
 ---
 
-## 6. Grip Force Command
+## 6. Teaching Mode
+
+Teaching Mode는 실제 DG5F-S hand의 grasp 및 pose 제어를 일시적으로 중단하고, **중력보상과 마찰보상만 적용한 상태에서 각 관절을 손으로 직접 움직이기 위한 mode**입니다.
+
+MuJoCo에는 적용하지 않으며 `grasp_real_node.py`에서만 동작합니다.
+
+| Topic | Type |
+| --- | --- |
+| `/dg5f_grasp_control/teaching_mode` | `std_msgs/msg/Bool` |
+
+### Teaching Mode ON
+
+```bash
+ros2 topic pub --once \
+  /dg5f_grasp_control/teaching_mode \
+  std_msgs/msg/Bool \
+  "{data: true}"
+```
+
+`true`를 수신하면 별도의 zeroing이나 목표 자세 이동 없이 현재 자세에서 즉시 Teaching Mode로 전환합니다.
+
+이때 실제 hand에 전달되는 effort는 다음과 같습니다.
+
+```text
+effort = gravity compensation + friction compensation
+```
+
+Teaching Mode ON 상태에서는 다음 제어가 모두 제외됩니다.
+
+- grasp torque
+- pose PD
+- 비사용 손가락 PD
+- collision repel
+- enveloping grasp
+- grasp type 7 rotation 및 finger transition
+
+Teaching Mode가 켜져 있는 동안 `/grasp_type`과 `/pose_type` 명령은 안전을 위해 무시합니다. 반면 중력보상 방향과 이후 grasp force 설정을 갱신할 수 있도록 다음 토픽은 계속 수신합니다.
+
+- `/dg5f_grasp_control/rotation_matrix_cmd`
+- `/dg5f_grasp_control/alpha1_cmd`
+
+`log_dt` 주기마다 현재 관절 위치, 관절 속도, 중력보상, 마찰보상 및 최종 effort 크기를 출력합니다. 현재 20개 관절 위치는 복사하기 쉬운 다음 형식으로 출력됩니다.
+
+```python
+HAND_TARGET = np.array([
+    ..., ..., ..., ...,    # thumb
+    ..., ..., ..., ...,    # index
+    ..., ..., ..., ...,    # middle
+    ..., ..., ..., ...,    # ring
+    ..., ..., ..., ...,    # pinky
+], dtype=np.float64)
+```
+
+### Teaching Mode OFF 및 현재 자세 유지
+
+```bash
+ros2 topic pub --once \
+  /dg5f_grasp_control/teaching_mode \
+  std_msgs/msg/Bool \
+  "{data: false}"
+```
+
+`false`를 수신하면 OFF 순간의 현재 관절 위치를 hold target으로 저장합니다.
+
+```text
+q_hold = q_current
+```
+
+이후 새로운 grasp 또는 pose 명령이 들어올 때까지 다음 제어로 티칭한 자세를 유지합니다.
+
+```text
+effort = gravity compensation
+       + friction compensation
+       + PD(q_hold - q, qdot)
+```
+
+Teaching hold PD는 별도의 gain을 사용하지 않고 기존 pose PD parameter를 공유합니다.
+
+```yaml
+pose_kp: 0.4
+pose_kd: 0.05
+pose_pd_limit: 0.25
+```
+
+새로운 `/grasp_type` 또는 `/pose_type` 명령을 수신하면 teaching hold를 해제하고 해당 grasp 또는 pose 제어를 실행합니다.
+
+```text
+Teaching Mode ON
+    ↓ teaching_mode=false
+현재 관절 자세 캡처
+    ↓
+Teaching Hold PD
+    ↓ /grasp_type 또는 /pose_type 수신
+새 명령 실행
+```
+
+---
+
+## 7. Grip Force Command
 
 일반 grasp와 특수 grasp mode의 force 또는 torque 크기를 조절합니다.
 
@@ -510,7 +612,7 @@ ros2 topic pub --once /dg5f_grasp_control/alpha1_cmd std_msgs/msg/Float64 "{data
 
 ---
 
-## 7. Rotation Matrix Command
+## 8. Rotation Matrix Command
 
 로봇팔 끝에 hand가 장착된 경우 hand frame 기준 중력 방향을 계산하기 위한 rotation matrix를 전달합니다.
 
@@ -588,8 +690,8 @@ src/real/dg5f_grasp_control/config/grasp_real.yaml
 
 | Parameter group | Main parameters |
 | --- | --- |
-| ROS topics | `joint_state_topic`, `effort_topic`, `command_topic`, `pose_topic` |
-| Pose PD | `pose_kp`, `pose_kd`, `pose_pd_limit` |
+| ROS topics | `joint_state_topic`, `effort_topic`, `command_topic`, `pose_topic`, `teaching_mode_topic` |
+| Pose/Teaching hold PD | `pose_kp`, `pose_kd`, `pose_pd_limit` |
 | Friction | `fric_scale`, `fric_tanh_k`, `fric_limit` |
 | Groped grasp | `alpha1`, `groped_tau_limit`, `thumb_centroid_bias` |
 | Collision repel | `min_tip_distance`, `collision_repel_gain`, `collision_repel_limit` |

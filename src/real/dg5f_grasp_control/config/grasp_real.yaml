@@ -6,6 +6,7 @@ grasp_real:
     pose_topic: /pose_type
     alpha1_topic: /dg5f_grasp_control/alpha1_cmd
     rotation_matrix_topic: /dg5f_grasp_control/rotation_matrix_cmd
+    teaching_mode_topic: /dg5f_grasp_control/teaching_mode
 
     dt: 0.005
     hand_limit: 7.5
