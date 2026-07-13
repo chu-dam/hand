@@ -124,30 +124,7 @@ real과 MuJoCo는 각각 별도의 grasp 알고리즘을 구현하지 않습니�
 | Command topics | 동일 | 동일 |
 
 ---
-
-## Build
-
-### 1. Workspace 확인
-
-`src/vendor` 아래 패키지가 모두 존재해야 합니다.
-
-```bash
-cd ~/hand
-find src -maxdepth 3 -name package.xml
-```
-
-특히 다음 경로가 없으면 전체 build가 실패합니다.
-
-```text
-src/vendor/dg_tcp_comm
-src/vendor/dg_hardware
-src/vendor/dg5f_s_driver
-src/vendor/dg5f_s_description
-```
-
-> `src` 전체를 교체할 때는 기존 `vendor` 폴더를 삭제하지 마십시오. 제어 코드만 업데이트하는 경우 `src/real/dg5f_grasp_control`과 `src/mujoco`만 교체하는 것이 안전합니다.
-
-### 2. Clean build
+### Clean build
 
 ```bash
 cd ~/hand
@@ -304,9 +281,9 @@ normal pose와 두 종류의 pre-grasp pose를 선택합니다.
 
 | Value | Meaning |
 | ---: | --- |
-| `1` | `HAND_NORMAL_POSE` |
-| `2` | 기본 `HAND_PRE_GRASP_POSE` |
-| `3` | `HAND_COMPACT_PRE_GRASP_POSE` |
+| `1` | `HAND_NORMAL_POSE` (평소 자세)|
+| `2` | 기본 `HAND_PRE_GRASP_POSE` (큰 물체 잡기 전)|
+| `3` | `HAND_COMPACT_PRE_GRASP_POSE` (작은 물체 잡기 전)|
 
 예시:
 
@@ -330,12 +307,11 @@ ros2 topic pub --once /pose_type std_msgs/msg/Int32 "{data: 3}"
 - 3접촉점: 삼각형 꼭짓점 평균
 - 4·5접촉점: 3차원 fingertip 위치를 best-fit plane으로 투영한 뒤 polygon signed-area centroid 계산
 
-4·5접촉점에서 단순 산술평균 fallback은 사용하지 않습니다. polygon 면적이 정확히 0이면 계산 오류를 발생시킵니다.
 
 ### Thumb centroid bias
 
 - 2손가락 grasp: 편향 없음, `Cv = Cg`
-- 3·4·5손가락 grasp: 엄지 방향 virtual centroid 편향 적용
+- 3·4·5손가락 grasp: 엄지 방향 virtual centroid 편향 적용 (편향이 없으면 손가락끼리 충돌 발생)
 
 ```text
 Cv = Cg + thumb_centroid_bias × (P_thumb - Cg)
@@ -353,7 +329,7 @@ thumb_centroid_bias: 0.5
 
 나머지 손가락은 centroid와의 거리 관계 및 force equilibrium으로 계산합니다. 약지와 새끼에 별도의 force scale은 적용하지 않습니다.
 
-### Fingertip collision repel
+### Fingertip collision repel (중지<->약지<->새끼 간 충돌 방지용)
 
 현재 collision repel은 다음 fingertip pair에 적용됩니다.
 
@@ -372,7 +348,7 @@ collision_repel_limit: 0.8
 
 ---
 
-## 4. Sequential Torque-Based Enveloping Grasp
+## 4. Enveloping Grasp
 
 `grasp_type=6`은 검지, 중지, 약지, 새끼와 엄지를 시간 순서대로 닫아 물체를 감싸 쥐는 mode입니다.
 
@@ -438,7 +414,7 @@ torque = 3.0 × 0.10 = 0.30
 
 ---
 
-## 5. Grasp Type 7: Rotation and Finger Transition
+## 5. Grasp Type 7: Rotation and Finger Transition (미완성)
 
 `grasp_type=7`은 엄지·검지·중지·약지로 물체를 잡고, 회전 보조력과 순차적인 finger relocation을 수행하는 mode입니다.
 
