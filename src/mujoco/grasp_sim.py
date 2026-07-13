@@ -1,452 +1,214 @@
 #!/usr/bin/env python3
 
-import os
-import time
 import atexit
+import os
+import sys
 import threading
-from enum import Enum
+import time
+from pathlib import Path
 
-import numpy as np
 import mujoco
 import mujoco.viewer
+import numpy as np
+
+# Allow direct execution from the source tree without requiring an installed
+# workspace. When the workspace is sourced, the installed package is used.
+SOURCE_PACKAGE_ROOT = (
+    Path(__file__).resolve().parents[1]
+    / "real"
+    / "dg5f_grasp_control"
+)
+if str(SOURCE_PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_PACKAGE_ROOT))
+
+from dg5f_grasp_control.config import RuntimeConfig, load_runtime_config_yaml
+from dg5f_grasp_control.grasp_controller import GraspController
+from dg5f_grasp_control.hand_model import HAND_JOINT_NAMES, JOINT_COUNT
+from dg5f_grasp_control.poses import HAND_NORMAL_POSE, POSE_TYPE_TARGETS
 
 try:
     import rclpy
-    from rclpy.node import Node
     from rclpy.executors import SingleThreadedExecutor
+    from rclpy.node import Node
     from std_msgs.msg import Float64, Float64MultiArray, Int32
 except ImportError:
     rclpy = None
-    Node = object
     SingleThreadedExecutor = None
+    Node = object
     Float64 = None
     Float64MultiArray = None
     Int32 = None
 
 
-XML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dg5fs_left_w_mount.xml")
-
-COMMAND_TOPIC = "/dg5f_grasp_control/finger_count_cmd"
-ALPHA1_TOPIC = "/dg5f_grasp_control/alpha1_cmd"
-ROTATION_MATRIX_TOPIC = "/dg5f_grasp_control/rotation_matrix_cmd"
-
+XML_PATH = Path(__file__).resolve().with_name("dg5fs_left_w_mount.xml")
 GRAVITY_WORLD = np.array([0.0, 0.0, -9.81], dtype=np.float64)
 DEFAULT_ROTATION_MATRIX = np.eye(3, dtype=np.float64)
-
-# MuJoCo motion-check에서는 object는 없지만, 손가락 STL mesh끼리 self-collision은 사용한다.
-# contact point/force 시각화는 끄고, 물리 충돌만 켠다.
 ENABLE_STL_SELF_COLLISION = True
-
-DEFAULT_FINGER_COMMAND = 3
-FINGER_SELECTIONS = {
-    1: [1, 2],
-    2: [1, 3],
-    3: [1, 2, 3],
-    4: [1, 2, 3, 4],
-    5: [1, 2, 3, 4, 5],
-}
-
-JOINT_NAMES = [
-    "joint_1_1", "joint_1_2", "joint_1_3", "joint_1_4",
-    "joint_2_1", "joint_2_2", "joint_2_3", "joint_2_4",
-    "joint_3_1", "joint_3_2", "joint_3_3", "joint_3_4",
-    "joint_4_1", "joint_4_2", "joint_4_3", "joint_4_4",
-    "joint_5_1", "joint_5_2", "joint_5_3", "joint_5_4",
-]
-
-FINGER_JOINT_INDEX = {
-    1: [0, 1, 2, 3],
-    2: [4, 5, 6, 7],
-    3: [8, 9, 10, 11],
-    4: [12, 13, 14, 15],
-    5: [16, 17, 18, 19],
-}
-
-HAND_NORMAL_POSE = np.array([
-     0.0288,  0.3665, -0.7102, -0.2981,
-     0.2559, -0.0094,  0.5128,  0.4074,
-    -0.0351,  0.0054,  0.4328,  0.5548,
-    -0.1873, -0.0157,  0.4594,  0.5142,
-    -0.1471, -0.3410, -0.1508,  0.8662,
-], dtype=np.float64)
-
-HAND_PRE_GRASP_POSE = np.array([
-    -0.0431,  1.3725, -0.7102, -0.2981,
-     0.2559, -0.0094,  0.5128,  0.4074,
-    -0.0351,  0.0054,  0.4328,  0.5548,
-    -0.1873, -0.0157,  0.4594,  0.5142,
-    -0.1471, -0.3410, -0.1508,  0.8662,
-], dtype=np.float64)
-
-HAND_TAU_LIMIT = 7.5
-POSE_KP = 0.4
-POSE_KD = 0.05
-POSE_PD_LIMIT = 0.25
-
-DEFAULT_ALPHA1 = 1.0
-GROPED_TAU_LIMIT = 5.0
-GROPED_FORCE_DIRECTION_SIGN = 1.0
-THUMB_CENTROID_BIAS = 0.5
-TESOLLO_JAC_EPS = 1e-6
-GRASP_TAU_SIGN = np.ones(20, dtype=np.float64)
-
-FINGER_SWITCH_VIA_THREE_DELAY = 0.5
-ADD_FINGER_PRE_GRASP_DELAY = 0.15
-ADD_FINGER_PRE_GRASP_KP_SCALE = 1.4
-ADD_FINGER_PRE_GRASP_KD_SCALE = 1.2
-
-FINGER_FORCE_SCALE = {
-    1: 1.0,
-    2: 1.0,
-    3: 0.9,
-    4: 0.55,
-    5: 0.35,
-}
-COLLISION_AVOID_PAIRS = [(3, 4), (4, 5)]
-MIN_TIP_DISTANCE = 0.018
-COLLISION_REPEL_GAIN = 100.0
-COLLISION_REPEL_LIMIT = 0.8
-BASE_JOINT_TAU_LIMIT = {12: 0.8, 16: 0.5}
-
-ENVELOP_FINGER_ORDER = [2, 3, 4, 5]
-ENVELOP_FINGER_TORQUE_LOCAL_JOINTS = [1, 2, 3]
-ENVELOP_THUMB_TORQUE_LOCAL_JOINTS = [2, 3]
-ENVELOP_TAU_SCALE = 0.025
-ENVELOP_JOINT_DELAY = 0.20
-ENVELOP_NON_THUMB_TAU_SIGN = 1.0
-ENVELOP_THUMB_TAU_SIGN = -1.0
-
 LOG_PERIOD = 0.5
 
 
-
-
 def enable_all_stl_mesh_collisions(model):
-    """
-    현재 MuJoCo model 안의 모든 mesh geom, 즉 STL 기반 geom끼리 물리 충돌을 켠다.
-    visual contact 표시와는 별개로 physics contact만 활성화한다.
-    """
+    """Enable physics collision between all STL/mesh geoms."""
     mesh_geom_ids = np.flatnonzero(model.geom_type == mujoco.mjtGeom.mjGEOM_MESH)
-
-    # 이 demo에서는 STL mesh끼리의 self-collision만 사용한다.
-    # sphere/capsule/debug geom 등 non-mesh collision은 꺼둔다.
     model.geom_contype[:] = 0
     model.geom_conaffinity[:] = 0
 
     if ENABLE_STL_SELF_COLLISION and mesh_geom_ids.size > 0:
         model.geom_contype[mesh_geom_ids] = 1
         model.geom_conaffinity[mesh_geom_ids] = 1
-
-        # 접촉 constraint 차원을 기본 3 이상으로 둔다.
-        # 마찰까지 안정적으로 보고 싶으면 XML에서 condim/friction을 조정하면 된다.
         try:
-            model.geom_condim[mesh_geom_ids] = np.maximum(model.geom_condim[mesh_geom_ids], 3)
+            model.geom_condim[mesh_geom_ids] = np.maximum(
+                model.geom_condim[mesh_geom_ids],
+                3,
+            )
         except Exception:
             pass
-
     return int(mesh_geom_ids.size)
 
 
-class GraspState(Enum):
-    NORMAL_POSE = 0
-    PRE_GRASP_POSE = 1
-    GROPED_GRASP = 2
-    ENVELOP_GRASP = 3
-    HOLD = 4
-
-
-def selected_fingers(command: int):
-    if command not in FINGER_SELECTIONS:
-        raise ValueError("finger command must be one of: 1, 2, 3, 4, 5")
-    return FINGER_SELECTIONS[command]
-
-
-def pose_pd(q_target, q, qdot, kp=POSE_KP, kd=POSE_KD, limit=POSE_PD_LIMIT):
-    tau = kp * (q_target - q) - kd * qdot
-    return np.clip(tau, -limit, limit)
-
-
-
-def tesollo_forward_kinematics(q):
-    """
-    Tesollo 제공 ForwardKinematics()를 Python으로 옮긴 함수.
-    반환값은 finger 번호 1~5에 대한 fingertip position, shape=(5, 3).
-    단위는 원본 식과 동일하게 meter로 본다.
-    """
-    s = np.sin(q)
-    c = np.cos(q)
-    x = np.zeros(15, dtype=np.float64)
-
-    x[0] = (
-        -0.0318 * s[1] * s[2] * s[3]
-        + 0.0318 * s[1] * c[2] * c[3]
-        + 0.0334 * s[1] * c[2]
-        + 0.0381 * s[1]
-        + 0.0279
-    )
-    x[1] = (
-        0.0318 * (s[0] * s[2] - c[0] * c[1] * c[2]) * c[3]
-        + 0.0318 * (s[0] * c[2] + s[2] * c[0] * c[1]) * s[3]
-        + 0.0334 * s[0] * s[2]
-        - 0.0334 * c[0] * c[1] * c[2]
-        - 0.0381 * c[0] * c[1]
-        - 0.018
-    )
-    x[2] = (
-        0.0318 * (s[0] * s[2] * c[1] - c[0] * c[2]) * s[3]
-        + 0.0318 * (-s[0] * c[1] * c[2] - s[2] * c[0]) * c[3]
-        - 0.0334 * s[0] * c[1] * c[2]
-        - 0.0381 * s[0] * c[1]
-        - 0.0334 * s[2] * c[0]
-        + 0.0298
-    )
-
-    x[3] = (
-        0.01978 * (-s[5] * s[6] + c[5] * c[6]) * s[7]
-        + 0.01978 * (s[5] * c[6] + s[6] * c[5]) * c[7]
-        + 0.0334 * s[5] * c[6]
-        + 0.0334 * s[5]
-        + 0.0334 * s[6] * c[5]
-        + 0.0143
-    )
-    x[4] = (
-        0.01978 * (s[4] * s[5] * s[6] - s[4] * c[5] * c[6]) * c[7]
-        + 0.01978 * (s[4] * s[5] * c[6] + s[4] * s[6] * c[5]) * s[7]
-        + 0.0334 * s[4] * s[5] * s[6]
-        - 0.0334 * s[4] * c[5] * c[6]
-        - 0.0334 * s[4] * c[5]
-        - 0.02415 * s[4]
-        - 0.028
-    )
-    x[5] = (
-        0.01978 * (-s[5] * s[6] * c[4] + c[4] * c[5] * c[6]) * c[7]
-        + 0.01978 * (-s[5] * c[4] * c[6] - s[6] * c[4] * c[5]) * s[7]
-        - 0.0334 * s[5] * s[6] * c[4]
-        + 0.0334 * c[4] * c[5] * c[6]
-        + 0.0334 * c[4] * c[5]
-        + 0.02415 * c[4]
-        + 0.08365
-    )
-
-    x[6] = (
-        0.0209 * (-s[10] * s[9] + c[10] * c[9]) * s[11]
-        + 0.0209 * (s[10] * c[9] + s[9] * c[10]) * c[11]
-        + 0.0334 * s[10] * c[9]
-        + 0.0334 * s[9] * c[10]
-        + 0.0334 * s[9]
-        + 0.0143
-    )
-    x[7] = (
-        0.0209 * (s[10] * s[8] * s[9] - s[8] * c[10] * c[9]) * c[11]
-        + 0.0209 * (s[10] * s[8] * c[9] + s[8] * s[9] * c[10]) * s[11]
-        + 0.0334 * s[10] * s[8] * s[9]
-        - 0.0334 * s[8] * c[10] * c[9]
-        - 0.0334 * s[8] * c[9]
-        - 0.02415 * s[8]
-        - 0.005
-    )
-    x[8] = (
-        0.0209 * (-s[10] * s[9] * c[8] + c[10] * c[8] * c[9]) * c[11]
-        + 0.0209 * (-s[10] * c[8] * c[9] - s[9] * c[10] * c[8]) * s[11]
-        - 0.0334 * s[10] * s[9] * c[8]
-        + 0.0334 * c[10] * c[8] * c[9]
-        + 0.0334 * c[8] * c[9]
-        + 0.02415 * c[8]
-        + 0.08865
-    )
-
-    x[9] = (
-        0.0209 * (-s[13] * s[14] + c[13] * c[14]) * s[15]
-        + 0.0209 * (s[13] * c[14] + s[14] * c[13]) * c[15]
-        + 0.0334 * s[13] * c[14]
-        + 0.0334 * s[13]
-        + 0.0334 * s[14] * c[13]
-        + 0.0143
-    )
-    x[10] = (
-        0.0209 * (s[12] * s[13] * s[14] - s[12] * c[13] * c[14]) * c[15]
-        + 0.0209 * (s[12] * s[13] * c[14] + s[12] * s[14] * c[13]) * s[15]
-        + 0.0334 * s[12] * s[13] * s[14]
-        - 0.0334 * s[12] * c[13] * c[14]
-        - 0.0334 * s[12] * c[13]
-        - 0.02415 * s[12]
-        + 0.018
-    )
-    x[11] = (
-        0.0209 * (-s[13] * s[14] * c[12] + c[12] * c[13] * c[14]) * c[15]
-        + 0.0209 * (-s[13] * c[12] * c[14] - s[14] * c[12] * c[13]) * s[15]
-        - 0.0334 * s[13] * s[14] * c[12]
-        + 0.0334 * c[12] * c[13] * c[14]
-        + 0.0334 * c[12] * c[13]
-        + 0.02415 * c[12]
-        + 0.08065
-    )
-
-    x[12] = (
-        0.0318 * (-s[16] * s[17] * s[18] + c[16] * c[18]) * s[19]
-        + 0.0318 * (s[16] * s[17] * c[18] + s[18] * c[16]) * c[19]
-        + 0.0334 * s[16] * s[17] * c[18]
-        + 0.0272 * s[16] * s[17]
-        - 0.02445 * s[16]
-        + 0.0334 * s[18] * c[16]
-        + 0.013
-    )
-    x[13] = (
-        0.0318 * (s[16] * s[18] - s[17] * c[16] * c[18]) * c[19]
-        + 0.0318 * (s[16] * c[18] + s[17] * s[18] * c[16]) * s[19]
-        + 0.0334 * s[16] * s[18]
-        - 0.0334 * s[17] * c[16] * c[18]
-        - 0.0272 * s[17] * c[16]
-        + 0.02445 * c[16]
-        + 0.01805
-    )
-    x[14] = (
-        -0.0318 * s[18] * s[19] * c[17]
-        + 0.0318 * c[17] * c[18] * c[19]
-        + 0.0334 * c[17] * c[18]
-        + 0.0272 * c[17]
-        + 0.0671
-    )
-
-    return x.reshape(5, 3)
-
-
-
-def tesollo_tip_position(q, finger):
-    return tesollo_forward_kinematics(q)[finger - 1].copy()
-
-
-def tesollo_tip_jacobian(q, finger):
-    idxs = FINGER_JOINT_INDEX[finger]
-    J = np.zeros((3, 4), dtype=np.float64)
-
-    for col, qidx in enumerate(idxs):
-        q_plus = q.copy()
-        q_minus = q.copy()
-        q_plus[qidx] += TESOLLO_JAC_EPS
-        q_minus[qidx] -= TESOLLO_JAC_EPS
-        J[:, col] = (
-            tesollo_tip_position(q_plus, finger)
-            - tesollo_tip_position(q_minus, finger)
-        ) / (2.0 * TESOLLO_JAC_EPS)
-
-    return J
-
-
 class GraspSimCommandNode(Node):
-    def __init__(self):
+    def __init__(self, cfg):
         super().__init__("grasp_sim")
         self._lock = threading.Lock()
-        self.pending_finger_command = None
+        self.pending_grasp_type = None
+        self.pending_pose_type = None
         self.pending_alpha1 = None
         self.pending_rotation_matrix = None
 
-        self.create_subscription(Int32, COMMAND_TOPIC, self.finger_command_cb, 10)
-        self.create_subscription(Float64, ALPHA1_TOPIC, self.alpha1_cb, 10)
-        self.create_subscription(Float64MultiArray, ROTATION_MATRIX_TOPIC, self.rotation_matrix_cb, 10)
+        self.create_subscription(Int32, cfg.command_topic, self.grasp_type_cb, 10)
+        self.create_subscription(Int32, cfg.pose_topic, self.pose_type_cb, 10)
+        self.create_subscription(Float64, cfg.alpha1_topic, self.alpha1_cb, 10)
+        self.create_subscription(
+            Float64MultiArray,
+            cfg.rotation_matrix_topic,
+            self.rotation_matrix_cb,
+            10,
+        )
 
-    def finger_command_cb(self, msg):
+    def grasp_type_cb(self, msg):
         command = int(msg.data)
-        if command < -1 or command > 6:
+        if command < -1 or command > 7:
             self.get_logger().warn(
-                f"Ignore invalid finger command: {command}. Use -1, 0, 1, 2, 3, 4, 5, or 6."
+                f"Ignore invalid grasp_type: {command}. "
+                "Use -1, 0, 1, 2, 3, 4, 5, 6, or 7."
             )
             return
         with self._lock:
-            self.pending_finger_command = command
-        self.get_logger().info(f"RX finger_count_cmd={command}")
+            self.pending_grasp_type = command
+        self.get_logger().info(f"RX grasp_type={command}")
+
+    def pose_type_cb(self, msg):
+        pose_type = int(msg.data)
+        if pose_type not in POSE_TYPE_TARGETS:
+            self.get_logger().warn(
+                f"Ignore invalid pose_type: {pose_type}. Use 1, 2, or 3."
+            )
+            return
+        with self._lock:
+            self.pending_pose_type = pose_type
+        self.get_logger().info(f"RX pose_type={pose_type}")
 
     def alpha1_cb(self, msg):
         alpha1 = float(msg.data)
         if alpha1 < 0.0 or not np.isfinite(alpha1):
-            self.get_logger().warn(f"Ignore invalid alpha1: {alpha1}. Use alpha1 >= 0.0.")
+            self.get_logger().warn(
+                f"Ignore invalid alpha1: {alpha1}. Use a finite value >= 0."
+            )
             return
         with self._lock:
             self.pending_alpha1 = alpha1
-        self.get_logger().info(f"RX alpha1_cmd={alpha1:.4f}")
+        self.get_logger().info(f"RX alpha1={alpha1:.4f}")
 
     def rotation_matrix_cb(self, msg):
-        arr = np.asarray(msg.data, dtype=np.float64)
-        if arr.size != 9 or not np.all(np.isfinite(arr)):
-            self.get_logger().warn(f"Ignore invalid rotation matrix. Expected 9 finite values, got {arr.size}.")
+        values = np.asarray(msg.data, dtype=np.float64)
+        if values.size != 9 or not np.all(np.isfinite(values)):
+            self.get_logger().warn(
+                f"Ignore invalid rotation matrix. Expected 9 finite values, got {values.size}."
+            )
             return
-        R = arr.reshape(3, 3).copy()
         with self._lock:
-            self.pending_rotation_matrix = R
-        g_hand = R.T @ GRAVITY_WORLD
-        self.get_logger().info(f"RX rotation_matrix_cmd, gravity_in_hand={np.round(g_hand, 4).tolist()}")
+            self.pending_rotation_matrix = values.reshape(3, 3).copy()
 
     def take_pending(self):
         with self._lock:
-            finger_command = self.pending_finger_command
-            alpha1 = self.pending_alpha1
-            rotation_matrix = None if self.pending_rotation_matrix is None else self.pending_rotation_matrix.copy()
-            self.pending_finger_command = None
+            values = (
+                self.pending_grasp_type,
+                self.pending_pose_type,
+                self.pending_alpha1,
+                None
+                if self.pending_rotation_matrix is None
+                else self.pending_rotation_matrix.copy(),
+            )
+            self.pending_grasp_type = None
+            self.pending_pose_type = None
             self.pending_alpha1 = None
             self.pending_rotation_matrix = None
-        return finger_command, alpha1, rotation_matrix
+        return values
 
 
 class GraspSim:
+    """MuJoCo adapter for the same GraspController used by real hardware."""
+
     def __init__(self):
-        self.model = mujoco.MjModel.from_xml_path(XML_PATH)
+        shared_yaml = (
+            Path(__file__).resolve().parents[1]
+            / "real"
+            / "dg5f_grasp_control"
+            / "config"
+            / "grasp_real.yaml"
+        )
+        self.cfg = (
+            load_runtime_config_yaml(shared_yaml)
+            if shared_yaml.exists()
+            else RuntimeConfig()
+        )
+        self.controller = GraspController(self.cfg, log=print)
+
+        self.model = mujoco.MjModel.from_xml_path(str(XML_PATH))
         self.stl_collision_geom_count = enable_all_stl_mesh_collisions(self.model)
+        self.data = mujoco.MjData(self.model)
+        self.gravity_data = mujoco.MjData(self.model)
+        self.qpos_addr, self.dof_addr = self._get_joint_addresses()
 
         self.rotation_matrix = DEFAULT_ROTATION_MATRIX.copy()
         self.gravity_in_hand = self.rotation_matrix.T @ GRAVITY_WORLD
         self.model.opt.gravity[:] = self.gravity_in_hand
 
-        self.data = mujoco.MjData(self.model)
-        self.gdata = mujoco.MjData(self.model)
-        self.qadr, self.dadr = self._get_joint_addr()
-
-        self.alpha1 = DEFAULT_ALPHA1
-        self.use_fingers = selected_fingers(DEFAULT_FINGER_COMMAND)
-        self.active_count = 0
-        self.state = GraspState.NORMAL_POSE
-
-        self.deferred_finger_count = None
-        self.deferred_finger_count_at = None
-        self.adding_target_count = None
-        self.adding_pre_grasp_fingers = []
-        self.adding_ready_at = None
-        self.skip_add_pre_grasp_once = False
-
-        self.envelop_hold_pose = None
-        self.envelop_started_at = None
-
         self.ros_node = None
         self.ros_executor = None
         self.ros_spin_thread = None
-
         self.start_time = time.time()
-        self.state_start_time = self.start_time
         self.last_print_time = 0.0
+        self.last_output = None
 
         self.set_initial_pose()
 
-    def _get_joint_addr(self):
-        qadr = []
-        dadr = []
-        for name in JOINT_NAMES:
-            jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
-            if jid < 0:
-                raise RuntimeError(f"Joint not found: {name}")
-            qadr.append(self.model.jnt_qposadr[jid])
-            dadr.append(self.model.jnt_dofadr[jid])
-        return np.array(qadr, dtype=int), np.array(dadr, dtype=int)
+    def _get_joint_addresses(self):
+        qpos_addr = []
+        dof_addr = []
+        for name in HAND_JOINT_NAMES:
+            joint_id = mujoco.mj_name2id(
+                self.model,
+                mujoco.mjtObj.mjOBJ_JOINT,
+                name,
+            )
+            if joint_id < 0:
+                raise RuntimeError(f"Joint not found in MuJoCo XML: {name}")
+            qpos_addr.append(self.model.jnt_qposadr[joint_id])
+            dof_addr.append(self.model.jnt_dofadr[joint_id])
+        return np.asarray(qpos_addr, dtype=int), np.asarray(dof_addr, dtype=int)
 
     @property
     def q(self):
-        return self.data.qpos[self.qadr]
+        return np.asarray(self.data.qpos[self.qpos_addr], dtype=np.float64)
 
     @property
     def qdot(self):
-        return self.data.qvel[self.dadr]
+        return np.asarray(self.data.qvel[self.dof_addr], dtype=np.float64)
 
     def set_initial_pose(self):
         mujoco.mj_resetData(self.model, self.data)
-        self.data.qpos[self.qadr] = HAND_NORMAL_POSE
+        self.data.qpos[self.qpos_addr] = HAND_NORMAL_POSE
         self.data.qvel[:] = 0.0
         self.data.ctrl[:] = 0.0
         self.data.qfrc_applied[:] = 0.0
@@ -458,7 +220,7 @@ class GraspSim:
             return
 
         rclpy.init(args=None)
-        self.ros_node = GraspSimCommandNode()
+        self.ros_node = GraspSimCommandNode(self.cfg)
         self.ros_executor = SingleThreadedExecutor()
         self.ros_executor.add_node(self.ros_node)
         self.ros_spin_thread = threading.Thread(
@@ -477,318 +239,80 @@ class GraspSim:
         if rclpy is not None and rclpy.ok():
             rclpy.shutdown()
 
-    def apply_rotation_matrix(self, R):
-        self.rotation_matrix = R.copy()
+    def apply_rotation_matrix(self, rotation_matrix):
+        self.rotation_matrix = np.asarray(rotation_matrix, dtype=np.float64).copy()
         self.gravity_in_hand = self.rotation_matrix.T @ GRAVITY_WORLD
         self.model.opt.gravity[:] = self.gravity_in_hand
-        print(f"[COMMAND] rotation_matrix updated, gravity_in_hand={np.round(self.gravity_in_hand, 4).tolist()}")
+        print(
+            "[COMMAND] rotation matrix updated, gravity_in_hand="
+            f"{np.round(self.gravity_in_hand, 4).tolist()}"
+        )
 
     def apply_gravity_compensation(self):
         self.model.opt.gravity[:] = self.gravity_in_hand
-        self.gdata.qpos[:] = self.data.qpos[:]
-        self.gdata.qvel[:] = 0.0
-        self.gdata.qacc[:] = 0.0
-        mujoco.mj_forward(self.model, self.gdata)
-        self.data.qfrc_applied[:] = self.gdata.qfrc_bias
+        self.gravity_data.qpos[:] = self.data.qpos[:]
+        self.gravity_data.qvel[:] = 0.0
+        self.gravity_data.qacc[:] = 0.0
+        mujoco.mj_forward(self.model, self.gravity_data)
+        self.data.qfrc_applied[:] = self.gravity_data.qfrc_bias
 
-    def tip_position(self, finger):
-        return tesollo_tip_position(self.q.copy(), finger)
-
-    def tip_jacobian(self, finger):
-        return tesollo_tip_jacobian(self.q.copy(), finger)
-
-    def inactive_pre_grasp_pd(self):
-        tau = np.zeros(20, dtype=np.float64)
-        active_set = set(self.use_fingers)
-        pre_grasp_set = set(self.adding_pre_grasp_fingers)
-
-        for finger, idxs in FINGER_JOINT_INDEX.items():
-            if finger in active_set:
-                continue
-            idxs = np.asarray(idxs, dtype=int)
-            if finger in pre_grasp_set:
-                target = HAND_PRE_GRASP_POSE[idxs]
-                kp = POSE_KP * ADD_FINGER_PRE_GRASP_KP_SCALE
-                kd = POSE_KD * ADD_FINGER_PRE_GRASP_KD_SCALE
-            else:
-                target = np.zeros(len(idxs), dtype=np.float64)
-                kp = POSE_KP
-                kd = POSE_KD
-            tau[idxs] = pose_pd(target, self.q[idxs], self.qdot[idxs], kp=kp, kd=kd)
-        return tau
-
-    def compute_alpha_and_forces(self):
-        tip_pos = {finger: self.tip_position(finger) for finger in self.use_fingers}
-        points = np.array([tip_pos[finger] for finger in self.use_fingers])
-        cg = np.mean(points, axis=0)
-        cv = cg + THUMB_CENTROID_BIAS * (tip_pos[1] - cg) if 1 in tip_pos else cg
-
-        dist = {}
-        fhat = {}
-        for finger in self.use_fingers:
-            diff = cv - tip_pos[finger]
-            dist[finger] = max(np.linalg.norm(diff), 1e-6)
-            fhat[finger] = GROPED_FORCE_DIRECTION_SIGN * diff / dist[finger]
-
-        alpha = {}
-        if len(self.use_fingers) == 2:
-            alpha[self.use_fingers[0]] = self.alpha1
-            alpha[self.use_fingers[1]] = self.alpha1
-            return alpha, fhat, cg, cv, tip_pos
-
-        first = self.use_fingers[0]
-        pivot = self.use_fingers[-1]
-        alpha[first] = self.alpha1
-        for finger in self.use_fingers[1:-1]:
-            alpha[finger] = dist[first] / dist[finger] * self.alpha1
-
-        force_sum = np.zeros(3, dtype=np.float64)
-        for finger in self.use_fingers[:-1]:
-            force_sum += alpha[finger] * fhat[finger]
-        alpha[pivot] = np.linalg.norm(force_sum)
-        return alpha, fhat, cg, cv, tip_pos
-
-    def collision_avoidance_forces(self, tip_pos):
-        repel = {finger: np.zeros(3, dtype=np.float64) for finger in tip_pos}
-        for finger_a, finger_b in COLLISION_AVOID_PAIRS:
-            if finger_a not in tip_pos or finger_b not in tip_pos:
-                continue
-            diff = tip_pos[finger_a] - tip_pos[finger_b]
-            dist = np.linalg.norm(diff)
-            if dist < 1e-9 or dist >= MIN_TIP_DISTANCE:
-                continue
-            mag = min(COLLISION_REPEL_GAIN * (MIN_TIP_DISTANCE - dist), COLLISION_REPEL_LIMIT)
-            repel[finger_a] += mag * diff / dist
-            repel[finger_b] -= mag * diff / dist
-        return repel
-
-    def compute_groped_tau(self):
-        tau = np.zeros(20, dtype=np.float64)
-        alpha, fhat, cg, cv, tip_pos = self.compute_alpha_and_forces()
-        repel = self.collision_avoidance_forces(tip_pos)
-
-        for finger in self.use_fingers:
-            idxs = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
-            force = FINGER_FORCE_SCALE[finger] * alpha[finger] * fhat[finger] + repel[finger]
-            tau[idxs] = self.tip_jacobian(finger).T @ force
-            tau[idxs] *= GRASP_TAU_SIGN[idxs]
-
-        tau = np.clip(tau, -GROPED_TAU_LIMIT, GROPED_TAU_LIMIT)
-        for joint_idx, limit in BASE_JOINT_TAU_LIMIT.items():
-            tau[joint_idx] = np.clip(tau[joint_idx], -limit, limit)
-        return tau, alpha, cg, cv
-
-    def reset_envelop(self):
-        self.envelop_hold_pose = None
-        self.envelop_started_at = None
-
-    def start_envelop(self, now):
-        self.envelop_hold_pose = self.q.copy()
-        self.envelop_started_at = now
-
-    def calc_envelop_tau(self, now):
-        if self.envelop_hold_pose is None or self.envelop_started_at is None:
-            self.start_envelop(now)
-
-        tau = np.zeros(20, dtype=np.float64)
-        hold_mask = np.ones(20, dtype=bool)
-        tau_level = min(float(self.alpha1 * ENVELOP_TAU_SCALE), float(GROPED_TAU_LIMIT))
-
-        for finger in ENVELOP_FINGER_ORDER:
-            idxs = FINGER_JOINT_INDEX[finger]
-            for order_idx, local_joint in enumerate(ENVELOP_FINGER_TORQUE_LOCAL_JOINTS):
-                if now >= self.envelop_started_at + order_idx * ENVELOP_JOINT_DELAY:
-                    joint_idx = idxs[local_joint]
-                    hold_mask[joint_idx] = False
-                    tau[joint_idx] = ENVELOP_NON_THUMB_TAU_SIGN * tau_level
-
-        thumb_idxs = FINGER_JOINT_INDEX[1]
-        for order_idx, local_joint in enumerate(ENVELOP_THUMB_TORQUE_LOCAL_JOINTS):
-            if now >= self.envelop_started_at + (order_idx + 2) * ENVELOP_JOINT_DELAY:
-                joint_idx = thumb_idxs[local_joint]
-                hold_mask[joint_idx] = False
-                tau[joint_idx] = ENVELOP_THUMB_TAU_SIGN * tau_level
-
-        hold_idxs = np.flatnonzero(hold_mask)
-        if hold_idxs.size > 0:
-            tau[hold_idxs] += pose_pd(
-                self.envelop_hold_pose[hold_idxs],
-                self.q[hold_idxs],
-                self.qdot[hold_idxs],
-            )
-        return tau
-
-    def clear_pending_switches(self):
-        self.deferred_finger_count = None
-        self.deferred_finger_count_at = None
-        self.adding_target_count = None
-        self.adding_pre_grasp_fingers = []
-        self.adding_ready_at = None
-        self.skip_add_pre_grasp_once = False
-
-    def apply_finger_command(self, command, now):
-        if command == -1:
-            self.active_count = 0
-            self.clear_pending_switches()
-            self.reset_envelop()
-            self.state = GraspState.NORMAL_POSE
-            self.state_start_time = now
-            print("[COMMAND] finger_count=-1 -> NORMAL_POSE")
+    def process_pending_commands(self, now):
+        if self.ros_node is None:
             return
 
-        if command == 0:
-            self.active_count = 0
-            self.clear_pending_switches()
-            self.reset_envelop()
-            self.state = GraspState.PRE_GRASP_POSE
-            self.state_start_time = now
-            print("[COMMAND] finger_count=0 -> PRE_GRASP_POSE")
-            return
-
-        if command == 6:
-            self.clear_pending_switches()
-            self.use_fingers = selected_fingers(5)
-            self.active_count = 6
-            self.start_envelop(now)
-            self.state = GraspState.ENVELOP_GRASP
-            self.state_start_time = now
-            print(
-                "[COMMAND] finger_count=6 -> ENVELOP_GRASP, "
-                f"tau_per_joint={self.alpha1 * ENVELOP_TAU_SCALE:.4f}"
-            )
-            return
-
-        self.reset_envelop()
-        command_count = command
-        if self.active_count in (1, 2) and command in (1, 2) and command != self.active_count:
-            command_count = 3
-            self.deferred_finger_count = command
-            self.deferred_finger_count_at = None
-            print(f"[COMMAND] finger_count={command} requested, switch via 3")
-
-        prev_fingers = set(self.use_fingers) if self.active_count > 0 else set()
-        target_fingers = selected_fingers(command_count)
-        added = sorted(set(target_fingers) - prev_fingers)
-
-        if self.active_count > 0 and added and not self.skip_add_pre_grasp_once:
-            self.adding_target_count = command_count
-            self.adding_pre_grasp_fingers = added
-            self.adding_ready_at = now + ADD_FINGER_PRE_GRASP_DELAY
-            self.state = GraspState.GROPED_GRASP
-            self.state_start_time = now
-            print(
-                f"[COMMAND] finger_count={command_count} prepare added fingers "
-                f"{added} for {ADD_FINGER_PRE_GRASP_DELAY:.2f}s"
-            )
-            return
-
-        self.skip_add_pre_grasp_once = False
-        self.use_fingers = target_fingers
-        self.active_count = command_count
-        self.adding_target_count = None
-        self.adding_pre_grasp_fingers = []
-        self.adding_ready_at = None
-
-        removed = sorted(prev_fingers - set(target_fingers))
-        if self.deferred_finger_count is not None and self.deferred_finger_count_at is None and command_count == 3:
-            self.deferred_finger_count_at = now + FINGER_SWITCH_VIA_THREE_DELAY
-            print(
-                f"[COMMAND] hold finger_count=3 for {FINGER_SWITCH_VIA_THREE_DELAY:.2f}s "
-                f"before finger_count={self.deferred_finger_count}"
-            )
-
-        self.state = GraspState.GROPED_GRASP
-        self.state_start_time = now
-        print(
-            f"[COMMAND] finger_count={command_count} -> GROPED_GRASP, "
-            f"USE_FINGERS={self.use_fingers}, added={added}, removed={removed}"
-        )
-
-    def process_pending_events(self, now):
-        new_command = None
-        if self.ros_node is not None:
-            new_command, new_alpha1, new_rotation = self.ros_node.take_pending()
-            if new_alpha1 is not None:
-                self.alpha1 = new_alpha1
-                print(f"[COMMAND] alpha1={self.alpha1:.4f}")
-            if new_rotation is not None:
-                self.apply_rotation_matrix(new_rotation)
-
-        if (
-            new_command is None
-            and self.adding_target_count is not None
-            and self.adding_ready_at is not None
-            and now >= self.adding_ready_at
-        ):
-            new_command = self.adding_target_count
-            self.adding_target_count = None
-            self.adding_pre_grasp_fingers = []
-            self.adding_ready_at = None
-            self.skip_add_pre_grasp_once = True
-
-        if (
-            new_command is None
-            and self.deferred_finger_count is not None
-            and self.deferred_finger_count_at is not None
-            and self.adding_target_count is None
-            and now >= self.deferred_finger_count_at
-        ):
-            new_command = self.deferred_finger_count
-            self.deferred_finger_count = None
-            self.deferred_finger_count_at = None
-        elif new_command is not None and self.deferred_finger_count is not None and not self.skip_add_pre_grasp_once:
-            self.deferred_finger_count = None
-            self.deferred_finger_count_at = None
-
-        if new_command is not None:
-            self.apply_finger_command(new_command, now)
-
-    def compute_control(self, now):
-        if self.state == GraspState.NORMAL_POSE:
-            return pose_pd(HAND_NORMAL_POSE, self.q, self.qdot)
-        if self.state == GraspState.PRE_GRASP_POSE:
-            return pose_pd(HAND_PRE_GRASP_POSE, self.q, self.qdot)
-        if self.state == GraspState.GROPED_GRASP:
-            tau, _, _, _ = self.compute_groped_tau()
-            return tau + self.inactive_pre_grasp_pd()
-        if self.state == GraspState.ENVELOP_GRASP:
-            return self.calc_envelop_tau(now)
-        return np.zeros(20, dtype=np.float64)
+        grasp_type, pose_type, alpha1, rotation_matrix = self.ros_node.take_pending()
+        if pose_type is not None:
+            self.controller.apply_pose_type(pose_type, now)
+        if grasp_type is not None:
+            self.controller.apply_grasp_type(grasp_type, now)
+        if alpha1 is not None:
+            self.controller.set_alpha1(alpha1)
+            self.cfg = self.controller.cfg
+            print(f"[COMMAND] alpha1={alpha1:.4f}")
+        if rotation_matrix is not None:
+            self.apply_rotation_matrix(rotation_matrix)
 
     def print_start_info(self):
         print("=" * 80)
-        print("[GRASP SIM START - HAND MOTION CHECK]")
-        print(f"XML_PATH          : {XML_PATH}")
-        print(f"ACTIVE_COUNT      : {self.active_count}")
-        print(f"USE_FINGERS       : {self.use_fingers}")
-        print(f"ALPHA1            : {self.alpha1}")
-        print(f"CONTACT_PHYSICS   : {'STL mesh self-collision enabled' if ENABLE_STL_SELF_COLLISION else 'disabled'}")
-        print(f"STL_COLLISION_GEOMS: {self.stl_collision_geom_count}")
-        print(f"ROS_ENABLED       : {self.ros_node is not None}")
-        print(f"ROS_DOMAIN_ID     : {os.environ.get('ROS_DOMAIN_ID', '<unset>')}")
-        print(f"COMMAND_TOPIC     : {COMMAND_TOPIC}")
-        print(f"ALPHA1_TOPIC      : {ALPHA1_TOPIC}")
-        print(f"ROTATION_TOPIC    : {ROTATION_MATRIX_TOPIC}")
-        print(f"GRAVITY_IN_HAND   : {np.round(self.gravity_in_hand, 4).tolist()}")
-        print("[COMMAND] -1=normal, 0=pre-grasp, 1=thumb+index, 2=thumb+middle, 3=thumb+index+middle, 4=+ring, 5=+pinky, 6=envelop")
+        print("[GRASP SIM START - SHARED REAL CONTROLLER]")
+        print(f"XML_PATH            : {XML_PATH}")
+        print(f"CONTROLLER_MODULE   : {GraspController.__module__}")
+        print(f"ALPHA1              : {self.controller.cfg.alpha1}")
+        print(f"USE_FINGERS         : {self.controller.use_fingers}")
+        print(f"STL_COLLISION_GEOMS : {self.stl_collision_geom_count}")
+        print(f"ROS_ENABLED         : {self.ros_node is not None}")
+        print(f"GRASP_TYPE_TOPIC    : {self.cfg.command_topic}")
+        print(f"POSE_TYPE_TOPIC     : {self.cfg.pose_topic}")
+        print(f"ALPHA1_TOPIC        : {self.cfg.alpha1_topic}")
+        print(f"ROTATION_TOPIC      : {self.cfg.rotation_matrix_topic}")
+        print(f"GRAVITY_IN_HAND     : {np.round(self.gravity_in_hand, 4).tolist()}")
+        print(
+            "[COMMAND] -1=normal, 0=pre-grasp, 1=thumb+index, "
+            "2=thumb+middle, 3=three fingers, 4=four fingers, "
+            "5=five fingers, 6=envelop, 7=rotation/transition"
+        )
         print("=" * 80)
 
-    def print_status(self, now, tau_ctrl):
+    def print_status(self, now, output, torque):
         if now - self.last_print_time < LOG_PERIOD:
             return
         self.last_print_time = now
-        alpha, _, cg, cv, _ = self.compute_alpha_and_forces()
-        alpha_str = "{" + ", ".join(f"F{f}:{alpha[f]:.3f}" for f in self.use_fingers) + "}"
+
+        alpha_text = "{" + ", ".join(
+            f"F{finger}:{value:.3f}"
+            for finger, value in output.alpha.items()
+        ) + "}"
         print(
-            f"[{self.state.name}] "
-            f"t={now - self.start_time:5.2f}  "
-            f"state_t={now - self.state_start_time:5.2f}  "
-            f"active_count={self.active_count}  "
-            f"alpha1={self.alpha1:.4f}  "
-            f"alpha={alpha_str}  "
-            f"tau_max={np.max(np.abs(tau_ctrl)):.4f}  "
-            f"Cg={np.round(cg, 3)}  "
-            f"Cv={np.round(cv, 3)}"
+            f"[{output.state}] "
+            f"t={now - self.start_time:6.2f} | "
+            f"state_t={output.state_elapsed:5.2f} | "
+            f"active_count={output.active_finger_count} | "
+            f"use_fingers={output.use_fingers} | "
+            f"alpha={alpha_text} | "
+            f"tau_max={np.max(np.abs(torque)):.4f} | "
+            f"Cg={np.round(output.cg, 4)} | "
+            f"Cv={np.round(output.cv, 4)} | "
+            f"g7_phase={output.g7_phase}"
         )
 
     @staticmethod
@@ -806,27 +330,36 @@ class GraspSim:
         with mujoco.viewer.launch_passive(self.model, self.data) as viewer:
             self.disable_contact_visualization(viewer)
             while viewer.is_running():
-                loop_t0 = time.time()
+                loop_start = time.time()
                 now = time.time()
 
-                self.process_pending_events(now)
+                self.controller.sync_joint_state(self.q)
+                self.process_pending_commands(now)
+                output = self.controller.step(self.q, self.qdot, now)
                 self.apply_gravity_compensation()
 
-                tau_ctrl = np.clip(self.compute_control(now), -HAND_TAU_LIMIT, HAND_TAU_LIMIT)
-                self.data.ctrl[:] = tau_ctrl
+                torque = np.clip(
+                    output.tau,
+                    -self.controller.cfg.hand_limit,
+                    self.controller.cfg.hand_limit,
+                )
+                if self.model.nu != JOINT_COUNT:
+                    raise RuntimeError(
+                        f"Expected {JOINT_COUNT} hand actuators, found {self.model.nu}"
+                    )
+                self.data.ctrl[:] = torque
 
                 mujoco.mj_step(self.model, self.data)
                 viewer.sync()
-                self.print_status(now, tau_ctrl)
+                self.print_status(now, output, torque)
 
-                dt = self.model.opt.timestep - (time.time() - loop_t0)
-                if dt > 0.0:
-                    time.sleep(dt)
+                sleep_time = self.model.opt.timestep - (time.time() - loop_start)
+                if sleep_time > 0.0:
+                    time.sleep(sleep_time)
 
 
 def main():
-    sim = GraspSim()
-    sim.run()
+    GraspSim().run()
 
 
 if __name__ == "__main__":

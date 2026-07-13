@@ -75,3 +75,33 @@ dg5f_grasp_control/poses.py             normal pose and pre-grasp pose
 dg5f_grasp_control/mujoco_gravity.py    MuJoCo gravity compensation
 dg5f_grasp_control/hand_model.py        joint names and finger index mapping
 ```
+
+## Shared controller architecture
+
+The grasp equations and state machine are implemented once in:
+
+```text
+dg5f_grasp_control/grasp_controller.py
+```
+
+Both adapters use this controller:
+
+- `grasp_real_node.py`: ROS joint-state/effort I/O, gravity compensation, and friction compensation.
+- `src/mujoco/grasp_sim.py`: MuJoCo state/actuator I/O and simulation gravity compensation.
+
+The shared controller includes pose control, grasp types 1–7, finger switching,
+inactive-finger targets, envelop grasp, polygon-centroid groped grasp, collision
+repulsion, and grasp-type-7 rotation/transition logic. Therefore changes to
+`grasp_policy.py`, `poses.py`, `hand_model.py`, or `grasp_controller.py` are
+used by both real hardware and MuJoCo.
+
+Run MuJoCo from the workspace source tree:
+
+```bash
+cd ~/hand
+source install/setup.bash
+python3 src/mujoco/grasp_sim.py
+```
+
+The simulator reads `config/grasp_real.yaml` and subscribes to the same
+`/grasp_type`, `/pose_type`, alpha1, and rotation-matrix topics as the real node.

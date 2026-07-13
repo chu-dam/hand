@@ -19,7 +19,7 @@ setup(
         ("share/" + package_name + "/models", ["models/dg5fs_left_w_mount.xml"]),
         ("share/" + package_name + "/models/meshes", glob("models/meshes/*.STL")),
     ],
-    install_requires=["setuptools"],
+    install_requires=["setuptools", "PyYAML"],
     zip_safe=True,
     maintainer="DG5F-S User",
     maintainer_email="user@example.com",
