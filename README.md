@@ -267,12 +267,6 @@ ros2 topic pub --once /grasp_type std_msgs/msg/Int32 "{data: 7}"
 - 새끼: 첫 번째와 두 번째 관절을 `HAND_PRE_GRASP_POSE` 값 사용
 - 나머지 관절: `0.0 rad`
 
-비사용 새끼손가락의 목표값은 다음과 같습니다.
-
-```text
-[-0.1471, -0.3410, 0.0, 0.0] rad
-```
-
 ---
 
 ## 2. Pose Type Command
