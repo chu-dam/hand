@@ -21,7 +21,7 @@ HAND_COMPACT_PRE_GRASP_POSE = np.array([
      0.1562,  0.7800,  0.3459,  0.4384,  # index
      0.0000,  0.7800,  0.3780,  0.3988,  # middle
     -0.1562,  0.7800,  0.2384,  0.5344,  # ring
-     0.0000, -0.3564,  0.5236,  0.4873,  # pinky
+     0.0000, -0.3410,  0.5236,  0.4873,  # pinky
 ], dtype=np.float64)
 
 POSE_TYPE_TARGETS = {
