@@ -50,11 +50,13 @@ npm ci
 
 ```bash
 cd ~/hand
+export ROS_DOMAIN_ID=73
 ./start_web.sh
 ```
 
 스크립트는 기본적으로 `ROS_DOMAIN_ID=73`과 로컬 주소
-`127.0.0.1:9090/8080`을 사용합니다. 다른 domain이 필요하면 다음처럼 실행합니다.
+`127.0.0.1:9090/8080`을 사용합니다. 별도로 실행한 손 컨트롤러도 반드시 같은
+domain을 사용해야 합니다. 다른 domain이 필요하면 다음처럼 실행합니다.
 
 ```bash
 ROS_DOMAIN_ID=42 ./start_web.sh
@@ -74,6 +76,7 @@ Terminal A — rosbridge:
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/hand/install/setup.bash
+export ROS_DOMAIN_ID=73
 ros2 launch rosbridge_server rosbridge_websocket_launch.xml
 ```
 
@@ -119,7 +122,9 @@ ROS CONNECTED · HAND LIVE · DEBUG < 1.0s · Commands READY
 `ROS CONNECTED`인데 `HAND` 또는 `DEBUG`가 `WAITING`이면 다음을 확인합니다.
 
 ```bash
+source /opt/ros/humble/setup.bash
 source ~/hand/install/setup.bash
+export ROS_DOMAIN_ID=73
 ros2 topic hz /dg5f_s_left/joint_states
 ros2 topic hz /dg5f_grasp_control/debug
 ```

@@ -173,7 +173,9 @@ PY
 
 ```bash
 cd ~/hand
+source /opt/ros/humble/setup.bash
 source install/setup.bash
+export ROS_DOMAIN_ID=73
 ros2 launch dg5f_grasp_control grasp_with_effort.launch.py
 ```
 
@@ -183,7 +185,9 @@ Terminal 1: DG5F-S effort controller
 
 ```bash
 cd ~/hand
+source /opt/ros/humble/setup.bash
 source install/setup.bash
+export ROS_DOMAIN_ID=73
 ros2 launch dg5f_s_driver dg5f_s_left_effort_controller.launch.py
 ```
 
@@ -191,8 +195,24 @@ Terminal 2: grasp controller
 
 ```bash
 cd ~/hand
+source /opt/ros/humble/setup.bash
 source install/setup.bash
+export ROS_DOMAIN_ID=73
 ros2 launch dg5f_grasp_control grasp_real.launch.py
+```
+
+### 새 터미널에서 명령 전송
+
+컨트롤러를 실행한 터미널은 그대로 두고 새 터미널에서 아래 블록을 실행합니다.
+컨트롤러와 명령 전송 터미널의 `ROS_DOMAIN_ID`는 반드시 같아야 합니다.
+
+```bash
+cd ~/hand
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+export ROS_DOMAIN_ID=73
+
+ros2 topic pub --once /grasp_type std_msgs/msg/Int32 "{data: 3}"
 ```
 
 ---
@@ -203,7 +223,9 @@ MuJoCo simulation도 real과 동일한 `GraspController`와 `grasp_real.yaml`을
 
 ```bash
 cd ~/hand
+source /opt/ros/humble/setup.bash
 source install/setup.bash
+export ROS_DOMAIN_ID=73
 python3 src/mujoco/grasp_sim.py
 ```
 
@@ -284,13 +306,15 @@ Teaching, Pose, Grasp, Alpha1, rotation matrix 명령을 전송하는 React UI�
 
 ```bash
 cd ~/hand
+export ROS_DOMAIN_ID=73
 ./start_web.sh
 ```
 
 기본 ROS domain은 `73`입니다. 스크립트는 중복 포트를 검사하고 준비 상태를
 기다린 뒤 실행합니다. `Ctrl+C`는 rosbridge와 웹 UI만 종료하며 별도로 실행한
-손 컨트롤러는 유지합니다. 종료 전 반드시 웹에서 `RELEASE` → `NORMAL_POSE`를
-확인하십시오. 아래는 구성 요소를 각각 실행하는 방법입니다.
+손 컨트롤러는 유지합니다. 별도 실행한 손 컨트롤러도 반드시 같은
+`ROS_DOMAIN_ID=73`을 사용해야 합니다. 종료 전 반드시 웹에서 `RELEASE` →
+`NORMAL_POSE`를 확인하십시오. 아래는 구성 요소를 각각 실행하는 방법입니다.
 
 ```bash
 sudo apt update
@@ -302,6 +326,7 @@ Terminal 1 — hand controller 실행 후 rosbridge:
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/hand/install/setup.bash
+export ROS_DOMAIN_ID=73
 ros2 launch rosbridge_server rosbridge_websocket_launch.xml
 ```
 
@@ -656,7 +681,9 @@ Terminal 1: hand controller
 
 ```bash
 cd ~/hand
+source /opt/ros/humble/setup.bash
 source install/setup.bash
+export ROS_DOMAIN_ID=73
 ros2 launch dg5f_grasp_control grasp_with_effort.launch.py
 ```
 
@@ -664,7 +691,9 @@ Terminal 2: RB5 rotation matrix publisher
 
 ```bash
 cd ~/hand
+source /opt/ros/humble/setup.bash
 source install/setup.bash
+export ROS_DOMAIN_ID=73
 python3 rb5_payload_gc_rotation_pub.py
 ```
 
