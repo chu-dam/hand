@@ -47,6 +47,13 @@ G7_TRANSITION_FINGER_NAMES = {
 }
 
 
+def _copy_finger_vectors(values: Dict[int, np.ndarray]) -> Dict[int, np.ndarray]:
+    return {
+        int(finger): np.asarray(vector, dtype=np.float64).copy()
+        for finger, vector in values.items()
+    }
+
+
 @dataclass
 class ControlOutput:
     tau: np.ndarray
@@ -58,6 +65,12 @@ class ControlOutput:
     alpha: Dict[int, float] = field(default_factory=dict)
     cg: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=np.float64))
     cv: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=np.float64))
+    fingertip_positions: Dict[int, np.ndarray] = field(default_factory=dict)
+    grasp_forces: Dict[int, np.ndarray] = field(default_factory=dict)
+    rotation_forces: Dict[int, np.ndarray] = field(default_factory=dict)
+    center_hold_forces: Dict[int, np.ndarray] = field(default_factory=dict)
+    collision_forces: Dict[int, np.ndarray] = field(default_factory=dict)
+    total_forces: Dict[int, np.ndarray] = field(default_factory=dict)
     rotation_enabled: bool = False
     use_fingers: List[int] = field(default_factory=list)
     active_finger_count: int = 0
@@ -595,13 +608,14 @@ class GraspController:
 
     def _calc_grasp_type7_transition_attach_tau(self, cv):
         tau = np.zeros(JOINT_COUNT, dtype=np.float64)
+        attach_forces = {}
         self.grasp_type7_transition_attach_tau_max = 0.0
         if not self._is_grasp_type7_attach_phase():
-            return tau
+            return tau, attach_forces
 
         finger = self.grasp_type7_transition_finger_id
         if finger is None:
-            return tau
+            return tau, attach_forces
 
         finger = int(finger)
         idxs = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
@@ -610,10 +624,11 @@ class GraspController:
         diff = target_cv - pos
         dist = np.linalg.norm(diff)
         if dist < 1e-9:
-            return tau
+            return tau, attach_forces
 
         fhat = self.cfg.groped_force_direction_sign * diff / dist
         force = self._grasp_type7_attach_force(finger) * fhat
+        attach_forces[finger] = force.copy()
         J = tip_jacobian(self.hand_q, finger, eps=self.cfg.jacobian_eps)
         tau_local = J.T @ force
         tau_local = tau_local * GRASP_TAU_SIGN[idxs]
@@ -631,7 +646,7 @@ class GraspController:
             self.grasp_type7_thumb_attach_tau_max = tau_max
         elif finger == G7_RING_TRANSITION_FINGER_ID:
             self.grasp_type7_ring_attach_tau_max = tau_max
-        return tau
+        return tau, attach_forces
 
     def _update_grasp_type7_attach_state(self, qdot, now):
         finger = self.grasp_type7_transition_finger_id
@@ -1042,6 +1057,12 @@ class GraspController:
         alpha = {}
         cg = np.zeros(3, dtype=np.float64)
         cv = np.zeros(3, dtype=np.float64)
+        fingertip_positions = {}
+        grasp_forces = {}
+        rotation_forces = {}
+        center_hold_forces = {}
+        collision_forces = {}
+        total_forces = {}
         rotation_enabled = False
         self.inactive_pd_target[:] = np.nan
 
@@ -1085,13 +1106,25 @@ class GraspController:
                 rotation_center_ref = self.grasp_type7_rotation_cg_ref
                 center_hold_enabled = bool(self.cfg.grasp_type7_center_hold_enable)
 
-            grasp_tau, alpha, cg, cv, _ = self.policy.calc_grasp_tau(
+            policy_result = self.policy.calc_grasp_tau(
                 self.hand_q,
                 rotation_enabled=rotation_enabled,
                 rotation_center=rotation_center_ref,
                 center_hold_target=rotation_center_ref,
                 center_hold_enabled=center_hold_enabled,
             )
+            grasp_tau = policy_result.tau.copy()
+            alpha = dict(policy_result.alpha)
+            cg = policy_result.cg.copy()
+            cv = policy_result.cv.copy()
+            fingertip_positions.update(
+                _copy_finger_vectors(policy_result.fingertip_positions)
+            )
+            grasp_forces.update(_copy_finger_vectors(policy_result.grasp_forces))
+            rotation_forces.update(_copy_finger_vectors(policy_result.rotation_forces))
+            center_hold_forces.update(_copy_finger_vectors(policy_result.center_hold_forces))
+            collision_forces.update(_copy_finger_vectors(policy_result.collision_forces))
+            total_forces.update(_copy_finger_vectors(policy_result.total_forces))
 
             blend_pd = np.zeros(JOINT_COUNT, dtype=np.float64)
             if (
@@ -1113,6 +1146,11 @@ class GraspController:
                         limit=self.cfg.pose_pd_limit,
                     )
                     grasp_tau[idxs] *= blend
+                    grasp_forces[finger] *= blend
+                    rotation_forces[finger] *= blend
+                    center_hold_forces[finger] *= blend
+                    collision_forces[finger] *= blend
+                    total_forces[finger] *= blend
                     blend_pd[idxs] = (1.0 - blend) * pd
                 if blend_raw >= 1.0:
                     self.blending_fingers = []
@@ -1121,6 +1159,7 @@ class GraspController:
 
             g7_transition_pd = np.zeros(JOINT_COUNT, dtype=np.float64)
             g7_transition_attach_tau = np.zeros(JOINT_COUNT, dtype=np.float64)
+            g7_transition_attach_forces = {}
             inactive_control_fingers = list(self.use_fingers)
             if (
                 self.active_finger_count == PINKY_SPECIAL_COMMAND
@@ -1129,7 +1168,18 @@ class GraspController:
                 if self.grasp_type7_transition_finger_id is not None:
                     inactive_control_fingers.append(self.grasp_type7_transition_finger_id)
                 g7_transition_pd = self._calc_grasp_type7_transition_pd(qdot)
-                g7_transition_attach_tau = self._calc_grasp_type7_transition_attach_tau(cv)
+                (
+                    g7_transition_attach_tau,
+                    g7_transition_attach_forces,
+                ) = self._calc_grasp_type7_transition_attach_tau(cv)
+                for finger, force in g7_transition_attach_forces.items():
+                    zero = np.zeros(3, dtype=np.float64)
+                    grasp_forces[finger] = (
+                        grasp_forces.get(finger, zero) + force
+                    )
+                    total_forces[finger] = (
+                        total_forces.get(finger, zero) + force
+                    )
 
             inactive_pd = self._inactive_pre_grasp_pd(
                 inactive_control_fingers,
@@ -1161,6 +1211,12 @@ class GraspController:
             alpha={int(k): float(v) for k, v in alpha.items()},
             cg=cg.copy(),
             cv=cv.copy(),
+            fingertip_positions=_copy_finger_vectors(fingertip_positions),
+            grasp_forces=_copy_finger_vectors(grasp_forces),
+            rotation_forces=_copy_finger_vectors(rotation_forces),
+            center_hold_forces=_copy_finger_vectors(center_hold_forces),
+            collision_forces=_copy_finger_vectors(collision_forces),
+            total_forces=_copy_finger_vectors(total_forces),
             rotation_enabled=bool(rotation_enabled),
             use_fingers=list(self.use_fingers),
             active_finger_count=int(self.active_finger_count),

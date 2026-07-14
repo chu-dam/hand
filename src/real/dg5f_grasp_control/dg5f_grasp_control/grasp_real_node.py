@@ -6,6 +6,7 @@ from time import sleep, time
 import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
+from dg5f_grasp_interfaces.msg import GraspDebug
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Float64, Float64MultiArray, Int32
 
@@ -23,6 +24,7 @@ from dg5f_grasp_control.hand_model import (
 )
 from dg5f_grasp_control.mujoco_gravity import MujocoGravityCompensator
 from dg5f_grasp_control.poses import POSE_TYPE_TARGETS
+from dg5f_grasp_control.ros_debug import build_grasp_debug_message
 
 
 FINGER_NAMES = ("thumb", "index", "middle", "ring", "pinky")
@@ -60,6 +62,7 @@ class GraspRealRunner:
         self.pending_pose_type = None
         self.pending_teaching_mode = None
         self.gravity_in_hand_frame = None
+        self.last_debug_publish_time = 0.0
 
         self.teaching_mode = False
         self.teaching_hold_active = False
@@ -69,6 +72,7 @@ class GraspRealRunner:
         self.gravity_comp = MujocoGravityCompensator(model_xml_path)
 
         self.pub = node.create_publisher(Float64MultiArray, cfg.effort_topic, 10)
+        self.debug_pub = node.create_publisher(GraspDebug, cfg.debug_topic, 10)
         node.create_subscription(JointState, cfg.joint_state_topic, self.joint_cb, 10)
         node.create_subscription(Int32, cfg.command_topic, self.command_cb, 10)
         node.create_subscription(Int32, cfg.pose_topic, self.pose_type_cb, 10)
@@ -215,6 +219,10 @@ class GraspRealRunner:
         print(f"[ROTATION_MATRIX_TOPIC] {self.cfg.rotation_matrix_topic}")
         print(f"[TEACHING_MODE_TOPIC] {self.cfg.teaching_mode_topic}")
         print(
+            f"[DEBUG_TOPIC] {self.cfg.debug_topic} "
+            f"({self.cfg.debug_publish_hz:.1f} Hz, frame={self.cfg.debug_frame_id})"
+        )
+        print(
             "[GRASP_TYPE] -1=normal, 0=selected pre-grasp, "
             "1=thumb+index, 2=thumb+middle, 3=thumb+index+middle, "
             "4=+ring, 5=+pinky, 6=envelop-grasp, "
@@ -268,6 +276,37 @@ class GraspRealRunner:
             f"fric_max={np.max(np.abs(friction)):.3f} | "
             f"effort_max={np.max(np.abs(effort)):.3f}"
         )
+
+    def _maybe_publish_debug(
+        self,
+        now,
+        output,
+        controller_torques,
+        commanded_efforts,
+        *,
+        controller_state=None,
+        controller_phase=None,
+    ):
+        publish_hz = float(self.cfg.debug_publish_hz)
+        if publish_hz <= 0.0:
+            return
+        if now - self.last_debug_publish_time < 1.0 / publish_hz:
+            return
+
+        self.last_debug_publish_time = now
+        message = build_grasp_debug_message(
+            controller=self.controller,
+            q=self.hand_q,
+            output=output,
+            controller_torques=controller_torques,
+            commanded_efforts=commanded_efforts,
+            stamp=self.node.get_clock().now().to_msg(),
+            frame_id=self.cfg.debug_frame_id,
+            teaching_mode=self.teaching_mode,
+            controller_state=controller_state,
+            controller_phase=controller_phase,
+        )
+        self.debug_pub.publish(message)
 
     def _print_status(self, output, gravity, friction, effort, qdot):
         if output.state == "GROPED_GRASP":
@@ -373,6 +412,7 @@ class GraspRealRunner:
                     # Teaching Mode: remove all grasp/pose control and leave only
                     # gravity and friction compensation for manual hand motion.
                     effort = gravity + friction
+                    controller_torques = np.zeros(JOINT_COUNT, dtype=np.float64)
                 elif self.teaching_hold_active:
                     # After Teaching Mode is turned off, capture and hold the
                     # taught pose until a new grasp_type or pose_type arrives.
@@ -385,9 +425,11 @@ class GraspRealRunner:
                         limit=self.cfg.pose_pd_limit,
                     )
                     effort = gravity + friction + hold_pd
+                    controller_torques = hold_pd
                 else:
                     output = self.controller.step(self.hand_q, qdot, now)
                     effort = gravity + friction + output.tau
+                    controller_torques = output.tau
 
                 effort = np.clip(
                     effort,
@@ -395,6 +437,24 @@ class GraspRealRunner:
                     self.cfg.hand_limit,
                 )
                 publish_effort(self.pub, effort)
+
+                if self.teaching_mode:
+                    debug_state = "TEACHING_MODE"
+                    debug_phase = "active"
+                elif self.teaching_hold_active:
+                    debug_state = "TEACHING_HOLD"
+                    debug_phase = "holding"
+                else:
+                    debug_state = None
+                    debug_phase = None
+                self._maybe_publish_debug(
+                    now,
+                    output,
+                    controller_torques,
+                    effort,
+                    controller_state=debug_state,
+                    controller_phase=debug_phase,
+                )
 
                 if now - last_log >= self.cfg.log_dt:
                     last_log = now

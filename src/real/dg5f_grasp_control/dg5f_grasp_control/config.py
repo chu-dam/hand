@@ -10,6 +10,9 @@ class RuntimeConfig:
     alpha1_topic: str = "/dg5f_grasp_control/alpha1_cmd"
     rotation_matrix_topic: str = "/dg5f_grasp_control/rotation_matrix_cmd"
     teaching_mode_topic: str = "/dg5f_grasp_control/teaching_mode"
+    debug_topic: str = "/dg5f_grasp_control/debug"
+    debug_frame_id: str = "link_base"
+    debug_publish_hz: float = 20.0
 
     dt: float = 0.005
     hand_limit: float = 7.5

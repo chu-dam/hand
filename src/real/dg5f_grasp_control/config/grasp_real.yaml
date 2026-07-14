@@ -7,6 +7,9 @@ grasp_real:
     alpha1_topic: /dg5f_grasp_control/alpha1_cmd
     rotation_matrix_topic: /dg5f_grasp_control/rotation_matrix_cmd
     teaching_mode_topic: /dg5f_grasp_control/teaching_mode
+    debug_topic: /dg5f_grasp_control/debug
+    debug_frame_id: link_base
+    debug_publish_hz: 20.0
 
     dt: 0.005
     hand_limit: 7.5

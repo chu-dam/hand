@@ -24,8 +24,15 @@ hand/
 ├── README.md
 ├── rb5_850e_payload_1kg.xml
 ├── rb5_payload_gc_rotation_pub.py
+├── web_ui/
+│   ├── src/
+│   ├── package.json
+│   └── README.md
 └── src/
     ├── real/
+    │   ├── dg5f_grasp_interfaces/
+    │   │   └── msg/
+    │   │       └── GraspDebug.msg
     │   └── dg5f_grasp_control/
     │       ├── config/
     │       │   └── grasp_real.yaml
@@ -40,6 +47,7 @@ hand/
     │       │   ├── poses.py
     │       │   ├── hand_model.py
     │       │   ├── control_utils.py
+    │       │   ├── ros_debug.py
     │       │   └── config.py
     │       ├── launch/
     │       │   ├── grasp_real.launch.py
@@ -67,9 +75,12 @@ hand/
 | `src/real/dg5f_grasp_control/dg5f_grasp_control/grasp_controller.py` | real과 MuJoCo가 함께 사용하는 공통 grasp state machine 및 torque controller |
 | `src/real/dg5f_grasp_control/dg5f_grasp_control/grasp_policy.py` | centroid, force direction, alpha distribution, rotation force, collision repel 계산 |
 | `src/real/dg5f_grasp_control/dg5f_grasp_control/grasp_real_node.py` | 실제 hand의 ROS 2 JointState 수신, 보상 토크 계산, effort publish |
+| `src/real/dg5f_grasp_control/dg5f_grasp_control/ros_debug.py` | 공통 제어 결과를 고정된 5손가락 `GraspDebug` 메시지로 변환 |
+| `src/real/dg5f_grasp_interfaces/msg/GraspDebug.msg` | 웹/RViz/Foxglove 시각화를 위한 fingertip, centroid, force, torque 인터페이스 |
 | `src/mujoco/grasp_sim.py` | MuJoCo model과 공통 `GraspController`를 연결하는 simulation adapter |
 | `src/real/dg5f_grasp_control/config/grasp_real.yaml` | real과 MuJoCo가 공유하는 controller parameter |
 | `src/vendor` | DG5F-S driver, description, hardware interface, TCP communication package |
+| `web_ui` | rosbridge를 통해 JointState/GraspDebug를 시각화하고 고수준 명령을 보내는 React UI |
 | `rb5_payload_gc_rotation_pub.py` | RB5 hand rotation matrix topic publisher |
 
 ---
@@ -137,7 +148,8 @@ source install/setup.bash
 
 ```bash
 cd ~/hand
-colcon build --symlink-install --packages-select dg5f_grasp_control
+colcon build --symlink-install \
+  --packages-select dg5f_grasp_interfaces dg5f_grasp_control
 source install/setup.bash
 ```
 
@@ -217,8 +229,96 @@ MuJoCo를 source tree에서 직접 실행하면 `src/real/dg5f_grasp_control`을
 | Hand rotation matrix | `/dg5f_grasp_control/rotation_matrix_cmd` | `std_msgs/msg/Float64MultiArray` |
 | Real hand joint state | `/dg5f_s_left/joint_states` | `sensor_msgs/msg/JointState` |
 | Real hand effort command | `/dg5f_s_left/effort_controller/commands` | `std_msgs/msg/Float64MultiArray` |
+| Control visualization debug | `/dg5f_grasp_control/debug` | `dg5f_grasp_interfaces/msg/GraspDebug` |
 
 기존 `/dg5f_grasp_control/finger_count_cmd` 대신 `/grasp_type`을 사용합니다.
+
+---
+
+## Debug Visualization Topic
+
+real hand와 MuJoCo adapter는 제어기에서 실제로 계산한 Cartesian force와
+controller 상태를 다음 topic으로 발행합니다.
+
+```text
+/dg5f_grasp_control/debug
+```
+
+기본 발행 주기는 `20 Hz`이며 모든 위치와 Cartesian force는
+`header.frame_id=link_base` 좌표계입니다. 손가락 기반 배열은 항상
+`finger_ids=[1, 2, 3, 4, 5]` 순서와 길이 5를 사용합니다. 비활성 손가락의
+`alpha`와 force는 `0`입니다.
+
+주요 필드는 다음과 같습니다.
+
+- 5개 fingertip position
+- geometric centroid `Cg`와 virtual centroid `Cv`
+- 손가락별 `alpha`
+- grasp, rotation, center-hold, collision, total force
+- 보상 전 controller torque와 제한 적용 후 최종 commanded effort
+- 현재 grasp type, pose type, teaching mode, controller state/phase
+
+확인 명령:
+
+```bash
+ros2 interface show dg5f_grasp_interfaces/msg/GraspDebug
+ros2 topic echo /dg5f_grasp_control/debug --once
+ros2 topic hz /dg5f_grasp_control/debug
+```
+
+`debug_publish_hz`를 `0` 이하로 설정하면 debug 발행을 비활성화합니다.
+Pose, Teaching, Envelop mode는 joint-space 제어이므로 Cartesian force 배열이
+0인 것이 정상입니다.
+
+---
+
+## Web Control UI
+
+`web_ui`에는 실제 `dg5fs_left.urdf`/CAD mesh를 JointState 20축으로 구동하는
+실시간 3D hand, GraspDebug의 fingertip·centroid·계산 force overlay, 그리고
+Teaching, Pose, Grasp, Alpha1, rotation matrix 명령을 전송하는 React UI가
+있습니다. Node.js 24 LTS와 rosbridge 설치 후 다음 순서로 실행합니다.
+
+손 컨트롤러를 별도 터미널에서 먼저 실행한 뒤, rosbridge와 웹 UI를 한꺼번에
+실행하려면:
+
+```bash
+cd ~/hand
+./start_web.sh
+```
+
+기본 ROS domain은 `73`입니다. 스크립트는 중복 포트를 검사하고 준비 상태를
+기다린 뒤 실행합니다. `Ctrl+C`는 rosbridge와 웹 UI만 종료하며 별도로 실행한
+손 컨트롤러는 유지합니다. 종료 전 반드시 웹에서 `RELEASE` → `NORMAL_POSE`를
+확인하십시오. 아래는 구성 요소를 각각 실행하는 방법입니다.
+
+```bash
+sudo apt update
+sudo apt install ros-humble-rosbridge-suite
+```
+
+Terminal 1 — hand controller 실행 후 rosbridge:
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/hand/install/setup.bash
+ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+```
+
+Terminal 2 — UI:
+
+```bash
+cd ~/hand/web_ui
+npm ci
+npm run dev
+```
+
+같은 PC의 브라우저에서 `http://127.0.0.1:8080`을 엽니다. 다른 PC에서 접속할
+때만 `npm run dev:lan`을 사용하십시오. UI 명령은 rosbridge 연결뿐 아니라 최근
+1초 이내의 JointState와 GraspDebug가 모두 확인되어야 활성화됩니다.
+
+설치, 원격 접속, 안전 조건 및 troubleshooting은
+[`web_ui/README.md`](web_ui/README.md)를 참고하십시오.
 
 ---
 
@@ -588,7 +688,8 @@ src/real/dg5f_grasp_control/config/grasp_real.yaml
 
 | Parameter group | Main parameters |
 | --- | --- |
-| ROS topics | `joint_state_topic`, `effort_topic`, `command_topic`, `pose_topic` |
+| ROS topics | `joint_state_topic`, `effort_topic`, `command_topic`, `pose_topic`, `debug_topic` |
+| Debug visualization | `debug_frame_id`, `debug_publish_hz` |
 | Pose PD | `pose_kp`, `pose_kd`, `pose_pd_limit` |
 | Friction | `fric_scale`, `fric_tanh_k`, `fric_limit` |
 | Groped grasp | `alpha1`, `groped_tau_limit`, `thumb_centroid_bias` |

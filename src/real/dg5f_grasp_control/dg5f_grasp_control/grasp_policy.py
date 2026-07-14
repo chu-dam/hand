@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+from typing import Dict
+
 import numpy as np
 
 from dg5f_grasp_control.hand_model import (
@@ -15,6 +18,22 @@ BASE_JOINT_TAU_LIMIT = {
     12: 0.8,
     16: 0.5,
 }
+
+
+@dataclass
+class GraspPolicyResult:
+    """Cartesian force decomposition and the torque produced from it."""
+
+    tau: np.ndarray
+    alpha: Dict[int, float]
+    cg: np.ndarray
+    cv: np.ndarray
+    fingertip_positions: Dict[int, np.ndarray]
+    grasp_forces: Dict[int, np.ndarray]
+    rotation_forces: Dict[int, np.ndarray]
+    center_hold_forces: Dict[int, np.ndarray]
+    collision_forces: Dict[int, np.ndarray]
+    total_forces: Dict[int, np.ndarray]
 
 
 def _normalize(v, eps=1e-9):
@@ -354,6 +373,8 @@ class GraspPolicy:
         )
 
         tau = np.zeros(20, dtype=np.float64)
+        grasp_forces = {}
+        total_forces = {}
 
         for finger in self.use_fingers:
             idxs = FINGER_JOINT_INDEX[finger]
@@ -365,6 +386,8 @@ class GraspPolicy:
                 + center_hold_force[finger]
                 + repel[finger]
             )
+            grasp_forces[finger] = grasp_force.copy()
+            total_forces[finger] = total_force.copy()
             tau_finger = J.T @ total_force
             tau[idxs] = tau_finger * GRASP_TAU_SIGN[idxs]
 
@@ -373,4 +396,27 @@ class GraspPolicy:
         for joint_idx, limit in BASE_JOINT_TAU_LIMIT.items():
             tau[joint_idx] = np.clip(tau[joint_idx], -limit, limit)
 
-        return tau, alpha, cg, cv, tip_pos
+        return GraspPolicyResult(
+            tau=tau,
+            alpha={int(finger): float(value) for finger, value in alpha.items()},
+            cg=cg.copy(),
+            cv=cv.copy(),
+            fingertip_positions={
+                int(finger): np.asarray(position, dtype=np.float64).copy()
+                for finger, position in tip_pos.items()
+            },
+            grasp_forces=grasp_forces,
+            rotation_forces={
+                int(finger): np.asarray(force, dtype=np.float64).copy()
+                for finger, force in rotation_force.items()
+            },
+            center_hold_forces={
+                int(finger): np.asarray(force, dtype=np.float64).copy()
+                for finger, force in center_hold_force.items()
+            },
+            collision_forces={
+                int(finger): np.asarray(force, dtype=np.float64).copy()
+                for finger, force in repel.items()
+            },
+            total_forces=total_forces,
+        )

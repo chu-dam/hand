@@ -39,6 +39,13 @@ except ImportError:
     Float64MultiArray = None
     Int32 = None
 
+try:
+    from dg5f_grasp_interfaces.msg import GraspDebug
+    from dg5f_grasp_control.ros_debug import build_grasp_debug_message
+except ImportError:
+    GraspDebug = None
+    build_grasp_debug_message = None
+
 
 XML_PATH = Path(__file__).resolve().with_name("dg5fs_left_w_mount.xml")
 GRAVITY_WORLD = np.array([0.0, 0.0, -9.81], dtype=np.float64)
@@ -74,6 +81,7 @@ class GraspSimCommandNode(Node):
         self.pending_pose_type = None
         self.pending_alpha1 = None
         self.pending_rotation_matrix = None
+        self.debug_pub = None
 
         self.create_subscription(Int32, cfg.command_topic, self.grasp_type_cb, 10)
         self.create_subscription(Int32, cfg.pose_topic, self.pose_type_cb, 10)
@@ -84,6 +92,12 @@ class GraspSimCommandNode(Node):
             self.rotation_matrix_cb,
             10,
         )
+        if GraspDebug is not None:
+            self.debug_pub = self.create_publisher(
+                GraspDebug,
+                cfg.debug_topic,
+                10,
+            )
 
     def grasp_type_cb(self, msg):
         command = int(msg.data)
@@ -179,6 +193,7 @@ class GraspSim:
         self.ros_spin_thread = None
         self.start_time = time.time()
         self.last_print_time = 0.0
+        self.last_debug_publish_time = 0.0
         self.last_output = None
 
         self.set_initial_pose()
@@ -221,6 +236,11 @@ class GraspSim:
 
         rclpy.init(args=None)
         self.ros_node = GraspSimCommandNode(self.cfg)
+        if self.ros_node.debug_pub is None:
+            print(
+                "[WARN] dg5f_grasp_interfaces is not available. "
+                "ROS commands remain enabled, but debug publishing is disabled."
+            )
         self.ros_executor = SingleThreadedExecutor()
         self.ros_executor.add_node(self.ros_node)
         self.ros_spin_thread = threading.Thread(
@@ -272,6 +292,32 @@ class GraspSim:
         if rotation_matrix is not None:
             self.apply_rotation_matrix(rotation_matrix)
 
+    def maybe_publish_debug(self, now, output, commanded_efforts):
+        if (
+            self.ros_node is None
+            or self.ros_node.debug_pub is None
+            or build_grasp_debug_message is None
+        ):
+            return
+
+        publish_hz = float(self.cfg.debug_publish_hz)
+        if publish_hz <= 0.0:
+            return
+        if now - self.last_debug_publish_time < 1.0 / publish_hz:
+            return
+
+        self.last_debug_publish_time = now
+        message = build_grasp_debug_message(
+            controller=self.controller,
+            q=self.q,
+            output=output,
+            controller_torques=output.tau,
+            commanded_efforts=commanded_efforts,
+            stamp=self.ros_node.get_clock().now().to_msg(),
+            frame_id=self.cfg.debug_frame_id,
+        )
+        self.ros_node.debug_pub.publish(message)
+
     def print_start_info(self):
         print("=" * 80)
         print("[GRASP SIM START - SHARED REAL CONTROLLER]")
@@ -285,6 +331,10 @@ class GraspSim:
         print(f"POSE_TYPE_TOPIC     : {self.cfg.pose_topic}")
         print(f"ALPHA1_TOPIC        : {self.cfg.alpha1_topic}")
         print(f"ROTATION_TOPIC      : {self.cfg.rotation_matrix_topic}")
+        print(
+            f"DEBUG_TOPIC         : {self.cfg.debug_topic} "
+            f"({self.cfg.debug_publish_hz:.1f} Hz, frame={self.cfg.debug_frame_id})"
+        )
         print(f"GRAVITY_IN_HAND     : {np.round(self.gravity_in_hand, 4).tolist()}")
         print(
             "[COMMAND] -1=normal, 0=pre-grasp, 1=thumb+index, "
@@ -348,6 +398,7 @@ class GraspSim:
                         f"Expected {JOINT_COUNT} hand actuators, found {self.model.nu}"
                     )
                 self.data.ctrl[:] = torque
+                self.maybe_publish_debug(now, output, torque)
 
                 mujoco.mj_step(self.model, self.data)
                 viewer.sync()
