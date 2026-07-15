@@ -13,6 +13,7 @@ DG5F-S controller ── ROS 2 topics ── rosbridge :9090 ── browser UI :
 - `/dg5f_s_left/joint_states` 기반 20관절 상태 표시
 - controller와 동일한 `dg5fs_left.urdf`/CAD mesh 기반 실시간 3D hand
 - `/dg5f_grasp_control/debug` 기반 3D fingertip, centroid, 계산 force overlay
+- 손가락별 `total_forces`와 축별 합력의 X/Y/Z 실시간 이력 그래프 및 시간 초기화
 - 마우스 회전·확대/축소·이동 및 force vector 크기 조절
 - Teaching, Pose, Grasp Type, Alpha1, hand rotation matrix 명령
 - 연결이 끊기거나 telemetry가 1초 이상 오래되면 모든 제어 명령 자동 잠금
@@ -157,9 +158,26 @@ mesh를 사용합니다. `/dg5f_s_left/joint_states`의 `name[i]`와 `position[i
 기준으로 대응시켜 20개 관절에 radian 값을 그대로 적용하므로, 배열 순서가 바뀌어도
 동일하게 동작합니다. 별도의 `/tf` 구독은 필요하지 않습니다.
 
-`GraspDebug`의 fingertip, total force, `Cg`, `Cv`는 모두 `link_base` 기준이므로
-동일한 3D 좌표계에 겹쳐 표시됩니다. Force scale의 단위는 `mm/N`이고, 화면의
-화살표 길이만 바뀌며 controller 계산에는 영향을 주지 않습니다.
+`GraspDebug`의 fingertip, total force, `Cg`, `Cv` 원본은 모두 `link_base`
+기준입니다. UI는 `/dg5f_grasp_control/rotation_matrix_cmd`에서 row-major
+`R_hand_to_world`를 함께 구독하여 위치와 힘을 월드 좌표로 회전하고, 3D 화면의
+고정된 X/Y/Z 월드 축과 힘 이력 그래프에 표시합니다.
+
+```text
+p_world = R_hand_to_world × p_link_base
+F_world = R_hand_to_world × F_link_base
+```
+
+컨트롤러의 model 기본 중력 `[0, 0, -9.81]`과 동일하게, 행렬을 아직 수신하지
+않았으면 UI는 identity matrix를 기본값으로 사용하고 `WORLD · DEFAULT I`로
+표시합니다. `/dg5f_grasp_control/rotation_matrix_cmd`가 들어오면 즉시 해당 행렬로
+교체되고 상태가 `WORLD · TOPIC`으로 바뀝니다. 따라서 고정 설치로 두 좌표계가
+같으면 별도 입력 없이 바로 사용할 수 있습니다. RB5 사용 시에는
+`rb5_payload_gc_rotation_pub.py`를 계속 실행합니다. 이 topic에는 timestamp가
+없으므로 UI는 각 `GraspDebug` 수신 시점의 최신 행렬을 사용합니다.
+
+Force scale의 단위는 `mm/N`이고 화면의 화살표 길이만 바뀌며 controller 계산에는
+영향을 주지 않습니다.
 
 - 왼쪽 drag: 회전
 - wheel 또는 pinch: 확대/축소

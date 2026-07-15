@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { ControlPanel } from "./components/ControlPanel";
 import { DebugReadout } from "./components/DebugReadout";
+import { ForceHistoryPanel } from "./components/ForceHistoryPanel";
 import { HandScene3D } from "./components/HandScene3D";
 import { JointTable } from "./components/JointTable";
 import { StatusPill } from "./components/StatusPill";
@@ -40,6 +41,7 @@ export function App() {
   const connected = ros.status === "connected";
   const jointAge = ageSeconds(ros.lastJointAt, now);
   const debugAge = ageSeconds(ros.lastDebugAt, now);
+  const rotationAge = ageSeconds(ros.lastRotationAt, now);
   const handConnected = connected && jointAge !== null && jointAge < 1;
   const debugLive = connected && debugAge !== null && debugAge < 1;
   const controlsReady = connected && handConnected && debugLive;
@@ -126,7 +128,9 @@ export function App() {
           <span className={`connection-light ${connected ? "online" : ""}`} />
           <div>
             <strong>ROSBridge WebSocket</strong>
-            <small>JointState {fmtAge(jointAge)} · GraspDebug {fmtAge(debugAge)}</small>
+            <small>
+              JointState {fmtAge(jointAge)} · GraspDebug {fmtAge(debugAge)} · Orientation {rotationAge === null ? "DEFAULT I" : fmtAge(rotationAge)}
+            </small>
           </div>
         </div>
         <div className="connection-form">
@@ -169,7 +173,18 @@ export function App() {
 
       <section className="workspace">
         <div className="visual-column">
-          <HandScene3D jointState={ros.jointState} debug={ros.debug} />
+          <HandScene3D
+            jointState={ros.jointState}
+            debug={ros.debug}
+            handToWorldRotation={ros.handToWorldRotation}
+            orientationFromTopic={ros.lastRotationAt !== null}
+          />
+          <ForceHistoryPanel
+            debug={ros.debug}
+            live={debugLive}
+            handToWorldRotation={ros.handToWorldRotation}
+            orientationFromTopic={ros.lastRotationAt !== null}
+          />
           <DebugReadout debug={ros.debug} />
         </div>
         <ControlPanel

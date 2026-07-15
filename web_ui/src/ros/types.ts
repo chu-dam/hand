@@ -14,6 +14,20 @@ export interface Point3 {
   z: number;
 }
 
+export type RotationMatrix3 = readonly [
+  number, number, number,
+  number, number, number,
+  number, number, number,
+];
+
+export interface Float64MultiArrayMessage {
+  data: number[];
+  layout?: {
+    dim: unknown[];
+    data_offset: number;
+  };
+}
+
 export interface JointStateMessage {
   header: RosHeader;
   name: string[];
@@ -66,4 +80,3 @@ export function vectorMagnitude(vector: Point3 | undefined): number {
   if (!vector) return 0;
   return Math.hypot(vector.x, vector.y, vector.z);
 }
-

@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Ros, Topic } from "roslib";
 
+import { decodeRotationMatrix, IDENTITY_ROTATION_MATRIX } from "./frames";
 import type {
+  Float64MultiArrayMessage,
   GraspDebugMessage,
   JointStateMessage,
   RosConnectionStatus,
+  RotationMatrix3,
 } from "./types";
 
 const JOINT_STATE_TOPIC = "/dg5f_s_left/joint_states";
@@ -17,6 +20,7 @@ const ROTATION_TOPIC = "/dg5f_grasp_control/rotation_matrix_cmd";
 
 const RECONNECT_DELAY_MS = 2_000;
 const JOINT_RENDER_PERIOD_MS = 33;
+const ROTATION_RENDER_PERIOD_MS = 33;
 
 interface CommandMessage {
   data: unknown;
@@ -66,8 +70,12 @@ export function useRosBridge(url: string) {
   const [error, setError] = useState("");
   const [jointState, setJointState] = useState<JointStateMessage | null>(null);
   const [debug, setDebug] = useState<GraspDebugMessage | null>(null);
+  const [handToWorldRotation, setHandToWorldRotation] = useState<RotationMatrix3>(
+    IDENTITY_ROTATION_MATRIX,
+  );
   const [lastJointAt, setLastJointAt] = useState<number | null>(null);
   const [lastDebugAt, setLastDebugAt] = useState<number | null>(null);
+  const [lastRotationAt, setLastRotationAt] = useState<number | null>(null);
   const [attempt, setAttempt] = useState(0);
 
   const activeRos = useRef<Ros | null>(null);
@@ -83,8 +91,10 @@ export function useRosBridge(url: string) {
     const clearTelemetry = () => {
       setJointState(null);
       setDebug(null);
+      setHandToWorldRotation(IDENTITY_ROTATION_MATRIX);
       setLastJointAt(null);
       setLastDebugAt(null);
+      setLastRotationAt(null);
     };
     const scheduleReconnect = () => {
       if (disposed || reconnectTimer !== undefined) return;
@@ -108,6 +118,14 @@ export function useRosBridge(url: string) {
       ros,
       name: DEBUG_TOPIC,
       messageType: "dg5f_grasp_interfaces/msg/GraspDebug",
+      queue_length: 1,
+      reconnect_on_close: false,
+    });
+    const rotationTopic = new Topic<Float64MultiArrayMessage>({
+      ros,
+      name: ROTATION_TOPIC,
+      messageType: "std_msgs/msg/Float64MultiArray",
+      throttle_rate: ROTATION_RENDER_PERIOD_MS,
       queue_length: 1,
       reconnect_on_close: false,
     });
@@ -141,6 +159,13 @@ export function useRosBridge(url: string) {
       setDebug(message);
       setLastDebugAt(Date.now());
     };
+    const onRotationMatrix = (message: Float64MultiArrayMessage) => {
+      if (disposed) return;
+      const rotation = decodeRotationMatrix(message.data);
+      if (rotation === null) return;
+      setHandToWorldRotation(rotation);
+      setLastRotationAt(Date.now());
+    };
 
     const onConnection = () => {
       if (disposed) {
@@ -151,6 +176,7 @@ export function useRosBridge(url: string) {
       setError("");
       jointTopic.subscribe(onJointState);
       debugTopic.subscribe(onDebug);
+      rotationTopic.subscribe(onRotationMatrix);
     };
     const onError = (event: unknown) => {
       if (disposed) return;
@@ -185,6 +211,7 @@ export function useRosBridge(url: string) {
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
       jointTopic.unsubscribe(onJointState);
       debugTopic.unsubscribe(onDebug);
+      rotationTopic.unsubscribe(onRotationMatrix);
       if (activeRos.current === ros) activeRos.current = null;
       publishers.current = { ...EMPTY_PUBLISHERS };
       ros.close();
@@ -228,8 +255,10 @@ export function useRosBridge(url: string) {
     error,
     jointState,
     debug,
+    handToWorldRotation,
     lastJointAt,
     lastDebugAt,
+    lastRotationAt,
     reconnect,
     setGraspType,
     setPoseType,

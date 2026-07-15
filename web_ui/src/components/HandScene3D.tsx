@@ -9,6 +9,7 @@ import {
   type GraspDebugMessage,
   type JointStateMessage,
   type Point3,
+  type RotationMatrix3,
 } from "../ros/types";
 
 const EXPECTED_JOINTS = new Set(
@@ -35,6 +36,8 @@ interface ViewerState {
 interface HandScene3DProps {
   jointState: JointStateMessage | null;
   debug: GraspDebugMessage | null;
+  handToWorldRotation: RotationMatrix3;
+  orientationFromTopic: boolean;
 }
 
 interface DebugOverlay {
@@ -134,6 +137,75 @@ function createDebugOverlay(): DebugOverlay {
   };
 }
 
+function applyHandToWorldRotation(
+  frame: THREE.Group,
+  handToWorldRotation: RotationMatrix3 | null,
+) {
+  frame.quaternion.identity();
+  if (handToWorldRotation !== null) {
+    const rotation = new THREE.Matrix4().set(
+      handToWorldRotation[0], handToWorldRotation[1], handToWorldRotation[2], 0,
+      handToWorldRotation[3], handToWorldRotation[4], handToWorldRotation[5], 0,
+      handToWorldRotation[6], handToWorldRotation[7], handToWorldRotation[8], 0,
+      0, 0, 0, 1,
+    );
+    frame.setRotationFromMatrix(rotation);
+  }
+  frame.updateMatrixWorld(true);
+}
+
+function createAxisLabel(label: string, color: number): THREE.Sprite {
+  const canvas = document.createElement("canvas");
+  canvas.width = 96;
+  canvas.height = 96;
+  const context = canvas.getContext("2d");
+  if (context) {
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = "900 58px system-ui, sans-serif";
+    context.lineJoin = "round";
+    context.lineWidth = 12;
+    context.strokeStyle = "rgba(255, 255, 255, 0.96)";
+    context.strokeText(label, 48, 50);
+    context.fillStyle = `#${color.toString(16).padStart(6, "0")}`;
+    context.fillText(label, 48, 50);
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: false,
+  });
+  const sprite = new THREE.Sprite(material);
+  sprite.name = `world-axis-${label.toLowerCase()}-label`;
+  sprite.scale.setScalar(0.018);
+  sprite.renderOrder = 8;
+  return sprite;
+}
+
+function createWorldAxes(): THREE.Group {
+  const length = 0.085;
+  const labelOffset = length + 0.012;
+  const group = new THREE.Group();
+  group.name = "world-axes";
+
+  const axes = new THREE.AxesHelper(length);
+  axes.name = "world-axes-lines";
+  axes.renderOrder = 7;
+  group.add(axes);
+
+  const xLabel = createAxisLabel("X", 0xef4444);
+  xLabel.position.set(labelOffset, 0, 0);
+  const yLabel = createAxisLabel("Y", 0x22a06b);
+  yLabel.position.set(0, labelOffset, 0);
+  const zLabel = createAxisLabel("Z", 0x3b82f6);
+  zLabel.position.set(0, 0, labelOffset);
+  group.add(xLabel, yLabel, zLabel);
+  return group;
+}
+
 function addOverlayToFrame(frame: THREE.Group, overlay: DebugOverlay) {
   overlay.fingertips.forEach((marker) => frame.add(marker));
   overlay.forces.forEach((arrow) => frame.add(arrow));
@@ -144,12 +216,14 @@ function updateDebugOverlay(
   overlay: DebugOverlay,
   debug: GraspDebugMessage | null,
   forceScaleMillimeters: number,
+  worldOrientationAvailable: boolean,
 ) {
   const frameMatches = debug?.header.frame_id === "link_base";
+  const showWorldOverlay = frameMatches && worldOrientationAvailable;
 
   overlay.fingertips.forEach((marker, index) => {
     const point = debug?.fingertip_positions[index];
-    marker.visible = frameMatches && isFinitePoint(point);
+    marker.visible = showWorldOverlay && isFinitePoint(point);
     if (marker.visible && point) marker.position.set(point.x, point.y, point.z);
   });
 
@@ -157,7 +231,7 @@ function updateDebugOverlay(
     const point = debug?.fingertip_positions[index];
     const force = debug?.total_forces[index];
     const magnitude = vectorMagnitude(force);
-    const visible = frameMatches
+    const visible = showWorldOverlay
       && isFinitePoint(point)
       && isFinitePoint(force)
       && magnitude > 1e-6;
@@ -176,7 +250,7 @@ function updateDebugOverlay(
     );
   });
 
-  const showCentroids = frameMatches && debug?.controller_state === "GROPED_GRASP";
+  const showCentroids = showWorldOverlay && debug?.controller_state === "GROPED_GRASP";
   const geometricPoint = debug?.geometric_centroid;
   const virtualPoint = debug?.virtual_centroid;
 
@@ -197,6 +271,11 @@ function updateDebugOverlay(
 
 function disposeObject(root: THREE.Object3D) {
   root.traverse((object) => {
+    if (object instanceof THREE.Sprite) {
+      object.material.map?.dispose();
+      object.material.dispose();
+      return;
+    }
     if (!(object instanceof THREE.Mesh) && !(object instanceof THREE.Line)) return;
 
     object.geometry?.dispose();
@@ -208,15 +287,22 @@ function disposeObject(root: THREE.Object3D) {
 function errorText(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === "string" && error) return error;
-  return "3D 모델을 불러오지 못했습니다.";
+  return "Unable to load the 3D model.";
 }
 
-export function HandScene3D({ jointState, debug }: HandScene3DProps) {
+export function HandScene3D({
+  jointState,
+  debug,
+  handToWorldRotation,
+  orientationFromTopic,
+}: HandScene3DProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const robotRef = useRef<URDFRobot | null>(null);
+  const handFrameRef = useRef<THREE.Group | null>(null);
   const overlayRef = useRef<DebugOverlay | null>(null);
   const latestJointState = useRef(jointState);
   const latestDebug = useRef(debug);
+  const latestHandToWorldRotation = useRef(handToWorldRotation);
   const latestForceScale = useRef(16);
   const renderRef = useRef<() => void>(() => undefined);
   const resetViewRef = useRef<() => void>(() => undefined);
@@ -224,7 +310,7 @@ export function HandScene3D({ jointState, debug }: HandScene3DProps) {
   const [forceScale, setForceScale] = useState(16);
   const [viewer, setViewer] = useState<ViewerState>({
     status: "loading",
-    detail: "DG5F-S CAD 모델 준비 중",
+    detail: "Preparing the DG5F-S CAD model",
   });
 
   const mappedJointCount = useMemo(() => {
@@ -246,13 +332,29 @@ export function HandScene3D({ jointState, debug }: HandScene3DProps) {
   }, [jointState]);
 
   useEffect(() => {
+    latestHandToWorldRotation.current = handToWorldRotation;
+    const handFrame = handFrameRef.current;
+    if (handFrame) applyHandToWorldRotation(handFrame, handToWorldRotation);
+    const overlay = overlayRef.current;
+    if (overlay) {
+      updateDebugOverlay(
+        overlay,
+        latestDebug.current,
+        latestForceScale.current,
+        true,
+      );
+    }
+    renderRef.current();
+  }, [handToWorldRotation]);
+
+  useEffect(() => {
     latestDebug.current = debug;
     latestForceScale.current = forceScale;
     const overlay = overlayRef.current;
     if (!overlay) return;
-    updateDebugOverlay(overlay, debug, forceScale);
+    updateDebugOverlay(overlay, debug, forceScale, true);
     renderRef.current();
-  }, [debug, forceScale]);
+  }, [debug, forceScale, handToWorldRotation]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -262,7 +364,7 @@ export function HandScene3D({ jointState, debug }: HandScene3DProps) {
     let robotForCleanup: URDFRobot | null = null;
     const failedAssets: string[] = [];
 
-    setViewer({ status: "loading", detail: "DG5F-S CAD 모델 준비 중" });
+    setViewer({ status: "loading", detail: "Preparing the DG5F-S CAD model" });
 
     let renderer: THREE.WebGLRenderer;
     try {
@@ -278,7 +380,7 @@ export function HandScene3D({ jointState, debug }: HandScene3DProps) {
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.08;
     renderer.domElement.className = "hand-canvas";
-    renderer.domElement.setAttribute("aria-label", "실시간 DG5F-S 3D 손 모델");
+    renderer.domElement.setAttribute("aria-label", "Interactive DG5F-S 3D hand viewer");
     mount.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
@@ -310,19 +412,30 @@ export function HandScene3D({ jointState, debug }: HandScene3DProps) {
     });
     scene.add(grid);
 
-    const linkBaseFrame = new THREE.Group();
-    linkBaseFrame.name = "link-base-frame";
-    linkBaseFrame.rotation.x = -Math.PI / 2;
-    scene.add(linkBaseFrame);
+    // ROS uses Z-up while Three.js uses Y-up. The outer group performs only
+    // that display conversion. World axes stay fixed in this group; the hand
+    // and all link_base debug geometry rotate below it by R_hand_to_world.
+    const worldFrame = new THREE.Group();
+    worldFrame.name = "ros-world-frame";
+    worldFrame.rotation.x = -Math.PI / 2;
+    scene.add(worldFrame);
+    worldFrame.add(createWorldAxes());
 
-    const axes = new THREE.AxesHelper(0.055);
-    axes.name = "link-base-axes";
-    linkBaseFrame.add(axes);
+    const handFrame = new THREE.Group();
+    handFrame.name = "hand-in-world-frame";
+    handFrameRef.current = handFrame;
+    applyHandToWorldRotation(handFrame, latestHandToWorldRotation.current);
+    worldFrame.add(handFrame);
 
     const overlay = createDebugOverlay();
     overlayRef.current = overlay;
-    addOverlayToFrame(linkBaseFrame, overlay);
-    updateDebugOverlay(overlay, latestDebug.current, latestForceScale.current);
+    addOverlayToFrame(handFrame, overlay);
+    updateDebugOverlay(
+      overlay,
+      latestDebug.current,
+      latestForceScale.current,
+      true,
+    );
 
     const render = () => renderer.render(scene, camera);
     renderRef.current = render;
@@ -331,7 +444,7 @@ export function HandScene3D({ jointState, debug }: HandScene3DProps) {
       const robot = robotRef.current;
       if (!robot) return;
 
-      linkBaseFrame.updateMatrixWorld(true);
+      handFrame.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(robot);
       if (box.isEmpty()) return;
 
@@ -374,7 +487,7 @@ export function HandScene3D({ jointState, debug }: HandScene3DProps) {
     const onContextLost = (event: Event) => {
       event.preventDefault();
       if (!disposed) {
-        setViewer({ status: "error", detail: "WebGL 연결이 끊겼습니다. 페이지를 새로고침해 주세요." });
+        setViewer({ status: "error", detail: "WebGL context lost. Refresh the page to reconnect." });
       }
     };
     renderer.domElement.addEventListener("webglcontextlost", onContextLost);
@@ -387,7 +500,7 @@ export function HandScene3D({ jointState, debug }: HandScene3DProps) {
     const manager = new THREE.LoadingManager();
     manager.onProgress = (_url, loaded, total) => {
       if (!disposed) {
-        setViewer({ status: "loading", detail: `CAD 메시 불러오는 중 · ${loaded}/${total}` });
+        setViewer({ status: "loading", detail: `Loading CAD meshes · ${loaded}/${total}` });
       }
     };
     manager.onError = (url) => failedAssets.push(url);
@@ -399,10 +512,10 @@ export function HandScene3D({ jointState, debug }: HandScene3DProps) {
         if (failedAssets.length > 0) {
           setViewer({
             status: "error",
-            detail: `CAD 메시 ${failedAssets.length}개를 불러오지 못했습니다.`,
+            detail: `Failed to load ${failedAssets.length} CAD mesh${failedAssets.length === 1 ? "" : "es"}.`,
           });
         } else {
-          setViewer({ status: "ready", detail: "실제 JointState 동기화" });
+          setViewer({ status: "ready", detail: "Synchronized with live JointState" });
         }
       });
     };
@@ -424,8 +537,8 @@ export function HandScene3D({ jointState, debug }: HandScene3DProps) {
 
             // The vendor meshes use ROS Z-up coordinates. Telling ColladaLoader
             // that the source is already Y-up prevents its automatic root
-            // rotation (and repeated warning); linkBaseFrame converts the robot
-            // and debug overlay together afterward.
+            // rotation (and repeated warning); worldFrame converts the ROS
+            // world coordinates for display afterward.
             const rosFrameSource = source.replace(
               /<up_axis>\s*Z_UP\s*<\/up_axis>/i,
               "<up_axis>Y_UP</up_axis>",
@@ -439,7 +552,7 @@ export function HandScene3D({ jointState, debug }: HandScene3DProps) {
             if (!result) {
               done(
                 new THREE.Group(),
-                new Error(`빈 Collada 모델: ${path}`),
+                new Error(`Empty Collada model: ${path}`),
               );
               return;
             }
@@ -473,7 +586,7 @@ export function HandScene3D({ jointState, debug }: HandScene3DProps) {
           const joint = robot.joints[jointName];
           if (joint) joint.ignoreLimits = true;
         });
-        linkBaseFrame.add(robot);
+        handFrame.add(robot);
         applyJointState(robot, latestJointState.current);
         render();
       },
@@ -497,6 +610,7 @@ export function HandScene3D({ jointState, debug }: HandScene3DProps) {
       renderer.forceContextLoss();
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
       if (robotRef.current === robotForCleanup) robotRef.current = null;
+      if (handFrameRef.current === handFrame) handFrameRef.current = null;
       if (overlayRef.current === overlay) overlayRef.current = null;
       renderRef.current = () => undefined;
       resetViewRef.current = () => undefined;
@@ -511,10 +625,13 @@ export function HandScene3D({ jointState, debug }: HandScene3DProps) {
       <div className="panel-head hand-scene-head">
         <div>
           <p className="section-kicker">CONTROL GEOMETRY</p>
-          <h2>실시간 3D 손 모델</h2>
-          <p>실제 URDF · JointState 20축 · link_base 기준 계산 힘</p>
+          <h2>3D Viewer</h2>
+          <p>Live URDF · world axes · R_hand_to_world × link_base calculated forces</p>
         </div>
         <div className="scene-tools">
+          <span className={`world-frame-badge ${orientationFromTopic ? "ready" : "default"}`}>
+            {orientationFromTopic ? "WORLD · TOPIC" : "WORLD · DEFAULT I"}
+          </span>
           <span className={`model-live-badge ${live ? "live" : viewer.status}`}>
             {viewer.status === "error"
               ? "MODEL ERROR"
@@ -546,22 +663,24 @@ export function HandScene3D({ jointState, debug }: HandScene3DProps) {
         {viewer.status !== "ready" && (
           <div className={`model-state-overlay ${viewer.status}`} role="status">
             <span className="model-state-spinner" />
-            <strong>{viewer.status === "error" ? "3D 모델 오류" : "3D 모델 로딩 중"}</strong>
+            <strong>{viewer.status === "error" ? "3D Model Error" : "Loading 3D Model"}</strong>
             <small>{viewer.detail}</small>
           </div>
         )}
 
-        {viewer.status === "ready" && mappedJointCount < EXPECTED_JOINTS.size && (
-          <div className="scene-data-warning">
-            JointState 대기 중 · 현재 {mappedJointCount}/{EXPECTED_JOINTS.size}축
-          </div>
-        )}
+        <div className="scene-warning-stack">
+          {viewer.status === "ready" && mappedJointCount < EXPECTED_JOINTS.size && (
+            <div className="scene-data-warning">
+              Waiting for JointState · {mappedJointCount}/{EXPECTED_JOINTS.size} joints mapped
+            </div>
+          )}
 
-        {!frameMatches && (
-          <div className="scene-data-warning frame-warning">
-            힘 오버레이 숨김 · frame {debug?.header.frame_id || "—"}
-          </div>
-        )}
+          {!frameMatches && (
+            <div className="scene-data-warning frame-warning">
+              Force overlay hidden · source frame {debug?.header.frame_id || "—"}
+            </div>
+          )}
+        </div>
 
         <div className="scene-help">Drag: rotate · Wheel: zoom · Right drag: pan</div>
       </div>
@@ -572,7 +691,13 @@ export function HandScene3D({ jointState, debug }: HandScene3DProps) {
         <span><i className="legend-dot cg" />Geometric centroid</span>
         <span><i className="legend-diamond" />Virtual centroid</span>
         <span><i className="legend-line" />Calculated total force</span>
-        <span className="scene-frame-label">frame {debug?.header.frame_id || "link_base"}</span>
+        <span className="world-axis-legend">
+          <b className="axis-x">X</b><b className="axis-y">Y</b><b className="axis-z">Z</b>
+          World axes
+        </span>
+        <span className="scene-frame-label">
+          display world · source {debug?.header.frame_id || "link_base"} · orientation {orientationFromTopic ? "topic" : "default I"}
+        </span>
       </div>
     </section>
   );

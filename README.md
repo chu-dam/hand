@@ -297,9 +297,10 @@ Pose, Teaching, Envelop mode는 joint-space 제어이므로 Cartesian force 배�
 ## Web Control UI
 
 `web_ui`에는 실제 `dg5fs_left.urdf`/CAD mesh를 JointState 20축으로 구동하는
-실시간 3D hand, GraspDebug의 fingertip·centroid·계산 force overlay, 그리고
-Teaching, Pose, Grasp, Alpha1, rotation matrix 명령을 전송하는 React UI가
-있습니다. Node.js 24 LTS와 rosbridge 설치 후 다음 순서로 실행합니다.
+3D hand, 고정된 월드 X/Y/Z 축, GraspDebug의 fingertip·centroid·계산 force
+overlay, 월드 X/Y/Z 힘 이력 그래프와 시간 초기화, 그리고 Teaching, Pose, Grasp,
+Alpha1, rotation matrix 명령을 전송하는 React UI가 있습니다. Node.js 24 LTS와
+rosbridge 설치 후 다음 순서로 실행합니다.
 
 손 컨트롤러를 별도 터미널에서 먼저 실행한 뒤, rosbridge와 웹 UI를 한꺼번에
 실행하려면:
@@ -666,6 +667,20 @@ real controller에서는 다음 식으로 hand frame의 중력 벡터를 계산�
 ```text
 g_hand = R_hand_to_worldᵀ × [0, 0, -9.81]
 ```
+
+웹 UI도 같은 행렬을 구독하여 `link_base` 기준 debug 위치와 힘을 월드 좌표로
+변환합니다.
+
+```text
+F_world = R_hand_to_world × F_link_base
+```
+
+행렬을 수신하기 전에는 controller model의 기본 중력 방향과 같은 identity matrix를
+사용하며 UI에 `WORLD · DEFAULT I`로 표시합니다. topic을 수신하면 즉시 실제
+행렬로 교체되고 `WORLD · TOPIC`으로 바뀝니다. 따라서 고정 설치로 `link_base`와
+world의 축이 같다면 별도의 identity 전송이 필요하지 않습니다.
+`Float64MultiArray`에는 timestamp가 없으므로 UI는 debug packet을 받을 때 가장
+최근에 수신한 행렬을 사용합니다.
 
 rotation matrix topic을 보내지 않으면 model 내부 기본 중력 방향을 사용합니다.
 
