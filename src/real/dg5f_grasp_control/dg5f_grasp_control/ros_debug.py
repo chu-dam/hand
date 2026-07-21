@@ -73,6 +73,7 @@ def build_grasp_debug_message(
         cv = np.zeros(3, dtype=np.float64)
         grasp_forces = {}
         translation_forces = {}
+        translation_torques = np.zeros(JOINT_COUNT, dtype=np.float64)
         rotation_forces = {}
         center_hold_forces = {}
         collision_forces = {}
@@ -84,6 +85,7 @@ def build_grasp_debug_message(
         cv = output.cv
         grasp_forces = output.grasp_forces
         translation_forces = output.translation_forces
+        translation_torques = output.translation_torques
         rotation_forces = output.rotation_forces
         center_hold_forces = output.center_hold_forces
         collision_forces = output.collision_forces
@@ -123,6 +125,16 @@ def build_grasp_debug_message(
         output.relative_translation_command_force
         if output is not None
         else controller.relative_translation_command_force
+    )
+    relative_translation_torque_target = (
+        output.relative_translation_torque_target
+        if output is not None
+        else 0.0
+    )
+    relative_translation_force_scale = (
+        output.relative_translation_force_scale
+        if output is not None
+        else 0.0
     )
 
     if controller_state is None:
@@ -172,6 +184,12 @@ def build_grasp_debug_message(
     message.relative_translation_command_force = _vector(
         relative_translation_force
     )
+    message.relative_translation_torque_target = float(
+        relative_translation_torque_target
+    )
+    message.relative_translation_force_scale = float(
+        relative_translation_force_scale
+    )
     message.relative_translation_phase = str(relative_translation_phase)
     message.alpha = [float(alpha.get(finger, 0.0)) for finger in FINGER_IDS]
     message.grasp_forces = _vectors_for_all_fingers(grasp_forces)
@@ -180,6 +198,10 @@ def build_grasp_debug_message(
     message.center_hold_forces = _vectors_for_all_fingers(center_hold_forces)
     message.collision_forces = _vectors_for_all_fingers(collision_forces)
     message.total_forces = _vectors_for_all_fingers(total_forces)
+    message.translation_torques = np.asarray(
+        translation_torques,
+        dtype=np.float64,
+    ).tolist()
     message.controller_torques = controller_torques.tolist()
     message.commanded_efforts = commanded_efforts.tolist()
     message.grasp_type = current_grasp_type(controller)

@@ -49,11 +49,31 @@ class RuntimeConfig:
     # Cartesian command to zero instead of switching to the legacy policy.
     force_balance_error_ramp_sec: float = 0.5
     relative_translation_max_m: float = 0.010
-    # Conservative Cartesian impedance defaults for real-hand commissioning.
-    relative_translation_kp: float = 200.0
-    relative_translation_kd: float = 0.4
-    relative_translation_force_limit: float = 2.00
-    relative_translation_per_finger_force_limit: float = 1.20
+    # Hybrid grasp-force/fingertip-position impedance defaults for real-hand
+    # commissioning.
+    relative_translation_kp: float = 600.0
+    relative_translation_kd: float = 6.0
+    # Orthogonal centroid hold and relative fingertip-shape stabilization are
+    # deliberately softer than the commanded motion axis.
+    relative_translation_hold_kp: float = 120.0
+    relative_translation_hold_kd: float = 1.2
+    relative_translation_shape_kp: float = 120.0
+    relative_translation_shape_kd: float = 1.2
+    relative_translation_cross_axis_deadband_m: float = 0.0003
+    relative_translation_reference_ramp_sec: float = 0.7
+    # Hard Cartesian limits used after direction-dependent torque
+    # normalization. The normalization only boosts weak directions; it never
+    # reduces a direction that already produces sufficient joint torque.
+    relative_translation_force_limit: float = 8.50
+    relative_translation_per_finger_force_limit: float = 5.50
+    relative_translation_torque_normalization_enable: bool = True
+    relative_translation_torque_gain_nm_per_m: float = 24.0
+    # Physical hand-frame directional compensation. The palm-normal/link-base
+    # X direction needs more breakaway torque than Y/Z on the current hand.
+    relative_translation_torque_axis_multiplier_x: float = 1.30
+    relative_translation_torque_axis_multiplier_y: float = 1.00
+    relative_translation_torque_axis_multiplier_z: float = 1.00
+    relative_translation_torque_limit: float = 0.17
     relative_translation_velocity_alpha: float = 0.20
     relative_translation_position_tolerance_m: float = 0.0005
     relative_translation_velocity_tolerance_mps: float = 0.003

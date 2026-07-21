@@ -281,6 +281,7 @@ controller 상태를 다음 topic으로 발행합니다.
 - 상대 병진 시작/목표 centroid, 명령 변위, 남은 오차와 phase
 - 손가락별 `alpha`
 - grasp, rotation, center-hold, collision, total force
+- 상대 병진 명령으로 추가된 20관절 `translation_torques`
 - 보상 전 controller torque와 제한 적용 후 최종 commanded effort
 - 현재 grasp type, pose type, teaching mode, controller state/phase
 
@@ -306,8 +307,21 @@ overlay, 월드 X/Y/Z 힘 이력 그래프와 시간 초기화, 그리고 Teachi
 상대 회전 목표, Alpha1, rotation matrix 명령을 전송하는 React UI가 있습니다.
 파지 후 활성화되는 `04 Task-Space Position`에서 원하는 이동량(mm)과
 `±X/±Y/±Z` World 방향을 선택할 수 있습니다. 상대 목표를 ROS로 전달하면
-3축 Cartesian impedance와 합모멘트 0 contact-force 분배로 실제 이동 토크가
-적용됩니다. 최초 하드웨어 시험은 반드시 `1 mm`로 시작하십시오. Node.js 24 LTS와
+기존 파지력을 유지하면서 각 활성 손끝에 `현재 위치 + 동일 변위` Cartesian
+목표를 만들고 0.7초 동안 부드럽게 전진시킵니다. 이동축, 낮은 게인의 횡축 위치
+유지, 손끝 형상 복원 내부력으로 제어를 분리합니다. 형상 복원력의 합은 항상 0이며,
+횡축 위치 오차가 0.3 mm deadband 안에 있고 횡축 속도도 0이면 횡축 합력 역시
+0입니다. 이동 중 손끝 오차가 서로 달라지면 물체를 흔드는 합력 대신 파지 형상을
+되돌리는 복원 모멘트가 작용합니다. UI의 `Move torque max`에서 현재 상대 병진
+명령으로 추가된 관절
+토크의 최대 절댓값을 확인할 수 있습니다. `Adaptive torque`에는 현재 위치 오차로
+정한 목표 관절 토크와, 방향별 Jacobian 효율 차이를 보정하기 위해 적용된 힘 배율이
+표시됩니다. 보정은 약한 방향의 힘만 증가시키며 전체 합력 `8.5 N`, 손가락당
+`5.5 N`, 관절 토크 목표 `0.17 N·m`의 제한을 넘지 않습니다. 현재 물리적인
+`link_base X` 방향에는 `1.3배`, Y/Z 방향에는 `1.0배` 목표 토크가 적용됩니다.
+이 방향 보정은 World 명령을 손 좌표계로 변환한 뒤 계산되므로 로봇팔에 장착한
+뒤에도 손의 물리적인 약축을 따라갑니다. 최초 하드웨어 시험은 반드시
+`1 mm`로 시작하십시오. Node.js 24 LTS와
 rosbridge 설치 후
 다음 순서로 실행합니다.
 

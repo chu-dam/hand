@@ -53,6 +53,8 @@ export interface GraspDebugMessage {
   relative_translation_error?: Point3;
   relative_translation_centroid_velocity?: Point3;
   relative_translation_command_force?: Point3;
+  relative_translation_torque_target?: number;
+  relative_translation_force_scale?: number;
   relative_translation_phase?: string;
   alpha: number[];
   grasp_forces: Point3[];
@@ -61,6 +63,7 @@ export interface GraspDebugMessage {
   center_hold_forces: Point3[];
   collision_forces: Point3[];
   total_forces: Point3[];
+  translation_torques?: number[];
   controller_torques: number[];
   commanded_efforts: number[];
   grasp_type: number;

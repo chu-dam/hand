@@ -106,14 +106,60 @@ C_target = C_start + delta_link_base
 ```
 
 The maximum command norm defaults to `relative_translation_max_m=0.010`.
-The controller applies three-axis Cartesian impedance to the centroid error.
-The per-contact translation forces solve for the commanded resultant while
-constraining the moment about `Cg` to zero. Resultant/per-finger force limits,
-a 3-second timeout, position/velocity settle checks, and torque clipping remain
-active. Start real-hand commissioning with a 1 mm command.
+The regular grasp policy remains active and continues to supply the holding
+force. At command time the controller captures every active fingertip and sets
+
+```text
+P_target_i = P_start_i + delta_link_base
+```
+
+The Cartesian reference advances with a 0.7-second smoothstep instead of a
+position step. The task force is split into the commanded motion axis, a softer
+orthogonal centroid hold, and a relative fingertip-shape term. The shape term
+is projected so its sum is exactly zero:
+
+```text
+f_shape_i = g_i - w_i * sum(g)
+sum(f_shape_i) = 0
+```
+
+It can therefore create the restoring moment needed to preserve the captured
+contact geometry without shaking the object through an unintended resultant.
+The orthogonal hold uses lower gains and a 0.3 mm position deadband; inside the
+deadband its position-force resultant is zero, while velocity damping remains
+active. Every contact force is mapped through the fingertip Jacobian and added
+to the unchanged grasp-force torque.
+
+Resultant/per-finger force limits, a 3-second timeout, fingertip and centroid
+position/velocity settle checks, and torque clipping remain active. Start
+real-hand commissioning with a 1 mm command.
+
+Because the same Cartesian force can produce very different joint torque in
+each direction through `J.T`, weak directions are adaptively boosted toward
+
+```text
+translation torque target = min(
+    relative_translation_torque_gain_nm_per_m
+        * hand_frame_direction_multiplier
+        * |Kp * axis_error - Kd * axis_velocity| / Kp,
+    relative_translation_torque_limit
+)
+```
+
+The normalization only increases force components parallel to the commanded
+axis when their incremental joint torque is below this target. It therefore
+does not amplify the cross-axis resultant, and remains bounded by
+`relative_translation_force_limit` and
+`relative_translation_per_finger_force_limit`. The current physical hand uses
+an X multiplier of `1.30` and Y/Z multipliers of `1.00`. This is evaluated in
+`link_base` after a World-frame command is rotated into the hand, so it follows
+the physical weak direction when the hand is later mounted on a moving arm.
 
 `GraspDebug` reports the start, target, delta, remaining error, centroid
 velocity, commanded translation resultant, per-finger translation forces, and
+the exact 20-joint incremental `translation_torques` remaining after the
+combined grasp command is clipped. It also reports the adaptive
+`relative_translation_torque_target`, `relative_translation_force_scale`, and
 one of `translating`, `translation_reached`, `translation_timeout`, or
 `translation_error`.
 
@@ -138,6 +184,22 @@ collision_repel_gain: 100.0
 collision_repel_limit: 0.8
 rotation_force_balance_max_alpha_ratio: 10.0
 force_balance_error_ramp_sec: 0.5
+relative_translation_kp: 600.0
+relative_translation_kd: 6.0
+relative_translation_hold_kp: 120.0
+relative_translation_hold_kd: 1.2
+relative_translation_shape_kp: 120.0
+relative_translation_shape_kd: 1.2
+relative_translation_cross_axis_deadband_m: 0.0003
+relative_translation_reference_ramp_sec: 0.7
+relative_translation_force_limit: 8.5
+relative_translation_per_finger_force_limit: 5.5
+relative_translation_torque_normalization_enable: true
+relative_translation_torque_gain_nm_per_m: 24.0
+relative_translation_torque_axis_multiplier_x: 1.3
+relative_translation_torque_axis_multiplier_y: 1.0
+relative_translation_torque_axis_multiplier_z: 1.0
+relative_translation_torque_limit: 0.17
 ```
 
 ## File Roles

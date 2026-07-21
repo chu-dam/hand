@@ -21,7 +21,7 @@ const POSE_OPTIONS = [
 
 const MANIPULATION_GRASP_TYPES = new Set([1, 2, 3, 4, 5]);
 
-const TASK_SPACE_DIRECTIONS = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"] as const;
+const TASK_SPACE_DIRECTIONS = ["+X", "+Y", "+Z", "-X", "-Y", "-Z"] as const;
 type TaskSpaceDirection = typeof TASK_SPACE_DIRECTIONS[number];
 
 const TASK_SPACE_UNIT_VECTORS: Record<TaskSpaceDirection, Point3> = {
@@ -45,6 +45,13 @@ function vectorNewtons(vector: Point3 | undefined): string {
   return [vector.x, vector.y, vector.z]
     .map((value) => `${value >= 0 ? "+" : ""}${value.toFixed(3)}`)
     .join(", ");
+}
+
+function maxAbsTorque(values: number[] | undefined): string {
+  if (!Array.isArray(values) || values.length === 0) return "—";
+  const finite = values.filter(Number.isFinite).map(Math.abs);
+  if (finite.length === 0) return "—";
+  return `${Math.max(...finite).toFixed(4)} N·m`;
 }
 
 const IDENTITY_MATRIX = ["1", "0", "0", "0", "1", "0", "0", "0", "1"];
@@ -427,6 +434,18 @@ export function ControlPanel({
                 <span>Move force · world XYZ [N]</span>
                 <strong>{translationTargetReady
                   ? vectorNewtons(translationForceWorld)
+                  : "—"}</strong>
+              </div>
+              <div>
+                <span>Move torque max · 20 joints</span>
+                <strong>{translationTargetReady
+                  ? maxAbsTorque(debug?.translation_torques)
+                  : "—"}</strong>
+              </div>
+              <div>
+                <span>Adaptive torque · target / force scale</span>
+                <strong>{translationTargetReady
+                  ? `${Number(debug?.relative_translation_torque_target ?? 0).toFixed(4)} N·m · ×${Number(debug?.relative_translation_force_scale ?? 0).toFixed(2)}`
                   : "—"}</strong>
               </div>
             </div>

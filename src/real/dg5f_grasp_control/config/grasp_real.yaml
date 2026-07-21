@@ -43,12 +43,29 @@ grasp_real:
     rotation_force_balance_max_alpha_ratio: 10.0
     # Fade the last valid regular-grasp command to zero on a balance failure.
     force_balance_error_ramp_sec: 0.5
-    # Relative task-space centroid motion. Start hardware tests at 1 mm.
+    # Hybrid grasp-force/fingertip-position motion. Start hardware tests at 1 mm.
     relative_translation_max_m: 0.010
-    relative_translation_kp: 200.0
-    relative_translation_kd: 0.4
-    relative_translation_force_limit: 2.00
-    relative_translation_per_finger_force_limit: 1.20
+    relative_translation_kp: 600.0
+    relative_translation_kd: 6.0
+    # Softer orthogonal hold and zero-resultant fingertip-shape stabilization.
+    relative_translation_hold_kp: 120.0
+    relative_translation_hold_kd: 1.2
+    relative_translation_shape_kp: 120.0
+    relative_translation_shape_kd: 1.2
+    relative_translation_cross_axis_deadband_m: 0.0003
+    # Smooth the Cartesian reference instead of applying a position step.
+    relative_translation_reference_ramp_sec: 0.7
+    # Direction-dependent J^T efficiency compensation. Weak directions are
+    # boosted toward the torque target, subject to these hard force limits.
+    relative_translation_force_limit: 8.50
+    relative_translation_per_finger_force_limit: 5.50
+    relative_translation_torque_normalization_enable: true
+    relative_translation_torque_gain_nm_per_m: 24.0
+    # Direction compensation is evaluated after World -> link_base rotation.
+    relative_translation_torque_axis_multiplier_x: 1.30
+    relative_translation_torque_axis_multiplier_y: 1.00
+    relative_translation_torque_axis_multiplier_z: 1.00
+    relative_translation_torque_limit: 0.17
     relative_translation_velocity_alpha: 0.20
     relative_translation_position_tolerance_m: 0.0005
     relative_translation_velocity_tolerance_mps: 0.003

@@ -96,6 +96,7 @@ class GraspDebugTest(unittest.TestCase):
         self.assertEqual(len(message.center_hold_forces), 5)
         self.assertEqual(len(message.collision_forces), 5)
         self.assertEqual(len(message.total_forces), 5)
+        self.assertEqual(len(message.translation_torques), 20)
         self.assertEqual(len(message.controller_torques), 20)
         self.assertEqual(len(message.commanded_efforts), 20)
         self.assertEqual(message.grasp_type, 4)
@@ -180,6 +181,13 @@ class GraspDebugTest(unittest.TestCase):
             ),
             0.0,
         )
+        self.assertEqual(len(message.translation_torques), 20)
+        self.assertGreater(
+            np.linalg.norm(message.translation_torques),
+            0.0,
+        )
+        self.assertGreater(message.relative_translation_torque_target, 0.0)
+        self.assertGreaterEqual(message.relative_translation_force_scale, 1.0)
         np.testing.assert_allclose(
             [
                 message.relative_translation_error.x,

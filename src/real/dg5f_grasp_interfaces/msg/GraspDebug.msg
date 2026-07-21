@@ -15,6 +15,8 @@ geometry_msgs/Vector3 relative_translation_delta
 geometry_msgs/Vector3 relative_translation_error
 geometry_msgs/Vector3 relative_translation_centroid_velocity
 geometry_msgs/Vector3 relative_translation_command_force
+float64 relative_translation_torque_target
+float64 relative_translation_force_scale
 string relative_translation_phase
 
 float64[] alpha
@@ -28,6 +30,9 @@ geometry_msgs/Vector3[] total_forces
 
 # Controller torque excludes gravity/friction compensation. Commanded effort
 # is the final actuator command after compensation and command limiting.
+# Translation torque is the exact incremental controller torque introduced by
+# the relative task-space command after the combined grasp torque is clipped.
+float64[] translation_torques
 float64[] controller_torques
 float64[] commanded_efforts
 
