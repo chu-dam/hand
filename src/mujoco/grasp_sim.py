@@ -30,11 +30,13 @@ try:
     import rclpy
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.node import Node
+    from geometry_msgs.msg import Vector3Stamped
     from std_msgs.msg import Float64, Float64MultiArray, Int32
 except ImportError:
     rclpy = None
     SingleThreadedExecutor = None
     Node = object
+    Vector3Stamped = None
     Float64 = None
     Float64MultiArray = None
     Int32 = None
@@ -76,16 +78,31 @@ def enable_all_stl_mesh_collisions(model):
 class GraspSimCommandNode(Node):
     def __init__(self, cfg):
         super().__init__("grasp_sim")
+        self.cfg = cfg
         self._lock = threading.Lock()
         self.pending_grasp_type = None
         self.pending_pose_type = None
         self.pending_alpha1 = None
+        self.pending_relative_rotation_rad = None
+        self.pending_relative_translation = None
         self.pending_rotation_matrix = None
         self.debug_pub = None
 
         self.create_subscription(Int32, cfg.command_topic, self.grasp_type_cb, 10)
         self.create_subscription(Int32, cfg.pose_topic, self.pose_type_cb, 10)
         self.create_subscription(Float64, cfg.alpha1_topic, self.alpha1_cb, 10)
+        self.create_subscription(
+            Float64,
+            cfg.relative_rotation_deg_topic,
+            self.relative_rotation_deg_cb,
+            10,
+        )
+        self.create_subscription(
+            Vector3Stamped,
+            cfg.relative_translation_topic,
+            self.relative_translation_cb,
+            10,
+        )
         self.create_subscription(
             Float64MultiArray,
             cfg.rotation_matrix_topic,
@@ -133,6 +150,51 @@ class GraspSimCommandNode(Node):
             self.pending_alpha1 = alpha1
         self.get_logger().info(f"RX alpha1={alpha1:.4f}")
 
+    def relative_rotation_deg_cb(self, msg):
+        angle_deg = float(msg.data)
+        if not np.isfinite(angle_deg) or angle_deg == 0.0:
+            self.get_logger().warn(
+                f"Ignore invalid relative rotation angle: {angle_deg}. "
+                "Use a finite, non-zero value in degrees."
+            )
+            return
+        angle_rad = float(np.deg2rad(angle_deg))
+        with self._lock:
+            self.pending_relative_rotation_rad = angle_rad
+            self.pending_relative_translation = None
+        self.get_logger().info(
+            f"RX relative_rotation={angle_deg:.4f} deg ({angle_rad:.6f} rad)"
+        )
+
+    def relative_translation_cb(self, msg):
+        delta = np.array(
+            [msg.vector.x, msg.vector.y, msg.vector.z],
+            dtype=np.float64,
+        )
+        frame_id = str(msg.header.frame_id).strip()
+        if not np.all(np.isfinite(delta)) or frame_id not in (
+            "world",
+            self.cfg.debug_frame_id,
+        ):
+            self.get_logger().warn(
+                "Ignore invalid relative translation. Use a finite vector in "
+                f"'world' or '{self.cfg.debug_frame_id}'."
+            )
+            return
+        distance = float(np.linalg.norm(delta))
+        if distance <= 0.0 or distance > float(self.cfg.relative_translation_max_m) + 1e-12:
+            self.get_logger().warn(
+                "Ignore relative translation outside configured distance limit."
+            )
+            return
+        with self._lock:
+            self.pending_relative_rotation_rad = None
+            self.pending_relative_translation = (delta.copy(), frame_id)
+        self.get_logger().info(
+            f"RX relative_translation frame={frame_id}, "
+            f"delta_mm={np.round(1000.0 * delta, 3).tolist()}"
+        )
+
     def rotation_matrix_cb(self, msg):
         values = np.asarray(msg.data, dtype=np.float64)
         if values.size != 9 or not np.all(np.isfinite(values)):
@@ -149,6 +211,13 @@ class GraspSimCommandNode(Node):
                 self.pending_grasp_type,
                 self.pending_pose_type,
                 self.pending_alpha1,
+                self.pending_relative_rotation_rad,
+                None
+                if self.pending_relative_translation is None
+                else (
+                    self.pending_relative_translation[0].copy(),
+                    self.pending_relative_translation[1],
+                ),
                 None
                 if self.pending_rotation_matrix is None
                 else self.pending_rotation_matrix.copy(),
@@ -156,6 +225,8 @@ class GraspSimCommandNode(Node):
             self.pending_grasp_type = None
             self.pending_pose_type = None
             self.pending_alpha1 = None
+            self.pending_relative_rotation_rad = None
+            self.pending_relative_translation = None
             self.pending_rotation_matrix = None
         return values
 
@@ -280,7 +351,14 @@ class GraspSim:
         if self.ros_node is None:
             return
 
-        grasp_type, pose_type, alpha1, rotation_matrix = self.ros_node.take_pending()
+        (
+            grasp_type,
+            pose_type,
+            alpha1,
+            relative_rotation_rad,
+            relative_translation,
+            rotation_matrix,
+        ) = self.ros_node.take_pending()
         if pose_type is not None:
             self.controller.apply_pose_type(pose_type, now)
         if grasp_type is not None:
@@ -289,6 +367,40 @@ class GraspSim:
             self.controller.set_alpha1(alpha1)
             self.cfg = self.controller.cfg
             print(f"[COMMAND] alpha1={alpha1:.4f}")
+        if relative_rotation_rad is not None:
+            angle_deg = float(np.rad2deg(relative_rotation_rad))
+            try:
+                accepted = self.controller.prepare_relative_rotation(
+                    relative_rotation_rad,
+                    now,
+                )
+            except ValueError as exc:
+                print(f"[COMMAND] relative_rotation rejected: {exc}")
+                accepted = False
+            print(
+                f"[COMMAND] relative_rotation={angle_deg:.4f} deg "
+                f"({'accepted' if accepted else 'rejected'})"
+            )
+        if relative_translation is not None:
+            delta, frame_id = relative_translation
+            delta_hand = (
+                self.rotation_matrix.T @ delta
+                if frame_id == "world"
+                else delta
+            )
+            try:
+                accepted = self.controller.prepare_relative_translation(
+                    delta_hand,
+                    now,
+                )
+            except ValueError as exc:
+                print(f"[COMMAND] relative_translation rejected: {exc}")
+                accepted = False
+            print(
+                "[COMMAND] relative_translation_link_base_mm="
+                f"{np.round(1000.0 * delta_hand, 3).tolist()} "
+                f"({'accepted' if accepted else 'rejected'})"
+            )
         if rotation_matrix is not None:
             self.apply_rotation_matrix(rotation_matrix)
 
@@ -330,6 +442,8 @@ class GraspSim:
         print(f"GRASP_TYPE_TOPIC    : {self.cfg.command_topic}")
         print(f"POSE_TYPE_TOPIC     : {self.cfg.pose_topic}")
         print(f"ALPHA1_TOPIC        : {self.cfg.alpha1_topic}")
+        print(f"REL_ROTATION_TOPIC  : {self.cfg.relative_rotation_deg_topic}")
+        print(f"REL_TRANSLATE_TOPIC : {self.cfg.relative_translation_topic}")
         print(f"ROTATION_TOPIC      : {self.cfg.rotation_matrix_topic}")
         print(
             f"DEBUG_TOPIC         : {self.cfg.debug_topic} "
@@ -362,7 +476,16 @@ class GraspSim:
             f"tau_max={np.max(np.abs(torque)):.4f} | "
             f"Cg={np.round(output.cg, 4)} | "
             f"Cv={np.round(output.cv, 4)} | "
-            f"g7_phase={output.g7_phase}"
+            f"g7_phase={output.g7_phase} | "
+            f"relative_rotation_phase={output.relative_rotation_phase} | "
+            f"relative_target_deg="
+            f"{np.degrees(output.relative_rotation_target_rad):.3f} | "
+            f"translation_phase={output.relative_translation_phase} | "
+            f"translation_error_mm="
+            f"{np.round(1000.0 * output.relative_translation_error, 3)} | "
+            f"cv_bias={output.effective_thumb_centroid_bias:.4f} | "
+            f"force_balance="
+            f"{output.relative_rotation_force_balance_blend:.3f}"
         )
 
     @staticmethod

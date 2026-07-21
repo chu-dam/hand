@@ -1,6 +1,7 @@
 import { useState } from "react";
 
-import type { GraspDebugMessage } from "../ros/types";
+import { rotateVectorToWorld } from "../ros/frames";
+import type { GraspDebugMessage, Point3, RotationMatrix3 } from "../ros/types";
 
 const GRASP_OPTIONS = [
   { value: 1, label: "Thumb + Index", short: "2F-I" },
@@ -17,6 +18,34 @@ const POSE_OPTIONS = [
   { value: 2, label: "Pre-grasp" },
   { value: 3, label: "Compact" },
 ];
+
+const MANIPULATION_GRASP_TYPES = new Set([1, 2, 3, 4, 5]);
+
+const TASK_SPACE_DIRECTIONS = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"] as const;
+type TaskSpaceDirection = typeof TASK_SPACE_DIRECTIONS[number];
+
+const TASK_SPACE_UNIT_VECTORS: Record<TaskSpaceDirection, Point3> = {
+  "+X": { x: 1, y: 0, z: 0 },
+  "-X": { x: -1, y: 0, z: 0 },
+  "+Y": { x: 0, y: 1, z: 0 },
+  "-Y": { x: 0, y: -1, z: 0 },
+  "+Z": { x: 0, y: 0, z: 1 },
+  "-Z": { x: 0, y: 0, z: -1 },
+};
+
+function pointMillimeters(point: Point3 | undefined): string {
+  if (!point) return "—";
+  return [point.x, point.y, point.z]
+    .map((value) => `${value >= 0 ? "+" : ""}${(1_000 * value).toFixed(2)}`)
+    .join(", ");
+}
+
+function vectorNewtons(vector: Point3 | undefined): string {
+  if (!vector) return "—";
+  return [vector.x, vector.y, vector.z]
+    .map((value) => `${value >= 0 ? "+" : ""}${value.toFixed(3)}`)
+    .join(", ");
+}
 
 const IDENTITY_MATRIX = ["1", "0", "0", "0", "1", "0", "0", "0", "1"];
 const ROTATION_TOLERANCE = 0.03;
@@ -74,6 +103,9 @@ interface ControlPanelProps {
   onAlpha: (value: number) => boolean;
   onTeaching: (value: boolean) => boolean;
   onRotationMatrix: (value: number[]) => boolean;
+  onRelativeTranslation: (deltaWorldMeters: Point3) => boolean;
+  onRelativeRotation: (degrees: number) => boolean;
+  handToWorldRotation: RotationMatrix3;
   onNotice: (message: string, tone?: "ok" | "warning" | "error") => void;
 }
 
@@ -86,14 +118,69 @@ export function ControlPanel({
   onAlpha,
   onTeaching,
   onRotationMatrix,
+  onRelativeTranslation,
+  onRelativeRotation,
+  handToWorldRotation,
   onNotice,
 }: ControlPanelProps) {
   const [alphaInput, setAlphaInput] = useState("3");
+  const [translationMmInput, setTranslationMmInput] = useState("5");
+  const [taskSpaceDirection, setTaskSpaceDirection] = useState<TaskSpaceDirection>("+X");
+  const [rotationDegreesInput, setRotationDegreesInput] = useState("10");
   const [matrix, setMatrix] = useState([...IDENTITY_MATRIX]);
   const teaching = Boolean(debug?.teaching_mode);
   const commandDisabled = !ready || teaching;
+  const manipulationSectionActive = (
+    ready
+    && !teaching
+    && debug?.controller_state === "GROPED_GRASP"
+    && MANIPULATION_GRASP_TYPES.has(debug?.grasp_type ?? -1)
+    && debug?.controller_phase !== "force_balance_error"
+  );
+  const taskSpaceSectionActive = manipulationSectionActive;
+  const rotationSectionActive = manipulationSectionActive;
   const matrixAllowed = ready && !teaching && debug?.controller_state === "NORMAL_POSE";
   const parsedAlpha = Number(alphaInput);
+  const parsedTranslationMm = Number(translationMmInput);
+  const translationMmValid = (
+    translationMmInput.trim() !== ""
+    && Number.isFinite(parsedTranslationMm)
+    && parsedTranslationMm > 0
+    && parsedTranslationMm <= 10
+  );
+  const parsedRotationDegrees = Number(rotationDegreesInput);
+  const rotationDegreesValid = (
+    rotationDegreesInput.trim() !== ""
+    && Number.isFinite(parsedRotationDegrees)
+  );
+  const rotationCommandEnabled = rotationSectionActive
+    && rotationDegreesValid
+    && parsedRotationDegrees !== 0;
+  const rotationDirection = !rotationDegreesValid
+    ? "SET ANGLE"
+    : parsedRotationDegrees > 0
+      ? "CCW"
+      : parsedRotationDegrees < 0
+        ? "CW"
+        : "NO ROTATION";
+  const rotationDirectionClass = !rotationDegreesValid
+    ? "invalid"
+    : parsedRotationDegrees > 0
+      ? "ccw"
+      : parsedRotationDegrees < 0
+        ? "cw"
+        : "zero";
+  const signedRotationDegrees = rotationDegreesValid
+    ? `${parsedRotationDegrees > 0 ? "+" : ""}${parsedRotationDegrees}°`
+    : "—";
+  const translationPhase = debug?.relative_translation_phase ?? "idle";
+  const translationTargetReady = translationPhase !== "idle";
+  const translationErrorWorld = debug?.relative_translation_error
+    ? rotateVectorToWorld(debug.relative_translation_error, handToWorldRotation)
+    : undefined;
+  const translationForceWorld = debug?.relative_translation_command_force
+    ? rotateVectorToWorld(debug.relative_translation_command_force, handToWorldRotation)
+    : undefined;
   const sliderAlpha = Number.isFinite(parsedAlpha)
     ? Math.min(10, Math.max(0, parsedAlpha))
     : 0;
@@ -126,6 +213,43 @@ export function ControlPanel({
       return;
     }
     report(onRotationMatrix(result.values), "Hand orientation 행렬 요청을 전송했습니다.");
+  };
+
+  const prepareRelativeRotation = () => {
+    if (!rotationSectionActive) {
+      onNotice("Relative rotation은 활성 grasp type 1~5에서만 요청할 수 있습니다.", "error");
+      return;
+    }
+    if (!rotationDegreesValid || parsedRotationDegrees === 0) {
+      onNotice("Relative angle은 0이 아닌 유한한 degree 값이어야 합니다.", "error");
+      return;
+    }
+    report(
+      onRelativeRotation(parsedRotationDegrees),
+      `${signedRotationDegrees} relative rotation target 요청을 전송했습니다.`,
+    );
+  };
+
+  const prepareRelativeTranslation = () => {
+    if (!taskSpaceSectionActive) {
+      onNotice("Task-space target은 활성 grasp type 1~5에서만 요청할 수 있습니다.", "error");
+      return;
+    }
+    if (!translationMmValid) {
+      onNotice("Relative distance는 0보다 크고 10 mm 이하여야 합니다.", "error");
+      return;
+    }
+    const unit = TASK_SPACE_UNIT_VECTORS[taskSpaceDirection];
+    const distanceMeters = parsedTranslationMm / 1_000;
+    const deltaWorld = {
+      x: distanceMeters * unit.x,
+      y: distanceMeters * unit.y,
+      z: distanceMeters * unit.z,
+    };
+    report(
+      onRelativeTranslation(deltaWorld),
+      `World ${taskSpaceDirection} ${parsedTranslationMm} mm target 요청을 전송했습니다.`,
+    );
   };
 
   return (
@@ -216,8 +340,168 @@ export function ControlPanel({
 
         <div className="control-section">
           <div className="control-section-title">
-            <div><span>04</span><strong>Alpha1</strong></div>
-            <small>calculated force coefficient</small>
+            <div><span>04</span><strong>Task-Space Position</strong></div>
+            <small>2F-I · 2F-M · 3F · 4F · 5F only</small>
+          </div>
+          <div
+            className={`rotation-slot task-space-slot ${taskSpaceSectionActive ? "active" : "locked"}`}
+            aria-disabled={!taskSpaceSectionActive}
+          >
+            <div className="task-space-input-row">
+              <label className="task-space-distance-field" htmlFor="task-space-distance-mm">
+                <span>Relative distance from current pose</span>
+                <div className="task-space-distance-input">
+                  <input
+                    id="task-space-distance-mm"
+                    className="number-input"
+                    type="number"
+                    min="0.1"
+                    max="10"
+                    step="0.1"
+                    inputMode="decimal"
+                    value={translationMmInput}
+                    disabled={!taskSpaceSectionActive}
+                    aria-invalid={translationMmInput.trim() !== "" && !translationMmValid}
+                    onChange={(event) => setTranslationMmInput(event.target.value)}
+                  />
+                  <span>mm</span>
+                </div>
+              </label>
+              <div className="task-space-frame-preview">
+                <span>Task frame</span>
+                <strong>{taskSpaceSectionActive ? "WORLD XYZ" : "LOCKED"}</strong>
+              </div>
+            </div>
+
+            <div className="task-space-direction-grid" aria-label="Task-space direction">
+              {TASK_SPACE_DIRECTIONS.map((direction) => (
+                <button
+                  key={direction}
+                  type="button"
+                  className={taskSpaceDirection === direction ? "selected" : ""}
+                  disabled={!taskSpaceSectionActive || !translationMmValid}
+                  aria-pressed={taskSpaceDirection === direction}
+                  onClick={() => setTaskSpaceDirection(direction)}
+                >
+                  {direction}
+                </button>
+              ))}
+            </div>
+
+            <div className="task-space-selection-row">
+              <div>
+                <span>Selected relative move</span>
+                <strong>
+                  {taskSpaceSectionActive && translationMmValid
+                    ? `${taskSpaceDirection} · ${parsedTranslationMm} mm`
+                    : "—"}
+                </strong>
+              </div>
+              <button
+                type="button"
+                className="apply-button task-space-prepare-button"
+                disabled={!taskSpaceSectionActive || !translationMmValid}
+                onClick={prepareRelativeTranslation}
+              >
+                Move
+              </button>
+            </div>
+            <div className={`task-space-debug-grid ${translationTargetReady ? "ready" : "idle"}`}>
+              <div>
+                <span>Current Cg · link_base [mm]</span>
+                <strong>{pointMillimeters(debug?.geometric_centroid)}</strong>
+              </div>
+              <div>
+                <span>Target Cg · link_base [mm]</span>
+                <strong>{translationTargetReady
+                  ? pointMillimeters(debug?.relative_translation_target_centroid)
+                  : "—"}</strong>
+              </div>
+              <div>
+                <span>Remaining · world XYZ [mm]</span>
+                <strong>{translationTargetReady
+                  ? pointMillimeters(translationErrorWorld)
+                  : "—"}</strong>
+              </div>
+              <div>
+                <span>Move force · world XYZ [N]</span>
+                <strong>{translationTargetReady
+                  ? vectorNewtons(translationForceWorld)
+                  : "—"}</strong>
+              </div>
+            </div>
+            <p className="task-space-stage-note">
+              {translationPhase === "translating"
+                ? "TRANSLATING · 3-axis Cartesian impedance is active with force and timeout limits."
+                : translationPhase === "translation_reached"
+                  ? "REACHED · target hold is active; Remaining is kept near zero on all axes."
+                  : translationPhase === "translation_timeout"
+                    ? "TIMEOUT · translation force was removed. Check the grasp and retry with 1 mm."
+                    : translationPhase === "translation_error"
+                      ? "ERROR · translation force was removed because the Cartesian solve failed."
+                      : "Actual motion enabled. Start with 1 mm and keep RELEASE ready."}
+            </p>
+          </div>
+        </div>
+
+        <div className="control-section">
+          <div className="control-section-title">
+            <div><span>05</span><strong>Rotation</strong></div>
+            <small>2F-I · 2F-M · 3F · 4F · 5F only</small>
+          </div>
+          <div
+            className={`rotation-slot ${rotationSectionActive ? "active" : "locked"}`}
+            aria-disabled={!rotationSectionActive}
+          >
+            <div className="rotation-input-row">
+              <label className="rotation-angle-field" htmlFor="rotation-angle-degrees">
+                <span>Relative angle from current pose</span>
+                <div className="rotation-degree-input">
+                  <input
+                    id="rotation-angle-degrees"
+                    className="number-input"
+                    type="number"
+                    step="1"
+                    inputMode="decimal"
+                    value={rotationDegreesInput}
+                    disabled={!rotationSectionActive}
+                    aria-invalid={rotationDegreesInput.trim() !== "" && !rotationDegreesValid}
+                    onChange={(event) => setRotationDegreesInput(event.target.value)}
+                  />
+                  <span>deg</span>
+                </div>
+              </label>
+              <div className="rotation-direction-preview">
+                <span>Direction</span>
+                <strong className={rotationSectionActive ? rotationDirectionClass : "locked"}>
+                  {rotationSectionActive
+                    ? `${rotationDirection} · ${signedRotationDegrees}`
+                    : "LOCKED"}
+                </strong>
+              </div>
+            </div>
+            <p className="rotation-sign-hint">
+              Positive (+): CCW · Negative (−): CW · 0°: no rotation
+            </p>
+            <div className="rotation-action-row">
+              <p className="rotation-stage-note">
+                Target only: Cv = Cg and force balance are already active. Tangential rotation is not applied yet.
+              </p>
+              <button
+                className="apply-button rotation-prepare-button"
+                disabled={!rotationCommandEnabled}
+                onClick={prepareRelativeRotation}
+              >
+                Set target
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="control-section">
+          <div className="control-section-title">
+            <div><span>06</span><strong>Alpha1</strong></div>
+            <small>thumb force magnitude reference · grasp types 1–5</small>
           </div>
           <div className="slider-row">
             <input
@@ -245,7 +529,7 @@ export function ControlPanel({
 
         <details className="matrix-section">
           <summary>
-            <span><b>05</b> Hand orientation</span>
+            <span><b>07</b> Hand orientation</span>
             <small>gravity compensation · NORMAL_POSE only</small>
           </summary>
           <div className="matrix-grid">

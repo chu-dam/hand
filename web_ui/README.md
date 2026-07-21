@@ -15,7 +15,8 @@ DG5F-S controller ── ROS 2 topics ── rosbridge :9090 ── browser UI :
 - `/dg5f_grasp_control/debug` 기반 3D fingertip, centroid, 계산 force overlay
 - 손가락별 `total_forces`와 축별 합력의 X/Y/Z 실시간 이력 그래프 및 시간 초기화
 - 마우스 회전·확대/축소·이동 및 force vector 크기 조절
-- Teaching, Pose, Grasp Type, Alpha1, hand rotation matrix 명령
+- 파지 후 활성화되는 Task-Space Position UI (`±X/±Y/±Z`, 상대 이동량 mm)
+- Teaching, Pose, Grasp Type, 상대 회전 목표, Alpha1, hand rotation matrix 명령
 - 연결이 끊기거나 telemetry가 1초 이상 오래되면 모든 제어 명령 자동 잠금
 - 회전행렬의 직교성 및 `det(R)≈1` 검증
 
@@ -54,6 +55,28 @@ cd ~/hand
 export ROS_DOMAIN_ID=73
 ./start_web.sh
 ```
+
+`9090 포트가 이미 사용 중`이라고 나오면 이전 rosbridge 프로세스를 확인합니다.
+
+```bash
+ss -ltnp 'sport = :9090'
+pgrep -af 'rosbridge|ros2 launch rosbridge'
+```
+
+`ros2 launch rosbridge_server ...`의 PGID가 `34769`로 확인된 사례라면 다음처럼
+종료한 뒤 다시 실행합니다.
+
+```bash
+kill -INT -- -34769
+sleep 1
+
+cd ~/hand
+./start_web.sh
+```
+
+PID/PGID는 실행할 때마다 달라지므로 `34769`는 실제 조회된 PGID로 바꿔야 합니다.
+기존 `start_web.sh` 터미널이 남아 있다면 그 터미널에서 `Ctrl+C`를 누르는 것이
+가장 안전합니다.
 
 스크립트는 기본적으로 `ROS_DOMAIN_ID=73`과 로컬 주소
 `127.0.0.1:9090/8080`을 사용합니다. 별도로 실행한 손 컨트롤러도 반드시 같은
@@ -136,10 +159,44 @@ ros2 topic hz /dg5f_grasp_control/debug
 ## 4. 제어 안전 조건
 
 - `JointState`와 `GraspDebug`가 모두 최근 1초 안에 수신될 때만 명령 가능
+- Task-Space Position은 일반 `grasp_type=1~5`에서만 활성화되며,
+  `Vector3Stamped(world)` 상대 목표를 ROS로 보내 3축 Cartesian impedance로 이동함
+- 실제 하드웨어 이동 명령이므로 최초 시험은 `1 mm`로 하고 RELEASE를 준비할 것
 - Teaching Mode 중 Pose, Grasp, Alpha1, Release 명령 잠금
+- Relative Rotation은 `controller_state=GROPED_GRASP`인 `grasp_type=1~5`에서만
+  활성화되며 Teaching Hold 또는 `force_balance_error` 중에는 거부하고 0이 아닌
+  signed degree만 허용
 - hand orientation matrix는 `NORMAL_POSE`에서만 적용 가능
 - matrix 입력은 빈칸·비유한값·비직교행렬·반사행렬을 거부
 - 명령 전송 메시지는 적용 완료를 의미하지 않으므로 화면의 Debug echo를 확인
+
+Task-Space Position의 `Set Target`은 선택한 World 축과 0~10 mm 이동량을 다음
+topic에 SI 단위(m)로 발행합니다.
+
+```text
+/dg5f_grasp_control/relative_translation_cmd (geometry_msgs/msg/Vector3Stamped)
+```
+
+제어기는 최신 hand-to-world 회전행렬로 명령을 `link_base`로 변환하고, 명령 순간의
+`Cg`에 상대 변위를 더해 목표를 저장합니다. X/Y/Z 오차를 동시에 PD 제어하며,
+손가락별 이동 힘은 합력은 목표 이동력을 만들고 합모멘트는 0이 되도록 분배합니다.
+기본 timeout은 3초이고, timeout/error 시 이동 추가 힘을 제거합니다.
+
+Rotation 입력은 현재 물체 자세 기준의 상대 각도입니다. 양수는 CCW, 음수는 CW이며
+다음 topic으로 degree 단위 그대로 발행합니다.
+
+```text
+/dg5f_grasp_control/relative_rotation_deg_cmd (std_msgs/msg/Float64)
+```
+
+일반 `grasp_type=1~5`는 항상 `Cv=Cg`를 사용합니다. 엄지(Finger ID 1)의
+`alpha1`을 기준으로 centroid 거리 비례 nominal force를 만들며, 4F·5F는 비음수
+3차원 평형 해로 보정합니다. 최소 한 번의 정상 control cycle 후 유효한 상대 회전
+명령은 별도 centroid 전환 없이 즉시 `controller_phase=rotation_ready`가 됩니다.
+평형 계산이 안전 제한을 넘으면 `force_balance_error`가 표시되고 grasp type을 다시
+선택할 때까지 회전 명령을 거부합니다. 현재는 상대 목표만 저장하고 접선 회전력은 아직
+적용하지 않으므로, 이 상태는 물체가 입력 각도만큼 회전했다는 뜻이 아닙니다. 센서 기반
+물체 pose hold도 아니므로 실제 무이동은 별도로 확인해야 합니다.
 
 ## 5. 빌드
 

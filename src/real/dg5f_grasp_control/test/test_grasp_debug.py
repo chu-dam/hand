@@ -91,6 +91,7 @@ class GraspDebugTest(unittest.TestCase):
         self.assertEqual(len(message.fingertip_positions), 5)
         self.assertEqual(len(message.alpha), 5)
         self.assertEqual(len(message.grasp_forces), 5)
+        self.assertEqual(len(message.translation_forces), 5)
         self.assertEqual(len(message.rotation_forces), 5)
         self.assertEqual(len(message.center_hold_forces), 5)
         self.assertEqual(len(message.collision_forces), 5)
@@ -109,4 +110,83 @@ class GraspDebugTest(unittest.TestCase):
                 message.total_forces[4].z,
             ],
             np.zeros(3),
+        )
+
+    def test_debug_message_reports_immediate_relative_rotation_ready_phase(self):
+        q = np.linspace(-0.05, 0.1, 20)
+        controller = GraspController(RuntimeConfig(), log=None)
+        controller.apply_grasp_type(3, now=1.0)
+        controller.step(q, np.zeros(20), now=1.0)
+        self.assertTrue(
+            controller.prepare_relative_rotation(np.pi / 6.0, now=1.0)
+        )
+        output = controller.step(q, np.zeros(20), now=1.1)
+
+        message = build_grasp_debug_message(
+            controller=controller,
+            q=q,
+            output=output,
+            controller_torques=output.tau,
+            commanded_efforts=output.tau,
+            stamp=Time(),
+            frame_id="link_base",
+        )
+
+        self.assertEqual(message.controller_phase, "rotation_ready")
+
+    def test_debug_message_reports_active_translation_target_and_force(self):
+        q = np.linspace(-0.05, 0.1, 20)
+        controller = GraspController(RuntimeConfig(), log=None)
+        controller.apply_grasp_type(3, now=1.0)
+        initial = controller.step(q, np.zeros(20), now=1.0)
+        delta = np.array([0.0, -0.004, 0.0], dtype=np.float64)
+        self.assertTrue(
+            controller.prepare_relative_translation(delta, now=1.1)
+        )
+        output = controller.step(q, np.zeros(20), now=1.2)
+
+        message = build_grasp_debug_message(
+            controller=controller,
+            q=q,
+            output=output,
+            controller_torques=output.tau,
+            commanded_efforts=output.tau,
+            stamp=Time(),
+            frame_id="link_base",
+        )
+
+        self.assertEqual(
+            message.relative_translation_phase,
+            "translating",
+        )
+        self.assertEqual(message.controller_phase, "translating")
+        np.testing.assert_allclose(
+            [
+                message.relative_translation_target_centroid.x,
+                message.relative_translation_target_centroid.y,
+                message.relative_translation_target_centroid.z,
+            ],
+            initial.cg + delta,
+            rtol=0.0,
+            atol=1e-12,
+        )
+        self.assertGreater(
+            np.linalg.norm(
+                [
+                    message.relative_translation_command_force.x,
+                    message.relative_translation_command_force.y,
+                    message.relative_translation_command_force.z,
+                ]
+            ),
+            0.0,
+        )
+        np.testing.assert_allclose(
+            [
+                message.relative_translation_error.x,
+                message.relative_translation_error.y,
+                message.relative_translation_error.z,
+            ],
+            delta,
+            rtol=0.0,
+            atol=1e-12,
         )

@@ -6,8 +6,10 @@ import type {
   Float64MultiArrayMessage,
   GraspDebugMessage,
   JointStateMessage,
+  Point3,
   RosConnectionStatus,
   RotationMatrix3,
+  Vector3StampedMessage,
 } from "./types";
 
 const JOINT_STATE_TOPIC = "/dg5f_s_left/joint_states";
@@ -17,6 +19,8 @@ const POSE_TOPIC = "/pose_type";
 const ALPHA_TOPIC = "/dg5f_grasp_control/alpha1_cmd";
 const TEACHING_TOPIC = "/dg5f_grasp_control/teaching_mode";
 const ROTATION_TOPIC = "/dg5f_grasp_control/rotation_matrix_cmd";
+const RELATIVE_ROTATION_DEG_TOPIC = "/dg5f_grasp_control/relative_rotation_deg_cmd";
+const RELATIVE_TRANSLATION_TOPIC = "/dg5f_grasp_control/relative_translation_cmd";
 
 const RECONNECT_DELAY_MS = 2_000;
 const JOINT_RENDER_PERIOD_MS = 33;
@@ -31,6 +35,7 @@ interface CommandMessage {
 }
 
 type CommandTopic = Topic<CommandMessage>;
+type RelativeTranslationTopic = Topic<Vector3StampedMessage>;
 
 interface Publishers {
   grasp: CommandTopic | null;
@@ -38,6 +43,8 @@ interface Publishers {
   alpha: CommandTopic | null;
   teaching: CommandTopic | null;
   rotation: CommandTopic | null;
+  relativeRotationDegrees: CommandTopic | null;
+  relativeTranslation: RelativeTranslationTopic | null;
 }
 
 const EMPTY_PUBLISHERS: Publishers = {
@@ -46,6 +53,8 @@ const EMPTY_PUBLISHERS: Publishers = {
   alpha: null,
   teaching: null,
   rotation: null,
+  relativeRotationDegrees: null,
+  relativeTranslation: null,
 };
 
 function connectionErrorMessage(event: unknown): string {
@@ -144,6 +153,14 @@ export function useRosBridge(url: string) {
       alpha: commandTopic(ALPHA_TOPIC, "std_msgs/msg/Float64"),
       teaching: commandTopic(TEACHING_TOPIC, "std_msgs/msg/Bool"),
       rotation: commandTopic(ROTATION_TOPIC, "std_msgs/msg/Float64MultiArray"),
+      relativeRotationDegrees: commandTopic(RELATIVE_ROTATION_DEG_TOPIC, "std_msgs/msg/Float64"),
+      relativeTranslation: new Topic<Vector3StampedMessage>({
+        ros,
+        name: RELATIVE_TRANSLATION_TOPIC,
+        messageType: "geometry_msgs/msg/Vector3Stamped",
+        queue_size: 1,
+        reconnect_on_close: false,
+      }),
     };
 
     const onJointState = (message: JointStateMessage) => {
@@ -248,6 +265,27 @@ export function useRosBridge(url: string) {
     }),
     [publish],
   );
+  const setRelativeRotationDegrees = useCallback(
+    (value: number) => publish(publishers.current.relativeRotationDegrees, { data: value }),
+    [publish],
+  );
+  const setRelativeTranslationWorld = useCallback((deltaMeters: Point3): boolean => {
+    const ros = activeRos.current;
+    const topic = publishers.current.relativeTranslation;
+    if (topic === null || ros === null || !ros.isConnected) return false;
+    topic.publish({
+      header: {
+        stamp: { sec: 0, nanosec: 0 },
+        frame_id: "world",
+      },
+      vector: {
+        x: Number(deltaMeters.x),
+        y: Number(deltaMeters.y),
+        z: Number(deltaMeters.z),
+      },
+    });
+    return true;
+  }, []);
   const reconnect = useCallback(() => setAttempt((value) => value + 1), []);
 
   return {
@@ -265,5 +303,7 @@ export function useRosBridge(url: string) {
     setAlpha1,
     setTeachingMode,
     setRotationMatrix,
+    setRelativeRotationDegrees,
+    setRelativeTranslationWorld,
   };
 }

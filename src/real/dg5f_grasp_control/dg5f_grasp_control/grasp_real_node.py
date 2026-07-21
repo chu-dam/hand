@@ -7,6 +7,7 @@ import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from dg5f_grasp_interfaces.msg import GraspDebug
+from geometry_msgs.msg import Vector3Stamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Float64, Float64MultiArray, Int32
 
@@ -61,6 +62,9 @@ class GraspRealRunner:
         self.pending_finger_count = None
         self.pending_pose_type = None
         self.pending_teaching_mode = None
+        self.pending_relative_rotation_rad = None
+        self.pending_relative_translation_hand = None
+        self.rotation_hand_to_world = np.eye(3, dtype=np.float64)
         self.gravity_in_hand_frame = None
         self.last_debug_publish_time = 0.0
 
@@ -77,6 +81,18 @@ class GraspRealRunner:
         node.create_subscription(Int32, cfg.command_topic, self.command_cb, 10)
         node.create_subscription(Int32, cfg.pose_topic, self.pose_type_cb, 10)
         node.create_subscription(Float64, cfg.alpha1_topic, self.alpha1_cb, 10)
+        node.create_subscription(
+            Float64,
+            cfg.relative_rotation_deg_topic,
+            self.relative_rotation_deg_cb,
+            10,
+        )
+        node.create_subscription(
+            Vector3Stamped,
+            cfg.relative_translation_topic,
+            self.relative_translation_cb,
+            10,
+        )
         node.create_subscription(
             Bool,
             cfg.teaching_mode_topic,
@@ -129,7 +145,10 @@ class GraspRealRunner:
         self.pending_pose_type = pose_type
 
     def teaching_mode_cb(self, msg):
-        self.pending_teaching_mode = bool(msg.data)
+        enable = bool(msg.data)
+        self.pending_teaching_mode = enable
+        if enable:
+            self.pending_relative_rotation_rad = None
 
     def alpha1_cb(self, msg):
         alpha1 = float(msg.data)
@@ -141,6 +160,86 @@ class GraspRealRunner:
         self.cfg = self.controller.cfg
         self.node.get_logger().info(f"Updated alpha1: {alpha1:.4f}")
 
+    def relative_rotation_deg_cb(self, msg):
+        if self.teaching_mode or self.pending_teaching_mode is True:
+            self.node.get_logger().warn(
+                "Ignore relative rotation command while Teaching Mode is active."
+            )
+            return
+        if self.teaching_hold_active:
+            self.node.get_logger().warn(
+                "Ignore relative rotation command during Teaching Hold. "
+                "Send a grasp_type command first."
+            )
+            return
+
+        angle_deg = float(msg.data)
+        if not np.isfinite(angle_deg) or angle_deg == 0.0:
+            self.node.get_logger().warn(
+                f"Ignore invalid relative rotation angle: {angle_deg}. "
+                "Use a finite, non-zero value in degrees."
+            )
+            return
+
+        self.pending_relative_rotation_rad = float(np.deg2rad(angle_deg))
+        self.pending_relative_translation_hand = None
+        self.node.get_logger().info(
+            f"Queued relative rotation: {angle_deg:.4f} deg "
+            f"({self.pending_relative_rotation_rad:.6f} rad)"
+        )
+
+    def relative_translation_cb(self, msg):
+        if self.teaching_mode or self.pending_teaching_mode is True:
+            self.node.get_logger().warn(
+                "Ignore relative translation command while Teaching Mode is active."
+            )
+            return
+        if self.teaching_hold_active:
+            self.node.get_logger().warn(
+                "Ignore relative translation command during Teaching Hold. "
+                "Send a grasp_type command first."
+            )
+            return
+
+        delta = np.array(
+            [msg.vector.x, msg.vector.y, msg.vector.z],
+            dtype=np.float64,
+        )
+        if not np.all(np.isfinite(delta)):
+            self.node.get_logger().warn(
+                "Ignore relative translation command: vector must be finite."
+            )
+            return
+
+        frame_id = str(msg.header.frame_id).strip()
+        if frame_id == "world":
+            delta_hand = self.rotation_hand_to_world.T @ delta
+        elif frame_id == self.cfg.debug_frame_id:
+            delta_hand = delta
+        else:
+            self.node.get_logger().warn(
+                "Ignore relative translation command: frame_id must be 'world' "
+                f"or '{self.cfg.debug_frame_id}', got '{frame_id or '<empty>'}'."
+            )
+            return
+
+        distance = float(np.linalg.norm(delta_hand))
+        maximum = float(self.cfg.relative_translation_max_m)
+        if distance <= 0.0 or distance > maximum + 1e-12:
+            self.node.get_logger().warn(
+                "Ignore relative translation command: norm must be within "
+                f"(0, {maximum:.6f}] m, got {distance:.6f} m."
+            )
+            return
+
+        self.pending_relative_rotation_rad = None
+        self.pending_relative_translation_hand = delta_hand.copy()
+        self.node.get_logger().info(
+            "Queued relative Cartesian translation: "
+            f"frame={frame_id}, input_mm={np.round(1000.0 * delta, 3).tolist()}, "
+            f"link_base_mm={np.round(1000.0 * delta_hand, 3).tolist()}"
+        )
+
     def rotation_matrix_cb(self, msg):
         values = np.asarray(msg.data, dtype=np.float64)
         if values.size != 9 or not np.all(np.isfinite(values)):
@@ -151,6 +250,7 @@ class GraspRealRunner:
             return
 
         rotation_hand_to_world = values.reshape(3, 3)
+        self.rotation_hand_to_world = rotation_hand_to_world.copy()
         gravity_world = np.array([0.0, 0.0, -9.81], dtype=np.float64)
         self.gravity_in_hand_frame = rotation_hand_to_world.T @ gravity_world
         self.node.get_logger().info(
@@ -173,6 +273,10 @@ class GraspRealRunner:
             self.teaching_hold_active = False
             self.pending_finger_count = None
             self.pending_pose_type = None
+            self.pending_relative_rotation_rad = None
+            self.pending_relative_translation_hand = None
+            self.controller.cancel_relative_rotation()
+            self.controller.cancel_relative_translation()
             print(
                 "[TEACHING_MODE] ON -> gravity + friction compensation only; "
                 "grasp/pose commands are ignored"
@@ -192,11 +296,11 @@ class GraspRealRunner:
         self._print_joint_values(self.teaching_hold_pose, label="TEACHING_HOLD_TARGET")
 
     def _apply_pending_commands(self, now):
-        command_received = (
+        pose_or_grasp_command_received = (
             self.pending_pose_type is not None
             or self.pending_finger_count is not None
         )
-        if command_received and self.teaching_hold_active:
+        if pose_or_grasp_command_received and self.teaching_hold_active:
             self.teaching_hold_active = False
             print("[TEACHING_HOLD] released by new grasp/pose command")
 
@@ -210,12 +314,59 @@ class GraspRealRunner:
             self.pending_finger_count = None
             self.controller.apply_grasp_type(command, now)
 
+        if self.pending_relative_rotation_rad is not None:
+            angle_rad = self.pending_relative_rotation_rad
+            self.pending_relative_rotation_rad = None
+            angle_deg = float(np.rad2deg(angle_rad))
+            try:
+                accepted = self.controller.prepare_relative_rotation(angle_rad, now)
+            except ValueError as exc:
+                self.node.get_logger().warn(
+                    f"Relative rotation target rejected: {exc}"
+                )
+                return
+            if accepted:
+                self.node.get_logger().info(
+                    f"Stored relative rotation target: {angle_deg:.4f} deg"
+                )
+            else:
+                self.node.get_logger().warn(
+                    f"Relative rotation target rejected: {angle_deg:.4f} deg"
+                )
+
+        if self.pending_relative_translation_hand is not None:
+            delta_hand = self.pending_relative_translation_hand.copy()
+            self.pending_relative_translation_hand = None
+            try:
+                accepted = self.controller.prepare_relative_translation(
+                    delta_hand,
+                    now,
+                )
+            except ValueError as exc:
+                self.node.get_logger().warn(
+                    f"Relative translation target rejected: {exc}"
+                )
+                return
+            delta_mm = np.round(1000.0 * delta_hand, 3).tolist()
+            if accepted:
+                self.node.get_logger().info(
+                    "Started relative Cartesian translation: "
+                    f"link_base_mm={delta_mm}"
+                )
+            else:
+                self.node.get_logger().warn(
+                    "Relative translation target rejected: "
+                    f"link_base_mm={delta_mm}"
+                )
+
     def _print_start_info(self):
         print("[START] hand groped grasp with shared controller + gravity + friction compensation")
         print("[XML]", self.model_xml_path)
         print(f"[GRASP_TYPE_TOPIC] {self.cfg.command_topic}")
         print(f"[POSE_TYPE_TOPIC] {self.cfg.pose_topic}")
         print(f"[ALPHA1_TOPIC] {self.cfg.alpha1_topic}")
+        print(f"[RELATIVE_ROTATION_DEG_TOPIC] {self.cfg.relative_rotation_deg_topic}")
+        print(f"[RELATIVE_TRANSLATION_TOPIC] {self.cfg.relative_translation_topic}")
         print(f"[ROTATION_MATRIX_TOPIC] {self.cfg.rotation_matrix_topic}")
         print(f"[TEACHING_MODE_TOPIC] {self.cfg.teaching_mode_topic}")
         print(
@@ -230,7 +381,7 @@ class GraspRealRunner:
         )
         print("[POSE_TYPE] 1=normal, 2=default pre-grasp, 3=compact pre-grasp")
         print(f"[ALPHA1] {self.cfg.alpha1}")
-        print(f"[THUMB_CENTROID_BIAS] {self.cfg.thumb_centroid_bias}")
+        print(f"[TYPE7_THUMB_CENTROID_BIAS] {self.cfg.thumb_centroid_bias}")
         print(
             "[POSE_KP/KD/LIMIT] "
             f"{self.cfg.pose_kp}, {self.cfg.pose_kd}, {self.cfg.pose_pd_limit}"
@@ -335,6 +486,17 @@ class GraspRealRunner:
                 f"grasp_tau_max={np.max(np.abs(output.grasp_tau)):.4f} | "
                 f"rot={'on' if output.rotation_enabled else 'off'} | "
                 f"g7_phase={output.g7_phase} | "
+                f"relative_rotation_phase={output.relative_rotation_phase} | "
+                f"relative_target_deg="
+                f"{np.degrees(output.relative_rotation_target_rad):.3f} | "
+                f"translation_phase={output.relative_translation_phase} | "
+                f"translation_error_mm="
+                f"{np.round(1000.0 * output.relative_translation_error, 3)} | "
+                f"translation_force="
+                f"{np.round(output.relative_translation_command_force, 3)} | "
+                f"cv_bias={output.effective_thumb_centroid_bias:.4f} | "
+                f"force_balance="
+                f"{output.relative_rotation_force_balance_blend:.3f} | "
                 f"use_fingers={output.use_fingers} | "
                 f"effort_max={np.max(np.abs(effort)):.3f}"
             )

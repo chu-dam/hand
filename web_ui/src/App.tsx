@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import brandLogoUrl from "../../logo.png";
 import { ControlPanel } from "./components/ControlPanel";
 import { DebugReadout } from "./components/DebugReadout";
 import { ForceHistoryPanel } from "./components/ForceHistoryPanel";
@@ -88,11 +89,7 @@ export function App() {
     <main className="app-shell">
       <header className="topbar">
         <div className="brand-block">
-          <div className="brand-mark" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </div>
+          <img className="brand-logo" src={brandLogoUrl} alt="DG5F-S" />
           <div>
             <p className="eyebrow">DG5F-S · ROBOT HAND</p>
             <h1>Grasp Control Console</h1>
@@ -196,6 +193,9 @@ export function App() {
           onAlpha={ros.setAlpha1}
           onTeaching={ros.setTeachingMode}
           onRotationMatrix={ros.setRotationMatrix}
+          onRelativeTranslation={ros.setRelativeTranslationWorld}
+          onRelativeRotation={ros.setRelativeRotationDegrees}
+          handToWorldRotation={ros.handToWorldRotation}
           onNotice={pushNotice}
         />
       </section>

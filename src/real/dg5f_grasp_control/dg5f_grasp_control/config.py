@@ -8,6 +8,8 @@ class RuntimeConfig:
     command_topic: str = "/grasp_type"
     pose_topic: str = "/pose_type"
     alpha1_topic: str = "/dg5f_grasp_control/alpha1_cmd"
+    relative_translation_topic: str = "/dg5f_grasp_control/relative_translation_cmd"
+    relative_rotation_deg_topic: str = "/dg5f_grasp_control/relative_rotation_deg_cmd"
     rotation_matrix_topic: str = "/dg5f_grasp_control/rotation_matrix_cmd"
     teaching_mode_topic: str = "/dg5f_grasp_control/teaching_mode"
     debug_topic: str = "/dg5f_grasp_control/debug"
@@ -37,6 +39,26 @@ class RuntimeConfig:
     groped_tau_limit: float = 3.0
     groped_force_direction_sign: float = 1.0
     thumb_centroid_bias: float = 0.5
+    # Retained for launch/config compatibility. Regular grasp types 1..5 now
+    # use Cv == Cg immediately, so no timed centroid transition is performed.
+    rotation_centroid_transition_sec: float = 1.0
+    # Maximum alpha/alpha1 ratio accepted by the regular-grasp proportional
+    # distribution and its four/five-contact force-balance correction.
+    rotation_force_balance_max_alpha_ratio: float = 10.0
+    # On a regular-grasp balance failure, fade the most recent valid bounded
+    # Cartesian command to zero instead of switching to the legacy policy.
+    force_balance_error_ramp_sec: float = 0.5
+    relative_translation_max_m: float = 0.010
+    # Conservative Cartesian impedance defaults for real-hand commissioning.
+    relative_translation_kp: float = 200.0
+    relative_translation_kd: float = 0.4
+    relative_translation_force_limit: float = 2.00
+    relative_translation_per_finger_force_limit: float = 1.20
+    relative_translation_velocity_alpha: float = 0.20
+    relative_translation_position_tolerance_m: float = 0.0005
+    relative_translation_velocity_tolerance_mps: float = 0.003
+    relative_translation_settle_sec: float = 0.20
+    relative_translation_timeout_sec: float = 3.0
     jacobian_eps: float = 1e-6
 
     min_tip_distance: float = 0.018

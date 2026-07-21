@@ -5,7 +5,12 @@ import numpy as np
 
 from dg5f_grasp_control.config import RuntimeConfig
 from dg5f_grasp_control.control_utils import pose_pd
-from dg5f_grasp_control.grasp_policy import GraspPolicy
+from dg5f_grasp_control.grasp_policy import (
+    ALPHA_DISTRIBUTION_LEGACY,
+    ALPHA_DISTRIBUTION_THUMB_DISTANCE_PROPORTIONAL,
+    GraspPolicy,
+    GraspPolicyResult,
+)
 from dg5f_grasp_control.hand_model import (
     FINGER_JOINT_INDEX,
     GRASP_TAU_SIGN,
@@ -67,6 +72,7 @@ class ControlOutput:
     cv: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=np.float64))
     fingertip_positions: Dict[int, np.ndarray] = field(default_factory=dict)
     grasp_forces: Dict[int, np.ndarray] = field(default_factory=dict)
+    translation_forces: Dict[int, np.ndarray] = field(default_factory=dict)
     rotation_forces: Dict[int, np.ndarray] = field(default_factory=dict)
     center_hold_forces: Dict[int, np.ndarray] = field(default_factory=dict)
     collision_forces: Dict[int, np.ndarray] = field(default_factory=dict)
@@ -79,6 +85,29 @@ class ControlOutput:
     )
     envelop_info: Dict[str, object] = field(default_factory=dict)
     g7_phase: str = "idle"
+    relative_rotation_phase: str = "idle"
+    relative_rotation_target_rad: float = 0.0
+    relative_translation_phase: str = "idle"
+    relative_translation_start_centroid: np.ndarray = field(
+        default_factory=lambda: np.zeros(3, dtype=np.float64)
+    )
+    relative_translation_target_centroid: np.ndarray = field(
+        default_factory=lambda: np.zeros(3, dtype=np.float64)
+    )
+    relative_translation_delta: np.ndarray = field(
+        default_factory=lambda: np.zeros(3, dtype=np.float64)
+    )
+    relative_translation_error: np.ndarray = field(
+        default_factory=lambda: np.zeros(3, dtype=np.float64)
+    )
+    relative_translation_centroid_velocity: np.ndarray = field(
+        default_factory=lambda: np.zeros(3, dtype=np.float64)
+    )
+    relative_translation_command_force: np.ndarray = field(
+        default_factory=lambda: np.zeros(3, dtype=np.float64)
+    )
+    effective_thumb_centroid_bias: float = 0.0
+    relative_rotation_force_balance_blend: float = 0.0
 
 
 class GraspController:
@@ -149,6 +178,28 @@ class GraspController:
         self.grasp_type7_cycle_count = 0
         self.grasp_type7_rotation_cg_ref = None
 
+        # Generic grasp types (1..5) already use Cv == Cg and balanced grasp
+        # forces. A relative command therefore only stores the signed target
+        # for the future rotation stage; it applies no rotation force yet.
+        self.relative_rotation_phase = "idle"
+        self.relative_rotation_target_rad = 0.0
+        self.relative_rotation_started_at = None
+        # Relative task-space centroid motion state.
+        self.relative_translation_phase = "idle"
+        self.relative_translation_start_centroid = np.zeros(3, dtype=np.float64)
+        self.relative_translation_target_centroid = np.zeros(3, dtype=np.float64)
+        self.relative_translation_delta = np.zeros(3, dtype=np.float64)
+        self.relative_translation_error = np.zeros(3, dtype=np.float64)
+        self.relative_translation_centroid_velocity = np.zeros(3, dtype=np.float64)
+        self.relative_translation_command_force = np.zeros(3, dtype=np.float64)
+        self.relative_translation_started_at = None
+        self.relative_translation_last_time = None
+        self.relative_translation_last_centroid = None
+        self.relative_translation_reached_since = None
+        self.regular_force_balance_error_started_at = None
+        self.last_regular_policy_result = None
+        self.last_regular_policy_fingers = ()
+
         initial_count = cfg.use_finger_count if 1 <= cfg.use_finger_count <= 5 else 1
         self.use_fingers = selected_fingers(initial_count)
         self.policy = GraspPolicy(self.use_fingers, cfg)
@@ -166,6 +217,446 @@ class GraspController:
             raise ValueError("alpha1 must be finite and >= 0")
         self.update_config(replace(self.cfg, alpha1=float(alpha1)))
 
+    def cancel_relative_rotation(self) -> None:
+        """Cancel the stored generic relative-rotation request."""
+
+        self.relative_rotation_phase = "idle"
+        self.relative_rotation_target_rad = 0.0
+        self.relative_rotation_started_at = None
+
+    def cancel_relative_translation(self) -> None:
+        """Cancel the stored Cartesian translation target and impedance."""
+
+        self.relative_translation_phase = "idle"
+        self.relative_translation_start_centroid[:] = 0.0
+        self.relative_translation_target_centroid[:] = 0.0
+        self.relative_translation_delta[:] = 0.0
+        self.relative_translation_error[:] = 0.0
+        self.relative_translation_centroid_velocity[:] = 0.0
+        self.relative_translation_command_force[:] = 0.0
+        self.relative_translation_started_at = None
+        self.relative_translation_last_time = None
+        self.relative_translation_last_centroid = None
+        self.relative_translation_reached_since = None
+
+    def _reset_regular_force_balance_state(self) -> None:
+        self.regular_force_balance_error_started_at = None
+        self.last_regular_policy_result = None
+        self.last_regular_policy_fingers = ()
+
+    @staticmethod
+    def _scaled_policy_result(
+        result: GraspPolicyResult,
+        scale: float,
+    ) -> GraspPolicyResult:
+        scale = float(np.clip(scale, 0.0, 1.0))
+
+        def scaled_vectors(values):
+            return {
+                int(finger): scale * np.asarray(vector, dtype=np.float64)
+                for finger, vector in values.items()
+            }
+
+        return replace(
+            result,
+            tau=scale * np.asarray(result.tau, dtype=np.float64),
+            alpha={
+                int(finger): scale * float(value)
+                for finger, value in result.alpha.items()
+            },
+            cg=np.asarray(result.cg, dtype=np.float64).copy(),
+            cv=np.asarray(result.cg, dtype=np.float64).copy(),
+            fingertip_positions=_copy_finger_vectors(
+                result.fingertip_positions
+            ),
+            grasp_forces=scaled_vectors(result.grasp_forces),
+            rotation_forces=scaled_vectors(result.rotation_forces),
+            center_hold_forces=scaled_vectors(result.center_hold_forces),
+            collision_forces=scaled_vectors(result.collision_forces),
+            total_forces=scaled_vectors(result.total_forces),
+        )
+
+    def _regular_force_balance_fail_closed_result(
+        self,
+        now: float,
+    ) -> GraspPolicyResult:
+        start = self.regular_force_balance_error_started_at
+        duration = float(self.cfg.force_balance_error_ramp_sec)
+        if (
+            start is None
+            or not np.isfinite(start)
+            or not np.isfinite(now)
+            or not np.isfinite(duration)
+            or duration <= 0.0
+        ):
+            scale = 0.0
+        else:
+            scale = float(np.clip(1.0 - (now - start) / duration, 0.0, 1.0))
+            if scale <= 1e-12:
+                scale = 0.0
+
+        cache_is_usable = (
+            self.last_regular_policy_result is not None
+            and self.last_regular_policy_fingers == tuple(self.use_fingers)
+        )
+        if cache_is_usable and scale > 0.0:
+            scaled = self._scaled_policy_result(
+                self.last_regular_policy_result,
+                scale,
+            )
+            current_geometry = self.policy.calc_zero_grasp_result(self.hand_q)
+            return replace(
+                scaled,
+                tau=self.policy.calc_tau_from_total_forces(
+                    self.hand_q,
+                    scaled.total_forces,
+                ),
+                cg=current_geometry.cg.copy(),
+                cv=current_geometry.cv.copy(),
+                fingertip_positions=_copy_finger_vectors(
+                    current_geometry.fingertip_positions
+                ),
+            )
+        return self.policy.calc_zero_grasp_result(self.hand_q)
+
+    def prepare_relative_rotation(self, angle_rad: float, now: float) -> bool:
+        """Store a signed rotation target relative to the current object pose.
+
+        Regular grasp types already use Cv == Cg and force-balanced
+        coefficients, so the preparation is immediately ready. No tangential
+        rotation force is generated by the current generic grasp path.
+        """
+
+        angle_rad = float(angle_rad)
+        now = float(now)
+        if not np.isfinite(angle_rad) or angle_rad == 0.0:
+            raise ValueError("relative rotation angle must be finite and non-zero")
+        if not np.isfinite(now):
+            raise ValueError("now must be finite")
+        if self.state != "GROPED_GRASP" or self.active_finger_count not in range(1, 6):
+            self._log(
+                "[RELATIVE_ROTATION] ignored: requires active grasp_type 1..5 "
+                f"(state={self.state}, grasp_type={self.active_finger_count})"
+            )
+            return False
+        if (
+            self.deferred_finger_count is not None
+            or self.adding_finger_target_count is not None
+            or bool(self.blending_fingers)
+        ):
+            self._log(
+                "[RELATIVE_ROTATION] ignored: finger composition transition "
+                "is still active"
+            )
+            return False
+        if (
+            self.regular_force_balance_error_started_at is not None
+            or self.relative_rotation_phase == "force_balance_error"
+        ):
+            self._log(
+                "[RELATIVE_ROTATION] ignored: regular force balance is in "
+                "fail-closed state; select the grasp again after checking "
+                "the hand geometry"
+            )
+            return False
+        if (
+            self.last_regular_policy_result is None
+            or self.last_regular_policy_fingers != tuple(self.use_fingers)
+        ):
+            self._log(
+                "[RELATIVE_ROTATION] ignored: waiting for a successful "
+                "regular force-balance control cycle"
+            )
+            return False
+
+        self.cancel_relative_translation()
+        self.relative_rotation_target_rad = angle_rad
+        self.relative_rotation_phase = "rotation_ready"
+        self.relative_rotation_started_at = None
+        self._log(
+            "[RELATIVE_ROTATION] centroid and force distribution ready "
+            f"target_delta_deg={np.degrees(angle_rad):.3f}"
+        )
+        return True
+
+    def prepare_relative_translation(self, delta_hand: np.ndarray, now: float) -> bool:
+        """Start a link-base-relative, three-axis centroid impedance target."""
+
+        delta_hand = np.asarray(delta_hand, dtype=np.float64)
+        now = float(now)
+        if delta_hand.shape != (3,) or not np.all(np.isfinite(delta_hand)):
+            raise ValueError("relative translation must be a finite 3-vector")
+        distance = float(np.linalg.norm(delta_hand))
+        maximum = float(self.cfg.relative_translation_max_m)
+        if not np.isfinite(maximum) or maximum <= 0.0:
+            raise ValueError("relative translation maximum must be finite and > 0")
+        if distance <= 0.0 or distance > maximum + 1e-12:
+            raise ValueError(
+                "relative translation norm must be within "
+                f"(0, {maximum:.6f}] m"
+            )
+        if not np.isfinite(now):
+            raise ValueError("now must be finite")
+        if self.state != "GROPED_GRASP" or self.active_finger_count not in range(1, 6):
+            self._log(
+                "[RELATIVE_TRANSLATION] ignored: requires active grasp_type 1..5 "
+                f"(state={self.state}, grasp_type={self.active_finger_count})"
+            )
+            return False
+        if (
+            self.deferred_finger_count is not None
+            or self.adding_finger_target_count is not None
+            or bool(self.blending_fingers)
+        ):
+            self._log(
+                "[RELATIVE_TRANSLATION] ignored: finger composition transition "
+                "is still active"
+            )
+            return False
+        if self.regular_force_balance_error_started_at is not None:
+            self._log(
+                "[RELATIVE_TRANSLATION] ignored: regular force balance is in "
+                "fail-closed state"
+            )
+            return False
+        if (
+            self.last_regular_policy_result is None
+            or self.last_regular_policy_fingers != tuple(self.use_fingers)
+        ):
+            self._log(
+                "[RELATIVE_TRANSLATION] ignored: waiting for a successful "
+                "regular force-balance control cycle"
+            )
+            return False
+
+        start = np.asarray(self.last_regular_policy_result.cg, dtype=np.float64)
+        if start.shape != (3,) or not np.all(np.isfinite(start)):
+            raise ValueError("current geometric centroid must be a finite 3-vector")
+
+        self.cancel_relative_rotation()
+        self.relative_translation_start_centroid = start.copy()
+        self.relative_translation_delta = delta_hand.copy()
+        self.relative_translation_target_centroid = start + delta_hand
+        self.relative_translation_error = delta_hand.copy()
+        self.relative_translation_centroid_velocity[:] = 0.0
+        self.relative_translation_command_force[:] = 0.0
+        self.relative_translation_started_at = now
+        self.relative_translation_last_time = now
+        self.relative_translation_last_centroid = start.copy()
+        self.relative_translation_reached_since = None
+        self.relative_translation_phase = "translating"
+        self._log(
+            "[RELATIVE_TRANSLATION] Cartesian impedance target started "
+            f"delta_link_base_mm={np.round(1000.0 * delta_hand, 3).tolist()}"
+        )
+        return True
+
+    @staticmethod
+    def _cross_matrix(vector: np.ndarray) -> np.ndarray:
+        """Return S(r) such that S(r) @ force == cross(r, force)."""
+
+        x, y, z = np.asarray(vector, dtype=np.float64)
+        return np.array(
+            [
+                [0.0, -z, y],
+                [z, 0.0, -x],
+                [-y, x, 0.0],
+            ],
+            dtype=np.float64,
+        )
+
+    def _zero_translation_forces(self, tip_positions):
+        return {
+            int(finger): np.zeros(3, dtype=np.float64)
+            for finger in tip_positions
+        }
+
+    def _calc_relative_translation_forces(
+        self,
+        cg: np.ndarray,
+        tip_positions: Dict[int, np.ndarray],
+        now: float,
+    ) -> Dict[int, np.ndarray]:
+        """Calculate a zero-moment contact-force distribution for translation."""
+
+        zero = self._zero_translation_forces(tip_positions)
+        self.relative_translation_command_force[:] = 0.0
+        active_phases = {"translating", "translation_reached"}
+        if self.relative_translation_phase not in active_phases:
+            return zero
+
+        cg = np.asarray(cg, dtype=np.float64)
+        now = float(now)
+        if cg.shape != (3,) or not np.all(np.isfinite(cg)) or not np.isfinite(now):
+            self.relative_translation_phase = "translation_error"
+            self._log("[RELATIVE_TRANSLATION] stopped: invalid centroid/time")
+            return zero
+
+        if (
+            self.relative_translation_last_centroid is not None
+            and self.relative_translation_last_time is not None
+        ):
+            dt = now - float(self.relative_translation_last_time)
+            if dt > 1e-6:
+                raw_velocity = (
+                    cg - self.relative_translation_last_centroid
+                ) / dt
+                velocity_alpha = float(
+                    np.clip(self.cfg.relative_translation_velocity_alpha, 0.0, 1.0)
+                )
+                self.relative_translation_centroid_velocity = (
+                    (1.0 - velocity_alpha)
+                    * self.relative_translation_centroid_velocity
+                    + velocity_alpha * raw_velocity
+                )
+        self.relative_translation_last_centroid = cg.copy()
+        self.relative_translation_last_time = now
+        self.relative_translation_error = (
+            self.relative_translation_target_centroid - cg
+        )
+
+        timeout = float(self.cfg.relative_translation_timeout_sec)
+        elapsed = (
+            0.0
+            if self.relative_translation_started_at is None
+            else now - float(self.relative_translation_started_at)
+        )
+        if (
+            self.relative_translation_phase != "translation_reached"
+            and np.isfinite(timeout)
+            and timeout > 0.0
+            and elapsed >= timeout
+        ):
+            self.relative_translation_phase = "translation_timeout"
+            self.relative_translation_reached_since = None
+            self._log(
+                "[RELATIVE_TRANSLATION] timeout; motion force removed "
+                f"error_mm={np.round(1000.0 * self.relative_translation_error, 3).tolist()}"
+            )
+            return zero
+
+        position_tolerance = max(
+            0.0,
+            float(self.cfg.relative_translation_position_tolerance_m),
+        )
+        velocity_tolerance = max(
+            0.0,
+            float(self.cfg.relative_translation_velocity_tolerance_mps),
+        )
+        position_error_norm = float(np.linalg.norm(self.relative_translation_error))
+        velocity_norm = float(
+            np.linalg.norm(self.relative_translation_centroid_velocity)
+        )
+        inside_tolerance = (
+            position_error_norm <= position_tolerance
+            and velocity_norm <= velocity_tolerance
+        )
+        if inside_tolerance:
+            if self.relative_translation_reached_since is None:
+                self.relative_translation_reached_since = now
+            settle_sec = max(
+                0.0,
+                float(self.cfg.relative_translation_settle_sec),
+            )
+            if (
+                self.relative_translation_phase != "translation_reached"
+                and now - self.relative_translation_reached_since >= settle_sec
+            ):
+                self.relative_translation_phase = "translation_reached"
+                self._log(
+                    "[RELATIVE_TRANSLATION] target reached "
+                    f"error_mm={np.round(1000.0 * self.relative_translation_error, 3).tolist()}"
+                )
+        else:
+            self.relative_translation_reached_since = None
+            if (
+                self.relative_translation_phase == "translation_reached"
+                and position_error_norm > 1.5 * max(position_tolerance, 1e-9)
+            ):
+                self.relative_translation_phase = "translating"
+
+        kp = float(self.cfg.relative_translation_kp)
+        kd = float(self.cfg.relative_translation_kd)
+        if not np.isfinite(kp) or kp < 0.0 or not np.isfinite(kd) or kd < 0.0:
+            self.relative_translation_phase = "translation_error"
+            self._log("[RELATIVE_TRANSLATION] stopped: invalid Cartesian gains")
+            return zero
+
+        desired_force = (
+            kp * self.relative_translation_error
+            - kd * self.relative_translation_centroid_velocity
+        )
+        force_limit = max(
+            0.0,
+            float(self.cfg.relative_translation_force_limit),
+        )
+        desired_norm = float(np.linalg.norm(desired_force))
+        if force_limit > 0.0 and desired_norm > force_limit:
+            desired_force *= force_limit / max(desired_norm, 1e-12)
+
+        fingers = list(tip_positions)
+        if not fingers:
+            self.relative_translation_phase = "translation_error"
+            self._log("[RELATIVE_TRANSLATION] stopped: no active contacts")
+            return zero
+
+        grasp_matrix = np.zeros((6, 3 * len(fingers)), dtype=np.float64)
+        for index, finger in enumerate(fingers):
+            column = slice(3 * index, 3 * index + 3)
+            radius = np.asarray(tip_positions[finger], dtype=np.float64) - cg
+            grasp_matrix[:3, column] = np.eye(3, dtype=np.float64)
+            grasp_matrix[3:, column] = self._cross_matrix(radius)
+
+        desired_wrench = np.concatenate(
+            (desired_force, np.zeros(3, dtype=np.float64))
+        )
+        try:
+            stacked = np.linalg.lstsq(
+                grasp_matrix,
+                desired_wrench,
+                rcond=None,
+            )[0]
+        except np.linalg.LinAlgError:
+            self.relative_translation_phase = "translation_error"
+            self._log("[RELATIVE_TRANSLATION] stopped: wrench solve failed")
+            return zero
+        if not np.all(np.isfinite(stacked)):
+            self.relative_translation_phase = "translation_error"
+            self._log("[RELATIVE_TRANSLATION] stopped: non-finite wrench solution")
+            return zero
+
+        residual = float(np.linalg.norm(grasp_matrix @ stacked - desired_wrench))
+        residual_tolerance = 1e-7 * max(1.0, float(np.linalg.norm(desired_wrench)))
+        if residual > residual_tolerance:
+            self.relative_translation_phase = "translation_error"
+            self._log(
+                "[RELATIVE_TRANSLATION] stopped: requested zero-moment wrench "
+                f"is infeasible (residual={residual:.3e})"
+            )
+            return zero
+
+        per_finger_limit = max(
+            0.0,
+            float(self.cfg.relative_translation_per_finger_force_limit),
+        )
+        if per_finger_limit > 0.0:
+            maximum_contact_force = max(
+                float(np.linalg.norm(stacked[3 * index:3 * index + 3]))
+                for index in range(len(fingers))
+            )
+            if maximum_contact_force > per_finger_limit:
+                stacked *= per_finger_limit / maximum_contact_force
+
+        forces = {
+            int(finger): stacked[3 * index:3 * index + 3].copy()
+            for index, finger in enumerate(fingers)
+        }
+        self.relative_translation_command_force = sum(
+            forces.values(),
+            np.zeros(3, dtype=np.float64),
+        )
+        return forces
+
     def sync_joint_state(self, q: np.ndarray) -> None:
         q = np.asarray(q, dtype=np.float64)
         if q.shape != (JOINT_COUNT,):
@@ -179,6 +670,9 @@ class GraspController:
         return POSE_TYPE_TARGETS.get(pose_type, HAND_NORMAL_POSE)
 
     def _apply_pose_type_command(self, pose_type, now):
+        self.cancel_relative_rotation()
+        self.cancel_relative_translation()
+        self._reset_regular_force_balance_state()
         self.active_finger_count = 0
         self._clear_transition_state()
         self._reset_envelop_grasp()
@@ -893,6 +1387,10 @@ class GraspController:
         if requested_count < -1 or requested_count > 7:
             raise ValueError("grasp_type must be one of -1, 0, 1, 2, 3, 4, 5, 6, 7")
 
+        self.cancel_relative_rotation()
+        self.cancel_relative_translation()
+        self._reset_regular_force_balance_state()
+
         if not internal:
             self._cancel_deferred_for_external_command()
 
@@ -1059,11 +1557,14 @@ class GraspController:
         cv = np.zeros(3, dtype=np.float64)
         fingertip_positions = {}
         grasp_forces = {}
+        translation_forces = {}
         rotation_forces = {}
         center_hold_forces = {}
         collision_forces = {}
         total_forces = {}
         rotation_enabled = False
+        effective_thumb_centroid_bias = 0.0
+        relative_rotation_force_balance_blend = 0.0
         self.inactive_pd_target[:] = np.nan
 
         if self.state == "NORMAL_POSE":
@@ -1087,6 +1588,20 @@ class GraspController:
             )
 
         elif self.state == "GROPED_GRASP":
+            regular_grasp = 1 <= self.active_finger_count <= 5
+            alpha_distribution_mode = (
+                ALPHA_DISTRIBUTION_THUMB_DISTANCE_PROPORTIONAL
+                if regular_grasp
+                else ALPHA_DISTRIBUTION_LEGACY
+            )
+            if regular_grasp:
+                effective_thumb_centroid_bias = 0.0
+                relative_rotation_force_balance_blend = 1.0
+            else:
+                effective_thumb_centroid_bias = float(
+                    self.cfg.thumb_centroid_bias
+                )
+
             if self.active_finger_count == PINKY_SPECIAL_COMMAND:
                 rotation_enabled = (
                     self.cfg.rotation_enable_for_grasp_type7
@@ -1106,13 +1621,44 @@ class GraspController:
                 rotation_center_ref = self.grasp_type7_rotation_cg_ref
                 center_hold_enabled = bool(self.cfg.grasp_type7_center_hold_enable)
 
-            policy_result = self.policy.calc_grasp_tau(
-                self.hand_q,
-                rotation_enabled=rotation_enabled,
-                rotation_center=rotation_center_ref,
-                center_hold_target=rotation_center_ref,
-                center_hold_enabled=center_hold_enabled,
-            )
+            using_force_balance_fallback = False
+            if (
+                regular_grasp
+                and self.regular_force_balance_error_started_at is not None
+            ):
+                using_force_balance_fallback = True
+                relative_rotation_force_balance_blend = 0.0
+                policy_result = self._regular_force_balance_fail_closed_result(
+                    now
+                )
+            else:
+                try:
+                    policy_result = self.policy.calc_grasp_tau(
+                        self.hand_q,
+                        rotation_enabled=rotation_enabled,
+                        rotation_center=rotation_center_ref,
+                        center_hold_target=rotation_center_ref,
+                        center_hold_enabled=center_hold_enabled,
+                        alpha_distribution_mode=alpha_distribution_mode,
+                    )
+                except ValueError as exc:
+                    if not regular_grasp:
+                        raise
+                    self._log(
+                        "[FORCE_DISTRIBUTION] proportional balance failed; "
+                        "ramping the last valid command to zero and latching "
+                        f"force_balance_error: {exc}"
+                    )
+                    self.regular_force_balance_error_started_at = float(now)
+                    self.cancel_relative_translation()
+                    self.relative_rotation_phase = "force_balance_error"
+                    self.relative_rotation_target_rad = 0.0
+                    self.relative_rotation_started_at = None
+                    relative_rotation_force_balance_blend = 0.0
+                    using_force_balance_fallback = True
+                    policy_result = (
+                        self._regular_force_balance_fail_closed_result(now)
+                    )
             grasp_tau = policy_result.tau.copy()
             alpha = dict(policy_result.alpha)
             cg = policy_result.cg.copy()
@@ -1126,9 +1672,29 @@ class GraspController:
             collision_forces.update(_copy_finger_vectors(policy_result.collision_forces))
             total_forces.update(_copy_finger_vectors(policy_result.total_forces))
 
+            if regular_grasp:
+                translation_forces.update(
+                    self._calc_relative_translation_forces(
+                        cg,
+                        fingertip_positions,
+                        now,
+                    )
+                )
+                if any(
+                    np.linalg.norm(force) > 0.0
+                    for force in translation_forces.values()
+                ):
+                    for finger, force in translation_forces.items():
+                        total_forces[finger] += force
+                    grasp_tau = self.policy.calc_tau_from_total_forces(
+                        self.hand_q,
+                        total_forces,
+                    )
+
             blend_pd = np.zeros(JOINT_COUNT, dtype=np.float64)
             if (
-                self.blending_fingers
+                not using_force_balance_fallback
+                and self.blending_fingers
                 and self.blend_started_at is not None
                 and self.blend_until is not None
             ):
@@ -1147,6 +1713,7 @@ class GraspController:
                     )
                     grasp_tau[idxs] *= blend
                     grasp_forces[finger] *= blend
+                    translation_forces[finger] *= blend
                     rotation_forces[finger] *= blend
                     center_hold_forces[finger] *= blend
                     collision_forces[finger] *= blend
@@ -1156,6 +1723,37 @@ class GraspController:
                     self.blending_fingers = []
                     self.blend_started_at = None
                     self.blend_until = None
+
+            if (
+                regular_grasp
+                and not using_force_balance_fallback
+                and not self.blending_fingers
+            ):
+                # Keep the fail-closed cache free of manipulation force. If a
+                # later balance solve fails, translation must disappear
+                # immediately while only the stable grasp command fades out.
+                cached_total_forces = _copy_finger_vectors(total_forces)
+                for finger, force in translation_forces.items():
+                    cached_total_forces[finger] -= force
+                self.last_regular_policy_result = replace(
+                    policy_result,
+                    tau=self.policy.calc_tau_from_total_forces(
+                        self.hand_q,
+                        cached_total_forces,
+                    ),
+                    alpha={
+                        int(finger): float(np.linalg.norm(force))
+                        for finger, force in grasp_forces.items()
+                    },
+                    grasp_forces=_copy_finger_vectors(grasp_forces),
+                    rotation_forces=_copy_finger_vectors(rotation_forces),
+                    center_hold_forces=_copy_finger_vectors(
+                        center_hold_forces
+                    ),
+                    collision_forces=_copy_finger_vectors(collision_forces),
+                    total_forces=cached_total_forces,
+                )
+                self.last_regular_policy_fingers = tuple(self.use_fingers)
 
             g7_transition_pd = np.zeros(JOINT_COUNT, dtype=np.float64)
             g7_transition_attach_tau = np.zeros(JOINT_COUNT, dtype=np.float64)
@@ -1213,6 +1811,7 @@ class GraspController:
             cv=cv.copy(),
             fingertip_positions=_copy_finger_vectors(fingertip_positions),
             grasp_forces=_copy_finger_vectors(grasp_forces),
+            translation_forces=_copy_finger_vectors(translation_forces),
             rotation_forces=_copy_finger_vectors(rotation_forces),
             center_hold_forces=_copy_finger_vectors(center_hold_forces),
             collision_forces=_copy_finger_vectors(collision_forces),
@@ -1223,4 +1822,25 @@ class GraspController:
             inactive_pd_target=self.inactive_pd_target.copy(),
             envelop_info=dict(self.envelop_last_info),
             g7_phase=str(self.grasp_type7_phase),
+            relative_rotation_phase=str(self.relative_rotation_phase),
+            relative_rotation_target_rad=float(self.relative_rotation_target_rad),
+            relative_translation_phase=str(self.relative_translation_phase),
+            relative_translation_start_centroid=(
+                self.relative_translation_start_centroid.copy()
+            ),
+            relative_translation_target_centroid=(
+                self.relative_translation_target_centroid.copy()
+            ),
+            relative_translation_delta=self.relative_translation_delta.copy(),
+            relative_translation_error=self.relative_translation_error.copy(),
+            relative_translation_centroid_velocity=(
+                self.relative_translation_centroid_velocity.copy()
+            ),
+            relative_translation_command_force=(
+                self.relative_translation_command_force.copy()
+            ),
+            effective_thumb_centroid_bias=float(effective_thumb_centroid_bias),
+            relative_rotation_force_balance_blend=float(
+                relative_rotation_force_balance_blend
+            ),
         )

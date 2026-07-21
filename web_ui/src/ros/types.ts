@@ -28,6 +28,11 @@ export interface Float64MultiArrayMessage {
   };
 }
 
+export interface Vector3StampedMessage {
+  header: RosHeader;
+  vector: Point3;
+}
+
 export interface JointStateMessage {
   header: RosHeader;
   name: string[];
@@ -42,8 +47,16 @@ export interface GraspDebugMessage {
   fingertip_positions: Point3[];
   geometric_centroid: Point3;
   virtual_centroid: Point3;
+  relative_translation_start_centroid?: Point3;
+  relative_translation_target_centroid?: Point3;
+  relative_translation_delta?: Point3;
+  relative_translation_error?: Point3;
+  relative_translation_centroid_velocity?: Point3;
+  relative_translation_command_force?: Point3;
+  relative_translation_phase?: string;
   alpha: number[];
   grasp_forces: Point3[];
+  translation_forces: Point3[];
   rotation_forces: Point3[];
   center_hold_forces: Point3[];
   collision_forces: Point3[];

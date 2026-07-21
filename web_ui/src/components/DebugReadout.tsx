@@ -30,6 +30,7 @@ export function DebugReadout({ debug }: DebugReadoutProps) {
             <dl>
               <div><dt>alpha</dt><dd>{fmt(debug?.alpha[index])}</dd></div>
               <div><dt>grasp</dt><dd>{fmt(vectorMagnitude(debug?.grasp_forces[index]))}</dd></div>
+              <div><dt>translation</dt><dd>{fmt(vectorMagnitude(debug?.translation_forces?.[index]))}</dd></div>
               <div><dt>rotation</dt><dd>{fmt(vectorMagnitude(debug?.rotation_forces[index]))}</dd></div>
               <div><dt>center hold</dt><dd>{fmt(vectorMagnitude(debug?.center_hold_forces[index]))}</dd></div>
               <div><dt>collision</dt><dd>{fmt(vectorMagnitude(debug?.collision_forces[index]))}</dd></div>

@@ -72,6 +72,7 @@ def build_grasp_debug_message(
         cg = np.zeros(3, dtype=np.float64)
         cv = np.zeros(3, dtype=np.float64)
         grasp_forces = {}
+        translation_forces = {}
         rotation_forces = {}
         center_hold_forces = {}
         collision_forces = {}
@@ -82,19 +83,66 @@ def build_grasp_debug_message(
         cg = output.cg
         cv = output.cv
         grasp_forces = output.grasp_forces
+        translation_forces = output.translation_forces
         rotation_forces = output.rotation_forces
         center_hold_forces = output.center_hold_forces
         collision_forces = output.collision_forces
         total_forces = output.total_forces
 
+    relative_translation_phase = (
+        output.relative_translation_phase
+        if output is not None
+        else controller.relative_translation_phase
+    )
+    relative_translation_start = (
+        output.relative_translation_start_centroid
+        if output is not None
+        else controller.relative_translation_start_centroid
+    )
+    relative_translation_target = (
+        output.relative_translation_target_centroid
+        if output is not None
+        else controller.relative_translation_target_centroid
+    )
+    relative_translation_delta = (
+        output.relative_translation_delta
+        if output is not None
+        else controller.relative_translation_delta
+    )
+    relative_translation_error = (
+        output.relative_translation_error
+        if output is not None
+        else controller.relative_translation_error
+    )
+    relative_translation_velocity = (
+        output.relative_translation_centroid_velocity
+        if output is not None
+        else controller.relative_translation_centroid_velocity
+    )
+    relative_translation_force = (
+        output.relative_translation_command_force
+        if output is not None
+        else controller.relative_translation_command_force
+    )
+
     if controller_state is None:
         controller_state = output.state if output is not None else controller.state
     if controller_phase is None:
-        controller_phase = (
-            output.g7_phase
+        relative_rotation_phase = (
+            output.relative_rotation_phase
             if output is not None
-            else controller.grasp_type7_phase
+            else controller.relative_rotation_phase
         )
+        if relative_translation_phase != "idle":
+            controller_phase = relative_translation_phase
+        elif relative_rotation_phase != "idle":
+            controller_phase = relative_rotation_phase
+        else:
+            controller_phase = (
+                output.g7_phase
+                if output is not None
+                else controller.grasp_type7_phase
+            )
 
     message = GraspDebug()
     message.header.stamp = stamp
@@ -110,8 +158,24 @@ def build_grasp_debug_message(
     ]
     message.geometric_centroid = _point(cg)
     message.virtual_centroid = _point(cv)
+    message.relative_translation_start_centroid = _point(
+        relative_translation_start
+    )
+    message.relative_translation_target_centroid = _point(
+        relative_translation_target
+    )
+    message.relative_translation_delta = _vector(relative_translation_delta)
+    message.relative_translation_error = _vector(relative_translation_error)
+    message.relative_translation_centroid_velocity = _vector(
+        relative_translation_velocity
+    )
+    message.relative_translation_command_force = _vector(
+        relative_translation_force
+    )
+    message.relative_translation_phase = str(relative_translation_phase)
     message.alpha = [float(alpha.get(finger, 0.0)) for finger in FINGER_IDS]
     message.grasp_forces = _vectors_for_all_fingers(grasp_forces)
+    message.translation_forces = _vectors_for_all_fingers(translation_forces)
     message.rotation_forces = _vectors_for_all_fingers(rotation_forces)
     message.center_hold_forces = _vectors_for_all_fingers(center_hold_forces)
     message.collision_forces = _vectors_for_all_fingers(collision_forces)

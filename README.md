@@ -1,6 +1,6 @@
 # DG5F-S Hand Grasp Control Workspace
 
-DG5F-S 5-finger hand를 ROS 2에서 실행하고, 토픽 명령으로 grasp mode, pre-grasp pose, grasp force 계수, hand rotation matrix를 제어하기 위한 workspace입니다.
+DG5F-S 5-finger hand를 ROS 2에서 실행하고, 토픽 명령으로 grasp mode, pre-grasp pose, grasp force 계수, 상대 회전 목표, hand rotation matrix를 제어하기 위한 workspace입니다.
 
 현재 구조에서는 실제 DG5F-S 제어와 MuJoCo simulation이 동일한 `GraspController`를 사용합니다. 따라서 centroid 계산, 손가락 선택, force distribution, 손가락 전환, enveloping grasp, rotation/transition 제어를 수정하면 real과 MuJoCo에 동일하게 반영됩니다.
 
@@ -13,6 +13,7 @@ DG5F-S 5-finger hand를 ROS 2에서 실행하고, 토픽 명령으로 grasp mode
 - 비사용 손가락 PD 자세 유지
 - `grasp_type=6`: Sequential Torque-Based Enveloping Grasp
 - `grasp_type=7`: 4손가락 파지 기반 rotation 및 순차 finger transition
+- `grasp_type=1~5`: `Cv = Cg` 기반 force distribution과 현재 자세 기준 상대 회전 명령
 - 실제 hand와 MuJoCo가 동일한 공통 제어 코어 사용
 
 ---
@@ -248,6 +249,8 @@ MuJoCo를 source tree에서 직접 실행하면 `src/real/dg5f_grasp_control`을
 | Grasp mode command | `/grasp_type` | `std_msgs/msg/Int32` |
 | Pose command | `/pose_type` | `std_msgs/msg/Int32` |
 | Grasp force coefficient | `/dg5f_grasp_control/alpha1_cmd` | `std_msgs/msg/Float64` |
+| Relative task-space target | `/dg5f_grasp_control/relative_translation_cmd` | `geometry_msgs/msg/Vector3Stamped` |
+| Relative rotation target (degrees) | `/dg5f_grasp_control/relative_rotation_deg_cmd` | `std_msgs/msg/Float64` |
 | Hand rotation matrix | `/dg5f_grasp_control/rotation_matrix_cmd` | `std_msgs/msg/Float64MultiArray` |
 | Real hand joint state | `/dg5f_s_left/joint_states` | `sensor_msgs/msg/JointState` |
 | Real hand effort command | `/dg5f_s_left/effort_controller/commands` | `std_msgs/msg/Float64MultiArray` |
@@ -275,6 +278,7 @@ controller 상태를 다음 topic으로 발행합니다.
 
 - 5개 fingertip position
 - geometric centroid `Cg`와 virtual centroid `Cv`
+- 상대 병진 시작/목표 centroid, 명령 변위, 남은 오차와 phase
 - 손가락별 `alpha`
 - grasp, rotation, center-hold, collision, total force
 - 보상 전 controller torque와 제한 적용 후 최종 commanded effort
@@ -299,8 +303,13 @@ Pose, Teaching, Envelop mode는 joint-space 제어이므로 Cartesian force 배�
 `web_ui`에는 실제 `dg5fs_left.urdf`/CAD mesh를 JointState 20축으로 구동하는
 3D hand, 고정된 월드 X/Y/Z 축, GraspDebug의 fingertip·centroid·계산 force
 overlay, 월드 X/Y/Z 힘 이력 그래프와 시간 초기화, 그리고 Teaching, Pose, Grasp,
-Alpha1, rotation matrix 명령을 전송하는 React UI가 있습니다. Node.js 24 LTS와
-rosbridge 설치 후 다음 순서로 실행합니다.
+상대 회전 목표, Alpha1, rotation matrix 명령을 전송하는 React UI가 있습니다.
+파지 후 활성화되는 `04 Task-Space Position`에서 원하는 이동량(mm)과
+`±X/±Y/±Z` World 방향을 선택할 수 있습니다. 상대 목표를 ROS로 전달하면
+3축 Cartesian impedance와 합모멘트 0 contact-force 분배로 실제 이동 토크가
+적용됩니다. 최초 하드웨어 시험은 반드시 `1 mm`로 시작하십시오. Node.js 24 LTS와
+rosbridge 설치 후
+다음 순서로 실행합니다.
 
 손 컨트롤러를 별도 터미널에서 먼저 실행한 뒤, rosbridge와 웹 UI를 한꺼번에
 실행하려면:
@@ -310,6 +319,29 @@ cd ~/hand
 export ROS_DOMAIN_ID=73
 ./start_web.sh
 ```
+
+`9090 포트가 이미 사용 중`이라고 나오면 이전 rosbridge가 남아 있는지 먼저
+확인합니다.
+
+```bash
+ss -ltnp 'sport = :9090'
+pgrep -af 'rosbridge|ros2 launch rosbridge'
+```
+
+출력된 `ros2 launch rosbridge_server ...` 프로세스의 PGID를 확인해 프로세스
+그룹을 종료합니다. 예를 들어 PID/PGID가 `34769`인 경우:
+
+```bash
+ps -o pid,pgid,cmd -p 34769
+kill -INT -- -34769
+sleep 1
+
+cd ~/hand
+./start_web.sh
+```
+
+`34769`는 예시이므로 실제 출력의 PGID로 바꿔야 합니다. 가능하면 기존
+`start_web.sh` 터미널에서 `Ctrl+C`로 종료하는 것이 우선입니다.
 
 기본 ROS domain은 `73`입니다. 스크립트는 중복 포트를 검사하고 준비 상태를
 기다린 뒤 실행합니다. `Ctrl+C`는 rosbridge와 웹 UI만 종료하며 별도로 실행한
@@ -428,13 +460,15 @@ ros2 topic pub --once /pose_type std_msgs/msg/Int32 "{data: 3}"
 - 4·5접촉점: 3차원 fingertip 위치를 best-fit plane으로 투영한 뒤 polygon signed-area centroid 계산
 
 
-### Thumb centroid bias
+### Virtual centroid policy
 
-- 2손가락 grasp: 편향 없음, `Cv = Cg`
-- 3·4·5손가락 grasp: 엄지 방향 virtual centroid 편향 적용 (편향이 없으면 손가락끼리 충돌 발생)
+- 일반 `grasp_type=1~5`: 손가락 수와 관계없이 항상 `Cv = Cg`
+- `grasp_type=7`: 기존 thumb-biased virtual centroid와 legacy force heuristic 유지
+
+`thumb_centroid_bias`는 이제 `grasp_type=7`에만 적용됩니다.
 
 ```text
-Cv = Cg + thumb_centroid_bias × (P_thumb - Cg)
+Cv = Cg + thumb_centroid_bias × (P_thumb - Cg)   # grasp_type=7 only
 ```
 
 기본값:
@@ -445,9 +479,78 @@ thumb_centroid_bias: 0.5
 
 ### Force distribution
 
-`alpha1`은 선택된 첫 번째 손가락에 적용됩니다. 현재 finger selection 순서에서는 첫 번째 손가락이 엄지이므로, 일반적으로 엄지의 force magnitude 기준값입니다.
+교수님과 확인한 corrected interpretation을 반영하여, 일반
+`grasp_type=1~5`는 centroid와의 거리에 **비례**하는 nominal force
+coefficient를 사용합니다. Finger ID `1`은 엄지이며, UI와
+`/dg5f_grasp_control/alpha1_cmd`의 `alpha1`은 항상 엄지 force magnitude입니다.
 
-나머지 손가락은 centroid와의 거리 관계 및 force equilibrium으로 계산합니다. 약지와 새끼에 별도의 force scale은 적용하지 않습니다.
+```text
+d_i       = ||Cg - P_i||
+alpha_thumb = alpha1
+alpha_i     = alpha1 × d_i / d_thumb
+fhat_i      = (Cg - P_i) / d_i
+```
+
+- 2F: `Cg`가 두 접촉점의 중점이므로 두 손가락의 alpha가 같습니다.
+- 3F: `Cg = (P1 + P2 + P3) / 3`이므로 위 거리 비례식이
+  `Σ(alpha_i × fhat_i) = 0`을 직접 만족합니다.
+- 4F·5F: polygon signed-area centroid는 일반적으로 꼭지점의 산술평균과
+  다르므로 nominal 거리 비례값만으로는 합력 0이 보장되지 않습니다.
+  엄지 `alpha1`을 고정한 채, nominal 분포와 가장 가까운 비음수 3차원
+  force-balance 해를 계산해 나머지 alpha를 보정합니다.
+
+```text
+Σ (alpha_i × fhat_i) ≈ 0,  alpha_i >= 0
+```
+
+`rotation_force_balance_max_alpha_ratio`는 3F~5F에서 다른 손가락 alpha가
+엄지 `alpha1` 대비 과도하게 커지지 않도록 제한합니다. 제한을 넘거나 비음수
+평형 해를 찾지 못하면 legacy 계산으로 전환하지 않습니다. 마지막으로 검증된
+평형 Cartesian force를 현재 Jacobian으로 다시 매핑하면서
+`force_balance_error_ramp_sec` 동안 0까지 낮춘 뒤 0을 유지하고, Debug phase를
+`force_balance_error`로 고정합니다. 손 형상을 확인한 후 grasp type을 다시
+선택해야 새 평형 계산을 시작합니다.
+
+`grasp_type=7`은 이 일반 정책의 적용 대상이 아닙니다. 기존 thumb bias,
+거리 반비례 분포, 마지막 active finger를 pivot으로 사용하는 legacy
+heuristic을 그대로 유지합니다.
+
+위 합력 0 조건은 손가락 구성이 안정된 일반 grasp의 계산값 기준입니다. 손가락을
+추가하는 짧은 blend 구간에는 새 손가락 force를 단계적으로 연결하므로 UI 합력에
+일시적인 잔차가 보일 수 있으며, 이 동안 상대 회전 명령은 잠깁니다.
+
+### Relative rotation command (immediate ready)
+
+`grasp_type=1~5`로 물체를 잡은 상태에서 다음 topic에 signed degree를 보내면,
+현재 물체 자세를 기준으로 한 상대 회전 목표를 저장합니다. 이 값은 절대
+각도가 아니며 연속 명령을 누적한 절대 자세도 아닙니다.
+
+```bash
+ros2 topic pub --once \
+  /dg5f_grasp_control/relative_rotation_deg_cmd \
+  std_msgs/msg/Float64 \
+  "{data: 30.0}"
+```
+
+- 양수: 이후 구현할 회전축 기준 CCW 상대 회전
+- 음수: 이후 구현할 회전축 기준 CW 상대 회전
+- `0`, `NaN`, `Inf`: 거부
+- `grasp_type=1~5`: 최소 한 번의 정상 force-balance control cycle이 확인되면,
+  별도의 centroid 이동이나 시간 전환 없이 즉시 `rotation_ready`
+- 손가락 추가·제거 전환 중이거나 Teaching Hold 중인 경우 명령 거부
+- `force_balance_error` 상태에서는 명령을 거부하며 grasp type 재선택 필요
+
+기존의 `centroid_redistributing` 단계와
+`rotation_centroid_transition_sec`에 따른 `Cv → Cg` 전환은 더 이상 사용하지
+않습니다. Debug의 `controller_phase`는 유효한 명령을 받으면 즉시
+`rotation_ready`로 표시됩니다. pose/grasp 변경 또는 Teaching ON은 저장된 상대
+각도와 phase를 초기화합니다.
+
+> 현재는 상대 회전 목표만 저장하며 접선 회전력은 아직 적용하지
+> 않습니다. `rotation_ready`는 명령이 수락되었고 centroid/force 조건이
+> 이미 준비됐다는 뜻이지, 물체가 입력 각도만큼 회전했다는 뜻이 아닙니다.
+> `Cg`는 live joint 위치에서 매 cycle 다시 계산되고 접촉력/물체 pose sensor
+> feedback은 없으므로 실제 물체의 완전한 무이동은 보장하지 않습니다.
 
 ### Fingertip collision repel (중지<->약지<->새끼 간 충돌 방지용)
 
@@ -628,9 +731,10 @@ ros2 topic pub --once /dg5f_grasp_control/alpha1_cmd std_msgs/msg/Float64 "{data
 
 동작 영향:
 
-- `grasp_type=1~5`: groped grasp force distribution의 기준 magnitude
+- `grasp_type=1~5`: 엄지(Finger ID 1) magnitude이며 거리 비례
+  nominal distribution과 4F·5F 평형 보정의 기준값
 - `grasp_type=6`: `alpha1 × envelop_tau_scale`로 active joint torque 결정
-- `grasp_type=7`: 기본 4손가락 grasp force에 반영
+- `grasp_type=7`: legacy 4손가락 grasp force heuristic에 반영
 
 값이 클수록 grasp force가 커지고, 작을수록 작아집니다.
 
@@ -638,11 +742,19 @@ ros2 topic pub --once /dg5f_grasp_control/alpha1_cmd std_msgs/msg/Float64 "{data
 
 ## 7. Rotation Matrix Command
 
-로봇팔 끝에 hand가 장착된 경우 hand frame 기준 중력 방향을 계산하기 위한 rotation matrix를 전달합니다.
+로봇팔 끝에 hand가 장착된 경우 hand frame 기준 중력 방향과 world 기준 명령을
+계산하기 위한 rotation matrix를 전달합니다. Hand controller는 특정 로봇팔의
+API나 kinematics에 직접 의존하지 않으며, 외부 시스템에서 아래 topic 규약에 맞는
+`R_hand_to_world`만 보내면 됩니다.
 
-| Topic | Type |
+| 구분 | 값 |
 | --- | --- |
-| `/dg5f_grasp_control/rotation_matrix_cmd` | `std_msgs/msg/Float64MultiArray` |
+| Topic | `/dg5f_grasp_control/rotation_matrix_cmd` |
+| Type | `std_msgs/msg/Float64MultiArray` |
+| Data | row-major `3 × 3` rotation matrix, 총 9개 값 |
+| 의미 | hand (`link_base`) 좌표의 벡터를 world 좌표로 회전하는 행렬 |
+| 발행 주체 | RB5 또는 hand가 장착된 외부 로봇팔 측 node |
+| 구독 주체 | real hand controller, MuJoCo controller, Web UI |
 
 보내는 값은 row-major 순서의 `3 × 3` rotation matrix입니다.
 
@@ -651,6 +763,14 @@ R_hand_to_world =
 [ r00 r01 r02
   r10 r11 r12
   r20 r21 r22 ]
+```
+
+따라서 hand frame의 벡터 `v_hand`와 world frame의 벡터 `v_world` 관계는
+다음과 같습니다.
+
+```text
+v_world = R_hand_to_world × v_hand
+v_hand  = R_hand_to_worldᵀ × v_world
 ```
 
 Identity matrix 예시:
@@ -662,11 +782,16 @@ ros2 topic pub --once \
   "{data: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]}"
 ```
 
-real controller에서는 다음 식으로 hand frame의 중력 벡터를 계산합니다.
+Real controller는 유효한 행렬 9개를 수신할 때마다 저장된 행렬과 hand frame의
+중력 벡터를 즉시 갱신합니다.
 
 ```text
 g_hand = R_hand_to_worldᵀ × [0, 0, -9.81]
 ```
+
+이 `g_hand`는 이후 모든 control loop에서 MuJoCo hand model의 중력보상 torque를
+계산하는 데 자동으로 사용됩니다. World frame으로 들어온 상대 위치 명령도 같은
+행렬을 사용하여 `link_base` frame으로 변환합니다.
 
 웹 UI도 같은 행렬을 구독하여 `link_base` 기준 debug 위치와 힘을 월드 좌표로
 변환합니다.
@@ -675,22 +800,51 @@ g_hand = R_hand_to_worldᵀ × [0, 0, -9.81]
 F_world = R_hand_to_world × F_link_base
 ```
 
-행렬을 수신하기 전에는 controller model의 기본 중력 방향과 같은 identity matrix를
-사용하며 UI에 `WORLD · DEFAULT I`로 표시합니다. topic을 수신하면 즉시 실제
-행렬로 교체되고 `WORLD · TOPIC`으로 바뀝니다. 따라서 고정 설치로 `link_base`와
-world의 축이 같다면 별도의 identity 전송이 필요하지 않습니다.
-`Float64MultiArray`에는 timestamp가 없으므로 UI는 debug packet을 받을 때 가장
-최근에 수신한 행렬을 사용합니다.
+행렬을 수신하기 전에는 controller와 UI 모두 identity matrix를 기본값으로
+사용합니다. 이때 UI에는 `WORLD · DEFAULT I`로 표시되며, topic message를 수신하면
+즉시 실제 행렬로 교체되어 `WORLD · TOPIC`으로 바뀝니다. 따라서 현재처럼 hand를
+고정 설치하고 `link_base`와 world의 축이 같다면 identity를 별도로 발행하지 않아도
+됩니다.
+
+로봇팔에 장착하여 자세가 변하는 경우에는 로봇팔 측 node가 현재 자세로 계산한
+행렬을 계속 발행해야 합니다. `Float64MultiArray`에는 timestamp가 없고 message가
+자동 보관되지 않으므로, hand controller와 Web UI를 재시작한 뒤에도 새 행렬이
+수신될 수 있도록 일회성이 아닌 주기 발행을 사용합니다. 발행이 중단되면 실행
+중인 controller는 마지막으로 수신한 행렬을 계속 사용합니다.
 
 rotation matrix topic을 보내지 않으면 model 내부 기본 중력 방향을 사용합니다.
 
 MuJoCo에서도 같은 topic을 받아 simulation model의 중력 방향과 gravity compensation 계산에 반영합니다.
 
+수신 확인:
+
+```bash
+export ROS_DOMAIN_ID=73
+ros2 topic info /dg5f_grasp_control/rotation_matrix_cmd --verbose
+ros2 topic echo /dg5f_grasp_control/rotation_matrix_cmd --once
+```
+
+Real controller terminal에 아래 로그가 출력되면 행렬 수신과 중력 방향 갱신이
+완료된 것입니다.
+
+```text
+Updated hand gravity vector: [..., ..., ...]
+```
+
 ---
 
-## RB5 Rotation Matrix Publisher
+## RB5 Rotation Matrix Publisher Test Example
 
-RB5 제어와 hand 제어는 별도 process로 실행합니다.
+최상위의 `rb5_payload_gc_rotation_pub.py`는 위 topic interface를 RB5에서 시험하기
+위한 예제 코드입니다. Hand controller의 필수 구성요소는 아니며, 실제 통합에서는
+사용할 로봇팔 측 node가 동일한 topic, message type, 행렬 정의만 만족하면 됩니다.
+
+이 테스트 코드는 RB5 joint state로 TCP 자세를 계산하고, hand 고정 장착 회전을
+반영한 `R_link_mount_to_world`를 row-major 배열로 주기 발행합니다. 현재 hand
+model에서 `link_mount`와 `link_base`는 위치 차이만 있고 축 방향은 같으므로 이
+회전행렬을 `R_hand_to_world`로 사용할 수 있습니다.
+
+RB5 테스트에서는 RB5 제어와 hand 제어를 별도 process로 실행합니다.
 
 Terminal 1: hand controller
 
@@ -712,13 +866,15 @@ export ROS_DOMAIN_ID=73
 python3 rb5_payload_gc_rotation_pub.py
 ```
 
-Publisher topic:
+테스트 코드가 발행하는 topic:
 
 ```text
 /dg5f_grasp_control/rotation_matrix_cmd
 ```
 
-`rb5_payload_gc_rotation_pub.py`는 RB5에 payload model을 적용하고 hand의 current rotation matrix를 publish합니다.
+`rb5_payload_gc_rotation_pub.py` 대신 다른 로봇팔을 사용해도 hand 측 코드는 변경할
+필요가 없습니다. 해당 로봇팔에서 현재 `R_hand_to_world`를 계산하여 같은 topic으로
+발행하면 좌표계 변환과 hand 중력보상이 자동으로 갱신됩니다.
 
 ---
 
@@ -732,13 +888,14 @@ src/real/dg5f_grasp_control/config/grasp_real.yaml
 
 | Parameter group | Main parameters |
 | --- | --- |
-| ROS topics | `joint_state_topic`, `effort_topic`, `command_topic`, `pose_topic`, `debug_topic` |
+| ROS topics | `joint_state_topic`, `effort_topic`, `command_topic`, `pose_topic`, `relative_rotation_deg_topic`, `debug_topic` |
 | Debug visualization | `debug_frame_id`, `debug_publish_hz` |
 | Pose PD | `pose_kp`, `pose_kd`, `pose_pd_limit` |
 | Friction | `fric_scale`, `fric_tanh_k`, `fric_limit` |
-| Groped grasp | `alpha1`, `groped_tau_limit`, `thumb_centroid_bias` |
+| Groped grasp (type 1~5) | `alpha1`, `groped_tau_limit`, `rotation_force_balance_max_alpha_ratio`, `force_balance_error_ramp_sec` |
 | Collision repel | `min_tip_distance`, `collision_repel_gain`, `collision_repel_limit` |
 | Type 6 | `envelop_tau_scale`, `envelop_joint_delay`, torque signs |
+| Type 7 legacy grasp | `thumb_centroid_bias`, `alpha1` |
 | Type 7 rotation | `rotation_theta_rad`, `rotation_gain`, `rotation_force_limit` |
 | Type 7 center hold | `grasp_type7_center_hold_*` |
 | Type 7 transition | `grasp_type7_*_transition_*`, attach force 및 torque limit |

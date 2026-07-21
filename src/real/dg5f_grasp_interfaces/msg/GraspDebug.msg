@@ -8,9 +8,19 @@ geometry_msgs/Point[] fingertip_positions
 geometry_msgs/Point geometric_centroid
 geometry_msgs/Point virtual_centroid
 
+# Relative task-space centroid target diagnostics in header.frame_id.
+geometry_msgs/Point relative_translation_start_centroid
+geometry_msgs/Point relative_translation_target_centroid
+geometry_msgs/Vector3 relative_translation_delta
+geometry_msgs/Vector3 relative_translation_error
+geometry_msgs/Vector3 relative_translation_centroid_velocity
+geometry_msgs/Vector3 relative_translation_command_force
+string relative_translation_phase
+
 float64[] alpha
 
 geometry_msgs/Vector3[] grasp_forces
+geometry_msgs/Vector3[] translation_forces
 geometry_msgs/Vector3[] rotation_forces
 geometry_msgs/Vector3[] center_hold_forces
 geometry_msgs/Vector3[] collision_forces

@@ -5,6 +5,8 @@ grasp_real:
     command_topic: /grasp_type
     pose_topic: /pose_type
     alpha1_topic: /dg5f_grasp_control/alpha1_cmd
+    relative_translation_topic: /dg5f_grasp_control/relative_translation_cmd
+    relative_rotation_deg_topic: /dg5f_grasp_control/relative_rotation_deg_cmd
     rotation_matrix_topic: /dg5f_grasp_control/rotation_matrix_cmd
     teaching_mode_topic: /dg5f_grasp_control/teaching_mode
     debug_topic: /dg5f_grasp_control/debug
@@ -34,6 +36,24 @@ grasp_real:
     groped_tau_limit: 3.0
     groped_force_direction_sign: 1.0
     thumb_centroid_bias: 0.5
+    # Compatibility-only: regular grasp_type 1..5 now uses Cv == Cg immediately.
+    rotation_centroid_transition_sec: 1.0
+    # Reject near-degenerate regular-grasp solutions that amplify another alpha
+    # beyond this multiple of the thumb alpha1.
+    rotation_force_balance_max_alpha_ratio: 10.0
+    # Fade the last valid regular-grasp command to zero on a balance failure.
+    force_balance_error_ramp_sec: 0.5
+    # Relative task-space centroid motion. Start hardware tests at 1 mm.
+    relative_translation_max_m: 0.010
+    relative_translation_kp: 200.0
+    relative_translation_kd: 0.4
+    relative_translation_force_limit: 2.00
+    relative_translation_per_finger_force_limit: 1.20
+    relative_translation_velocity_alpha: 0.20
+    relative_translation_position_tolerance_m: 0.0005
+    relative_translation_velocity_tolerance_mps: 0.003
+    relative_translation_settle_sec: 0.20
+    relative_translation_timeout_sec: 3.0
     jacobian_eps: 0.000001
 
     min_tip_distance: 0.018
