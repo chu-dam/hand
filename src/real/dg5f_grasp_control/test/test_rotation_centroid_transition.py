@@ -737,8 +737,7 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
             for finger, position in initial.fingertip_positions.items()
         }
 
-        rotation_forces, _ = controller._calc_relative_rotation_forces(
-            initial.cg + offset,
+        rotation_forces = controller._calc_relative_rotation_forces(
             shifted_tips,
             now=1.1,
         )
@@ -805,8 +804,7 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
         indices = np.asarray(FINGER_JOINT_INDEX[moving_finger], dtype=int)
         qdot[indices[1]] = 0.25
 
-        rotation_forces, _ = controller._calc_relative_rotation_forces(
-            initial.cg,
+        rotation_forces = controller._calc_relative_rotation_forces(
             initial.fingertip_positions,
             now=1.1,
             qdot=qdot,
@@ -899,8 +897,7 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
                 continue
             rotated_tips[finger] = pivot + rotation @ (position - pivot)
 
-        rotation_forces, _ = controller._calc_relative_rotation_forces(
-            initial.cg,
+        rotation_forces = controller._calc_relative_rotation_forces(
             rotated_tips,
             now=1.5,
         )
@@ -919,8 +916,7 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
             finger for finger in controller.use_fingers if finger != 1
         )
         disturbed_tips[driven_finger] += np.array([0.0, 0.001, 0.0])
-        hold_forces, _ = controller._calc_relative_rotation_forces(
-            initial.cg,
+        hold_forces = controller._calc_relative_rotation_forces(
             disturbed_tips,
             now=1.6,
         )
@@ -933,8 +929,7 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
             atol=0.0,
         )
 
-        timed_out_forces, _ = controller._calc_relative_rotation_forces(
-            initial.cg,
+        timed_out_forces = controller._calc_relative_rotation_forces(
             disturbed_tips,
             now=3.01,
         )
@@ -1174,7 +1169,6 @@ class RelativeTranslationTargetTest(unittest.TestCase):
             relative_translation_hold_kd=0.0,
             relative_translation_shape_kd=0.0,
             relative_translation_reference_ramp_sec=0.5,
-            relative_translation_torque_normalization_enable=False,
         )
         controller = GraspController(cfg, log=None)
         controller.apply_grasp_type(3, now=1.0)
@@ -1210,7 +1204,6 @@ class RelativeTranslationTargetTest(unittest.TestCase):
             relative_translation_shape_kd=0.0,
             relative_translation_velocity_alpha=0.0,
             relative_translation_reference_ramp_sec=0.0,
-            relative_translation_torque_normalization_enable=False,
         )
         controller = GraspController(cfg, log=None)
         controller.apply_grasp_type(3, now=1.0)
@@ -1248,7 +1241,6 @@ class RelativeTranslationTargetTest(unittest.TestCase):
             relative_translation_reference_ramp_sec=0.0,
             relative_translation_force_limit=100.0,
             relative_translation_per_finger_force_limit=100.0,
-            relative_translation_torque_normalization_enable=False,
         )
         controller = GraspController(cfg, log=None)
         controller.apply_grasp_type(3, now=1.0)
@@ -1381,33 +1373,6 @@ class RelativeTranslationTargetTest(unittest.TestCase):
             np.zeros(3),
             rtol=0.0,
             atol=1e-10,
-        )
-
-    def test_legacy_axis_multipliers_do_not_change_uniform_xyz_solver(self):
-        outputs = []
-        for x_multiplier in (1.0, 9.0):
-            cfg = RuntimeConfig(
-                relative_translation_reference_ramp_sec=0.0,
-                relative_translation_torque_axis_multiplier_x=x_multiplier,
-            )
-            controller = GraspController(cfg, log=None)
-            controller.apply_grasp_type(2, now=1.0)
-            controller.step(HAND_PRE_GRASP_POSE, QDOT_ZERO, now=1.1)
-            self.assertTrue(
-                controller.prepare_relative_translation(
-                    np.array([0.005, 0.0, 0.0]),
-                    now=1.2,
-                )
-            )
-            outputs.append(
-                controller.step(HAND_PRE_GRASP_POSE, QDOT_ZERO, now=1.3)
-            )
-
-        np.testing.assert_allclose(
-            outputs[0].relative_translation_position_torques,
-            outputs[1].relative_translation_position_torques,
-            rtol=0.0,
-            atol=1e-12,
         )
 
     def test_pose_or_grasp_change_cancels_target(self):

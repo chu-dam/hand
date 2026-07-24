@@ -126,7 +126,7 @@ estimated angle uses non-thumb contact vectors relative to the current thumb,
 but it is not an object-pose measurement:
 rolling or slipping contacts can make it differ from the physical object
 angle. There is no timed `Cv -> Cg` transition; the obsolete
-`rotation_centroid_transition_sec` parameter remains for compatibility.
+centroid-transition stage has been removed.
 
 ## Relative task-space translation
 

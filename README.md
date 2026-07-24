@@ -278,8 +278,8 @@ controller 상태를 다음 topic으로 발행합니다.
 
 - 5개 fingertip position
 - geometric centroid `Cg`와 virtual centroid `Cv`
-- 상대 회전 목표/접촉점 추정 현재각/남은각/각속도/회전 모멘트와 phase,
-  centroid DLS 오차·조건수·위치 토크·null-space 회전/파지 토크
+- 상대 회전 목표/접촉점 추정 현재각/남은각/각속도/회전 모멘트,
+  엄지 pivot, 제어 mode와 phase
 - 상대 병진 시작/목표 centroid, 명령 변위, 남은 오차와 phase
 - 상대 병진 DLS 최소 특이값/조건수, 관절 보정량, 위치제어 토크,
   null-space 파지 토크
@@ -595,10 +595,8 @@ ros2 topic pub --once \
 - 손가락 추가·제거 전환 중이거나 Teaching Hold 중인 경우 명령 거부
 - `force_balance_error` 상태에서는 명령을 거부하며 grasp type 재선택 필요
 
-기존의 `centroid_redistributing` 단계와
-`rotation_centroid_transition_sec`에 따른 `Cv → Cg` 전환은 더 이상 사용하지
-않습니다. 또한 회전 경로는 논문 식 (16)~(17) 및 DLS/null-space 제어와 분리되어
-있습니다. 명령 순간 엄지 위치 `Pt,0`와 각 `Pi,0`를 한 번만 저장합니다. 엄지는
+회전 경로는 논문 식 (16)~(17) 및 DLS/null-space 제어와 분리되어 있습니다.
+명령 순간 엄지 위치 `Pt,0`와 각 `Pi,0`를 한 번만 저장합니다. 엄지는
 기존 파지력만 유지하고 회전 추가력은 0으로 둡니다. 나머지 손가락은 다음 목표를
 추종합니다.
 

@@ -22,10 +22,6 @@ class RuntimeConfig:
 
     use_finger_count: int = 0
 
-    normal_pose_time: float = 2.0
-    pre_grasp_pose_time: float = 2.0
-    groped_grasp_time: float = 20.0
-
     pose_kp: float = 0.4
     pose_kd: float = 0.05
     pose_pd_limit: float = 0.25
@@ -39,9 +35,6 @@ class RuntimeConfig:
     groped_tau_limit: float = 3.0
     groped_force_direction_sign: float = 1.0
     thumb_centroid_bias: float = 0.5
-    # Retained for launch/config compatibility. Regular grasp types 1..5 now
-    # use Cv == Cg immediately, so no timed centroid transition is performed.
-    rotation_centroid_transition_sec: float = 1.0
     # Maximum alpha/alpha1 ratio accepted by the regular-grasp proportional
     # distribution and its four/five-contact force-balance correction.
     rotation_force_balance_max_alpha_ratio: float = 10.0
@@ -65,16 +58,6 @@ class RuntimeConfig:
     # Hard limits for the diagnostic/shape Cartesian force calculation.
     relative_translation_force_limit: float = 8.50
     relative_translation_per_finger_force_limit: float = 5.50
-    # Compatibility-only legacy J.T-force normalization parameters. They are
-    # no longer used by the uniform XYZ DLS controller.
-    relative_translation_torque_normalization_enable: bool = True
-    relative_translation_torque_gain_nm_per_m: float = 24.0
-    # Physical hand-frame directional compensation. The palm-normal/link-base
-    # X direction needs more breakaway torque than Y/Z on the current hand.
-    relative_translation_torque_axis_multiplier_x: float = 1.30
-    relative_translation_torque_axis_multiplier_y: float = 1.00
-    relative_translation_torque_axis_multiplier_z: float = 1.00
-    relative_translation_torque_limit: float = 0.17
     relative_translation_velocity_alpha: float = 0.20
     relative_translation_position_tolerance_m: float = 0.0005
     relative_translation_velocity_tolerance_mps: float = 0.003
@@ -233,14 +216,6 @@ class RuntimeConfig:
     envelop_non_thumb_tau_sign: float = 1.0
     envelop_thumb_tau_sign: float = -1.0
 
-    # Legacy parameters kept for compatibility with older YAML files.
-    # The current grasp_type=6 logic does not use them.
-    envelop_finger_delay: float = 0.0
-    envelop_thumb_joint_delay: float = 0.20
-    envelop_stall_qdot: float = 0.03
-    envelop_stall_hold_time: float = 0.25
-    envelop_thumb_trigger_after: float = 0.40
-    envelop_thumb_force_start_after: float = 1.20
 
 def load_runtime_config_yaml(path, node_name="grasp_real"):
     """Load RuntimeConfig values from a ROS 2 parameter YAML file.

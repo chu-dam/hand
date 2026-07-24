@@ -19,10 +19,6 @@ grasp_real:
 
     use_finger_count: 3
 
-    normal_pose_time: 2.0
-    pre_grasp_pose_time: 2.0
-    groped_grasp_time: 20.0
-
     pose_kp: 0.4
     pose_kd: 0.05
     pose_pd_limit: 0.25
@@ -36,8 +32,6 @@ grasp_real:
     groped_tau_limit: 3.0
     groped_force_direction_sign: 1.0
     thumb_centroid_bias: 0.5
-    # Compatibility-only: regular grasp_type 1..5 now uses Cv == Cg immediately.
-    rotation_centroid_transition_sec: 1.0
     # Reject near-degenerate regular-grasp solutions that amplify another alpha
     # beyond this multiple of the thumb alpha1.
     rotation_force_balance_max_alpha_ratio: 10.0
@@ -59,15 +53,6 @@ grasp_real:
     # Cartesian diagnostic/shape force limits.
     relative_translation_force_limit: 8.50
     relative_translation_per_finger_force_limit: 5.50
-    # Legacy J.T adaptive settings, retained only for config compatibility.
-    # The uniform XYZ DLS controller does not use these values.
-    relative_translation_torque_normalization_enable: true
-    relative_translation_torque_gain_nm_per_m: 24.0
-    # Direction compensation is evaluated after World -> link_base rotation.
-    relative_translation_torque_axis_multiplier_x: 1.30
-    relative_translation_torque_axis_multiplier_y: 1.00
-    relative_translation_torque_axis_multiplier_z: 1.00
-    relative_translation_torque_limit: 0.17
     relative_translation_velocity_alpha: 0.20
     relative_translation_position_tolerance_m: 0.0005
     relative_translation_velocity_tolerance_mps: 0.003

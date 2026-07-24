@@ -108,27 +108,10 @@ class ControlOutput:
     relative_rotation_axis: np.ndarray = field(
         default_factory=lambda: np.zeros(3, dtype=np.float64)
     )
-    relative_rotation_start_centroid: np.ndarray = field(
-        default_factory=lambda: np.zeros(3, dtype=np.float64)
-    )
     relative_rotation_pivot: np.ndarray = field(
         default_factory=lambda: np.zeros(3, dtype=np.float64)
     )
     relative_rotation_control_mode: str = "idle"
-    relative_rotation_center_error: np.ndarray = field(
-        default_factory=lambda: np.zeros(3, dtype=np.float64)
-    )
-    relative_rotation_dls_sigma_min: float = 0.0
-    relative_rotation_dls_condition: float = 0.0
-    relative_rotation_center_joint_error: np.ndarray = field(
-        default_factory=lambda: np.zeros(JOINT_COUNT, dtype=np.float64)
-    )
-    relative_rotation_center_position_torques: np.ndarray = field(
-        default_factory=lambda: np.zeros(JOINT_COUNT, dtype=np.float64)
-    )
-    relative_rotation_nullspace_torques: np.ndarray = field(
-        default_factory=lambda: np.zeros(JOINT_COUNT, dtype=np.float64)
-    )
     relative_translation_phase: str = "idle"
     relative_translation_start_centroid: np.ndarray = field(
         default_factory=lambda: np.zeros(3, dtype=np.float64)
@@ -238,15 +221,13 @@ class GraspController:
         self.grasp_type7_rotation_cg_ref = None
 
         # Generic grasp types (1..5) already use Cv == Cg and balanced grasp
-        # forces. A relative command therefore only stores the signed target
-        # for the future rotation stage; it applies no rotation force yet.
+        # forces. Relative rotation stores the command-time contact geometry
+        # and drives non-thumb fingertips around the current thumb pivot.
         self.relative_rotation_phase = "idle"
         self.relative_rotation_target_rad = 0.0
         self.relative_rotation_started_at = None
-        self.relative_rotation_start_centroid = np.zeros(3, dtype=np.float64)
         self.relative_rotation_pivot = np.zeros(3, dtype=np.float64)
         self.relative_rotation_start_fingertips = {}
-        self.relative_rotation_contact_weights = {}
         self.relative_rotation_current_rad = 0.0
         self.relative_rotation_error_rad = 0.0
         self.relative_rotation_angular_velocity = 0.0
@@ -254,9 +235,6 @@ class GraspController:
         self.relative_rotation_axis = np.zeros(3, dtype=np.float64)
         self.relative_rotation_last_wrapped_angle = None
         self.relative_rotation_last_time = None
-        self.relative_rotation_last_centroid = None
-        self.relative_rotation_centroid_velocity = np.zeros(3, dtype=np.float64)
-        self.relative_rotation_reached_since = None
         self.relative_rotation_reference_progress = 0.0
         # Relative task-space motion state. The grasp policy keeps the normal
         # holding force active in the null space while a centroid DLS
@@ -309,10 +287,8 @@ class GraspController:
         self.relative_rotation_phase = "idle"
         self.relative_rotation_target_rad = 0.0
         self.relative_rotation_started_at = None
-        self.relative_rotation_start_centroid[:] = 0.0
         self.relative_rotation_pivot[:] = 0.0
         self.relative_rotation_start_fingertips = {}
-        self.relative_rotation_contact_weights = {}
         self.relative_rotation_current_rad = 0.0
         self.relative_rotation_error_rad = 0.0
         self.relative_rotation_angular_velocity = 0.0
@@ -320,9 +296,6 @@ class GraspController:
         self.relative_rotation_axis[:] = 0.0
         self.relative_rotation_last_wrapped_angle = None
         self.relative_rotation_last_time = None
-        self.relative_rotation_last_centroid = None
-        self.relative_rotation_centroid_velocity[:] = 0.0
-        self.relative_rotation_reached_since = None
         self.relative_rotation_reference_progress = 0.0
 
     def cancel_relative_translation(self) -> None:
@@ -479,17 +452,11 @@ class GraspController:
             )
             return False
 
-        start_centroid = np.asarray(
-            self.last_regular_policy_result.cg,
-            dtype=np.float64,
-        )
         start_fingertips = _copy_finger_vectors(
             self.last_regular_policy_result.fingertip_positions
         )
         if (
-            start_centroid.shape != (3,)
-            or not np.all(np.isfinite(start_centroid))
-            or set(start_fingertips) != set(self.use_fingers)
+            set(start_fingertips) != set(self.use_fingers)
             or 1 not in start_fingertips
         ):
             self._log(
@@ -508,18 +475,12 @@ class GraspController:
         if not np.isfinite(axis_norm) or axis_norm <= 1e-12:
             raise ValueError("rotation palm-normal axis must be finite and non-zero")
         axis /= axis_norm
-        contact_weights = self._calc_centroid_contact_weights(
-            start_centroid,
-            start_fingertips,
-        )
 
         self.cancel_relative_translation()
         self.cancel_relative_rotation()
         self.relative_rotation_target_rad = angle_rad
-        self.relative_rotation_start_centroid = start_centroid.copy()
         self.relative_rotation_pivot = start_fingertips[1].copy()
         self.relative_rotation_start_fingertips = start_fingertips
-        self.relative_rotation_contact_weights = contact_weights
         self.relative_rotation_current_rad = 0.0
         self.relative_rotation_error_rad = angle_rad
         self.relative_rotation_angular_velocity = 0.0
@@ -527,9 +488,6 @@ class GraspController:
         self.relative_rotation_axis = axis
         self.relative_rotation_last_wrapped_angle = 0.0
         self.relative_rotation_last_time = now
-        self.relative_rotation_last_centroid = start_centroid.copy()
-        self.relative_rotation_centroid_velocity[:] = 0.0
-        self.relative_rotation_reached_since = None
         self.relative_rotation_reference_progress = 0.0
         self.relative_rotation_phase = "rotating"
         self.relative_rotation_started_at = now
@@ -746,7 +704,6 @@ class GraspController:
 
     def _estimate_relative_rotation_angle(
         self,
-        cg: np.ndarray,
         tip_positions: Dict[int, np.ndarray],
     ) -> float:
         """Estimate signed contact-constellation rotation about the saved axis."""
@@ -810,21 +767,18 @@ class GraspController:
 
     def _calc_relative_rotation_forces(
         self,
-        cg: np.ndarray,
         tip_positions: Dict[int, np.ndarray],
         now: float,
         qdot: np.ndarray | None = None,
-    ):
-        """Track fixed fingertip targets rotated about the saved centroid."""
+    ) -> Dict[int, np.ndarray]:
+        """Track non-thumb fingertip targets about the thumb pivot."""
 
         rotation_forces = self._zero_translation_forces(tip_positions)
-        center_forces = self._zero_translation_forces(tip_positions)
         self.relative_rotation_command_moment = 0.0
         active_phases = {"rotating", "rotation_reached"}
         if self.relative_rotation_phase not in active_phases:
-            return rotation_forces, center_forces
+            return rotation_forces
 
-        cg = np.asarray(cg, dtype=np.float64)
         tip_positions = {
             int(finger): np.asarray(position, dtype=np.float64)
             for finger, position in tip_positions.items()
@@ -837,13 +791,10 @@ class GraspController:
         now = float(now)
         expected_fingers = set(self.relative_rotation_start_fingertips)
         if (
-            cg.shape != (3,)
-            or not np.all(np.isfinite(cg))
-            or qdot.shape != (JOINT_COUNT,)
+            qdot.shape != (JOINT_COUNT,)
             or not np.all(np.isfinite(qdot))
             or not np.isfinite(now)
             or set(tip_positions) != expected_fingers
-            or set(self.relative_rotation_contact_weights) != expected_fingers
             or any(
                 position.shape != (3,) or not np.all(np.isfinite(position))
                 for position in tip_positions.values()
@@ -851,17 +802,14 @@ class GraspController:
         ):
             self.relative_rotation_phase = "rotation_error"
             self._log("[RELATIVE_ROTATION] stopped: invalid contact geometry/time")
-            return rotation_forces, center_forces
+            return rotation_forces
 
         try:
-            wrapped_angle = self._estimate_relative_rotation_angle(
-                cg,
-                tip_positions,
-            )
+            wrapped_angle = self._estimate_relative_rotation_angle(tip_positions)
         except ValueError as exc:
             self.relative_rotation_phase = "rotation_error"
             self._log(f"[RELATIVE_ROTATION] stopped: {exc}")
-            return rotation_forces, center_forces
+            return rotation_forces
 
         dt = None
         if self.relative_rotation_last_time is not None:
@@ -883,21 +831,11 @@ class GraspController:
                 * self.relative_rotation_angular_velocity
                 + velocity_alpha * raw_angular_velocity
             )
-            if self.relative_rotation_last_centroid is not None:
-                raw_centroid_velocity = (
-                    cg - self.relative_rotation_last_centroid
-                ) / dt
-                self.relative_rotation_centroid_velocity = (
-                    (1.0 - velocity_alpha)
-                    * self.relative_rotation_centroid_velocity
-                    + velocity_alpha * raw_centroid_velocity
-                )
         else:
             self.relative_rotation_current_rad = wrapped_angle
 
         self.relative_rotation_last_wrapped_angle = wrapped_angle
         self.relative_rotation_last_time = now
-        self.relative_rotation_last_centroid = cg.copy()
         self.relative_rotation_error_rad = (
             self.relative_rotation_target_rad
             - self.relative_rotation_current_rad
@@ -915,12 +853,11 @@ class GraspController:
             and elapsed >= timeout
         ):
             self.relative_rotation_phase = "rotation_timeout"
-            self.relative_rotation_reached_since = None
             self._log(
                 "[RELATIVE_ROTATION] timeout; Cartesian rotation force removed "
                 f"error_deg={np.degrees(self.relative_rotation_error_rad):.3f}"
             )
-            return rotation_forces, center_forces
+            return rotation_forces
 
         ramp_sec = max(
             0.0,
@@ -929,7 +866,7 @@ class GraspController:
         if not np.isfinite(ramp_sec):
             self.relative_rotation_phase = "rotation_error"
             self._log("[RELATIVE_ROTATION] stopped: invalid reference ramp")
-            return rotation_forces, center_forces
+            return rotation_forces
         ramp_linear = 1.0 if ramp_sec <= 0.0 else np.clip(
             elapsed / ramp_sec,
             0.0,
@@ -978,7 +915,7 @@ class GraspController:
         ):
             self.relative_rotation_phase = "rotation_error"
             self._log("[RELATIVE_ROTATION] stopped: invalid rotation gains")
-            return rotation_forces, center_forces
+            return rotation_forces
 
         axis = np.asarray(self.relative_rotation_axis, dtype=np.float64)
         start_pivot = self.relative_rotation_pivot
@@ -1000,7 +937,7 @@ class GraspController:
         if not driven_fingers:
             self.relative_rotation_phase = "rotation_error"
             self._log("[RELATIVE_ROTATION] stopped: no non-thumb driven finger")
-            return rotation_forces, center_forces
+            return rotation_forces
         axis_cross = np.array(
             [
                 [0.0, -axis[2], axis[1]],
@@ -1098,7 +1035,7 @@ class GraspController:
             0.0,
         )
 
-        return rotation_forces, center_forces
+        return rotation_forces
 
     def _calc_relative_translation_forces(
         self,
@@ -2857,21 +2794,6 @@ class GraspController:
         effective_thumb_centroid_bias = 0.0
         relative_rotation_force_balance_blend = 0.0
         relative_rotation_control_mode = "idle"
-        relative_rotation_center_error = np.zeros(3, dtype=np.float64)
-        relative_rotation_dls_sigma_min = 0.0
-        relative_rotation_dls_condition = 0.0
-        relative_rotation_center_joint_error = np.zeros(
-            JOINT_COUNT,
-            dtype=np.float64,
-        )
-        relative_rotation_center_position_torques = np.zeros(
-            JOINT_COUNT,
-            dtype=np.float64,
-        )
-        relative_rotation_nullspace_torques = np.zeros(
-            JOINT_COUNT,
-            dtype=np.float64,
-        )
         relative_translation_torque_target = 0.0
         relative_translation_force_scale = 0.0
         relative_translation_control_mode = "idle"
@@ -2994,17 +2916,12 @@ class GraspController:
 
             if regular_grasp:
                 base_total_forces = _copy_finger_vectors(total_forces)
-                (
-                    generic_rotation_forces,
-                    generic_center_hold_forces,
-                ) = self._calc_relative_rotation_forces(
-                    cg,
+                generic_rotation_forces = self._calc_relative_rotation_forces(
                     fingertip_positions,
                     now,
                     qdot,
                 )
                 rotation_forces.update(generic_rotation_forces)
-                center_hold_forces.update(generic_center_hold_forces)
                 if self.relative_rotation_phase in {
                     "rotating",
                     "rotation_reached",
@@ -3015,9 +2932,6 @@ class GraspController:
                     grasp_tau = self.policy.calc_tau_from_total_forces(
                         self.hand_q,
                         total_forces,
-                    )
-                    relative_rotation_center_error = (
-                        self.relative_rotation_start_centroid - cg
                     )
                     if self.relative_rotation_phase == "rotating":
                         relative_rotation_control_mode = (
@@ -3187,30 +3101,9 @@ class GraspController:
                 self.relative_rotation_command_moment
             ),
             relative_rotation_axis=self.relative_rotation_axis.copy(),
-            relative_rotation_start_centroid=(
-                self.relative_rotation_start_centroid.copy()
-            ),
             relative_rotation_pivot=self.relative_rotation_pivot.copy(),
             relative_rotation_control_mode=str(
                 relative_rotation_control_mode
-            ),
-            relative_rotation_center_error=(
-                relative_rotation_center_error.copy()
-            ),
-            relative_rotation_dls_sigma_min=float(
-                relative_rotation_dls_sigma_min
-            ),
-            relative_rotation_dls_condition=float(
-                relative_rotation_dls_condition
-            ),
-            relative_rotation_center_joint_error=(
-                relative_rotation_center_joint_error.copy()
-            ),
-            relative_rotation_center_position_torques=(
-                relative_rotation_center_position_torques.copy()
-            ),
-            relative_rotation_nullspace_torques=(
-                relative_rotation_nullspace_torques.copy()
             ),
             relative_translation_phase=str(self.relative_translation_phase),
             relative_translation_start_centroid=(

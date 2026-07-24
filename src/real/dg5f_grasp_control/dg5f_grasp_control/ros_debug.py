@@ -101,10 +101,14 @@ def build_grasp_debug_message(
         if output is not None
         else controller.relative_rotation_phase
     )
+    rotation_start_fingertips = controller.relative_rotation_start_fingertips
     relative_rotation_start_centroid = (
-        output.relative_rotation_start_centroid
-        if output is not None
-        else controller.relative_rotation_start_centroid
+        np.mean(
+            np.stack(list(rotation_start_fingertips.values())),
+            axis=0,
+        )
+        if rotation_start_fingertips
+        else np.zeros(3, dtype=np.float64)
     )
     relative_rotation_pivot = (
         output.relative_rotation_pivot
@@ -145,36 +149,6 @@ def build_grasp_debug_message(
         output.relative_rotation_control_mode
         if output is not None
         else "idle"
-    )
-    relative_rotation_center_error = (
-        output.relative_rotation_center_error
-        if output is not None
-        else np.zeros(3, dtype=np.float64)
-    )
-    relative_rotation_dls_sigma_min = (
-        output.relative_rotation_dls_sigma_min
-        if output is not None
-        else 0.0
-    )
-    relative_rotation_dls_condition = (
-        output.relative_rotation_dls_condition
-        if output is not None
-        else 0.0
-    )
-    relative_rotation_center_joint_error = (
-        output.relative_rotation_center_joint_error
-        if output is not None
-        else np.zeros(JOINT_COUNT, dtype=np.float64)
-    )
-    relative_rotation_center_position_torques = (
-        output.relative_rotation_center_position_torques
-        if output is not None
-        else np.zeros(JOINT_COUNT, dtype=np.float64)
-    )
-    relative_rotation_nullspace_torques = (
-        output.relative_rotation_nullspace_torques
-        if output is not None
-        else np.zeros(JOINT_COUNT, dtype=np.float64)
     )
     relative_translation_start = (
         output.relative_translation_start_centroid
@@ -309,24 +283,20 @@ def build_grasp_debug_message(
         relative_rotation_control_mode
     )
     message.relative_rotation_center_error = _vector(
-        relative_rotation_center_error
+        np.zeros(3, dtype=np.float64)
     )
-    message.relative_rotation_dls_sigma_min = float(
-        relative_rotation_dls_sigma_min
-    )
-    message.relative_rotation_dls_condition = float(
-        relative_rotation_dls_condition
-    )
-    message.relative_rotation_center_joint_error = np.asarray(
-        relative_rotation_center_joint_error,
+    message.relative_rotation_dls_sigma_min = 0.0
+    message.relative_rotation_dls_condition = 0.0
+    message.relative_rotation_center_joint_error = np.zeros(
+        JOINT_COUNT,
         dtype=np.float64,
     ).tolist()
-    message.relative_rotation_center_position_torques = np.asarray(
-        relative_rotation_center_position_torques,
+    message.relative_rotation_center_position_torques = np.zeros(
+        JOINT_COUNT,
         dtype=np.float64,
     ).tolist()
-    message.relative_rotation_nullspace_torques = np.asarray(
-        relative_rotation_nullspace_torques,
+    message.relative_rotation_nullspace_torques = np.zeros(
+        JOINT_COUNT,
         dtype=np.float64,
     ).tolist()
     message.relative_translation_start_centroid = _point(
