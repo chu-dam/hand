@@ -252,7 +252,7 @@ class GraspController:
         self.relative_translation_last_fingertips = {}
         self.relative_translation_fingertip_velocities = {}
         self.relative_translation_contact_weights = {}
-        self.relative_translation_max_fingertip_error = 0.0
+        self.relative_translation_max_axis_fingertip_error = 0.0
         self.relative_translation_reference_progress = 0.0
         self.relative_translation_control_axis_error = 0.0
         self.relative_translation_control_axis_drive_force = 0.0
@@ -314,7 +314,7 @@ class GraspController:
         self.relative_translation_last_fingertips = {}
         self.relative_translation_fingertip_velocities = {}
         self.relative_translation_contact_weights = {}
-        self.relative_translation_max_fingertip_error = 0.0
+        self.relative_translation_max_axis_fingertip_error = 0.0
         self.relative_translation_reference_progress = 0.0
         self.relative_translation_control_axis_error = 0.0
         self.relative_translation_control_axis_drive_force = 0.0
@@ -600,7 +600,7 @@ class GraspController:
             for finger in start_fingertips
         }
         self.relative_translation_contact_weights = contact_weights
-        self.relative_translation_max_fingertip_error = distance
+        self.relative_translation_max_axis_fingertip_error = distance
         self.relative_translation_reference_progress = 0.0
         self.relative_translation_control_axis_error = 0.0
         self.relative_translation_control_axis_drive_force = 0.0
@@ -1155,17 +1155,16 @@ class GraspController:
             )
             for finger, position in tip_positions.items()
         }
-        self.relative_translation_max_fingertip_error = max(
-            float(np.linalg.norm(error))
-            for error in fingertip_errors.values()
-        )
-
         translation_distance = float(np.linalg.norm(self.relative_translation_delta))
         if translation_distance <= 1e-12:
             self.relative_translation_phase = "translation_error"
             self._log("[RELATIVE_TRANSLATION] stopped: zero translation direction")
             return zero
         translation_axis = self.relative_translation_delta / translation_distance
+        self.relative_translation_max_axis_fingertip_error = max(
+            abs(float(np.dot(translation_axis, error)))
+            for error in fingertip_errors.values()
+        )
         self.relative_translation_control_axis_error = float(
             np.dot(translation_axis, control_centroid_error)
         )
@@ -1183,8 +1182,8 @@ class GraspController:
                 "[RELATIVE_TRANSLATION] timeout; position control removed "
                 f"centroid_error_mm="
                 f"{np.round(1000.0 * self.relative_translation_error, 3).tolist()}, "
-                f"max_tip_error_mm="
-                f"{1000.0 * self.relative_translation_max_fingertip_error:.3f}"
+                f"max_axis_tip_error_mm="
+                f"{1000.0 * self.relative_translation_max_axis_fingertip_error:.3f}"
             )
             return zero
 
@@ -1196,23 +1195,33 @@ class GraspController:
             0.0,
             float(self.cfg.relative_translation_velocity_tolerance_mps),
         )
-        position_error_norm = float(np.linalg.norm(self.relative_translation_error))
-        maximum_fingertip_velocity = max(
+        axis_position_error = abs(
+            float(np.dot(translation_axis, self.relative_translation_error))
+        )
+        maximum_axis_fingertip_velocity = max(
             (
-                float(np.linalg.norm(velocity))
+                abs(float(np.dot(translation_axis, velocity)))
                 for velocity in self.relative_translation_fingertip_velocities.values()
             ),
             default=0.0,
         )
-        velocity_norm = max(
-            float(np.linalg.norm(self.relative_translation_centroid_velocity)),
-            maximum_fingertip_velocity,
+        axis_velocity = max(
+            abs(
+                float(
+                    np.dot(
+                        translation_axis,
+                        self.relative_translation_centroid_velocity,
+                    )
+                )
+            ),
+            maximum_axis_fingertip_velocity,
         )
         inside_tolerance = (
             reference_progress >= 1.0 - 1e-12
-            and position_error_norm <= position_tolerance
-            and self.relative_translation_max_fingertip_error <= position_tolerance
-            and velocity_norm <= velocity_tolerance
+            and axis_position_error <= position_tolerance
+            and self.relative_translation_max_axis_fingertip_error
+            <= position_tolerance
+            and axis_velocity <= velocity_tolerance
         )
         if inside_tolerance:
             if self.relative_translation_reached_since is None:
@@ -1230,16 +1239,16 @@ class GraspController:
                     "[RELATIVE_TRANSLATION] target reached "
                     f"centroid_error_mm="
                     f"{np.round(1000.0 * self.relative_translation_error, 3).tolist()}, "
-                    f"max_tip_error_mm="
-                    f"{1000.0 * self.relative_translation_max_fingertip_error:.3f}"
+                    f"max_axis_tip_error_mm="
+                    f"{1000.0 * self.relative_translation_max_axis_fingertip_error:.3f}"
                 )
         else:
             self.relative_translation_reached_since = None
             if (
                 self.relative_translation_phase == "translation_reached"
                 and max(
-                    position_error_norm,
-                    self.relative_translation_max_fingertip_error,
+                    axis_position_error,
+                    self.relative_translation_max_axis_fingertip_error,
                 )
                 > 1.5 * max(position_tolerance, 1e-9)
             ):
@@ -1247,19 +1256,10 @@ class GraspController:
 
         kp = float(self.cfg.relative_translation_kp)
         kd = float(self.cfg.relative_translation_kd)
-        hold_kp = float(self.cfg.relative_translation_hold_kp)
-        hold_kd = float(self.cfg.relative_translation_hold_kd)
         shape_kp = float(self.cfg.relative_translation_shape_kp)
         shape_kd = float(self.cfg.relative_translation_shape_kd)
-        cross_axis_deadband = float(
-            self.cfg.relative_translation_cross_axis_deadband_m
-        )
-        gains = (kp, kd, hold_kp, hold_kd, shape_kp, shape_kd)
-        if (
-            not all(np.isfinite(gain) and gain >= 0.0 for gain in gains)
-            or not np.isfinite(cross_axis_deadband)
-            or cross_axis_deadband < 0.0
-        ):
+        gains = (kp, kd, shape_kp, shape_kd)
+        if not all(np.isfinite(gain) and gain >= 0.0 for gain in gains):
             self.relative_translation_phase = "translation_error"
             self._log("[RELATIVE_TRANSLATION] stopped: invalid Cartesian gains")
             return zero
@@ -1269,25 +1269,11 @@ class GraspController:
             translation_axis
             * float(np.dot(translation_axis, control_centroid_error))
         )
-        cross_axis_error = control_centroid_error - axis_error
-        cross_axis_error_norm = float(np.linalg.norm(cross_axis_error))
-        if cross_axis_error_norm <= cross_axis_deadband:
-            cross_axis_error[:] = 0.0
-        elif cross_axis_deadband > 0.0:
-            cross_axis_error *= (
-                1.0 - cross_axis_deadband / cross_axis_error_norm
-            )
         axis_velocity = (
             translation_axis
             * float(np.dot(translation_axis, centroid_velocity))
         )
-        cross_axis_velocity = centroid_velocity - axis_velocity
-        object_force = (
-            kp * axis_error
-            - kd * axis_velocity
-            + hold_kp * cross_axis_error
-            - hold_kd * cross_axis_velocity
-        )
+        object_force = kp * axis_error - kd * axis_velocity
         self.relative_translation_control_axis_drive_force = float(
             np.dot(translation_axis, object_force)
         )
@@ -1390,11 +1376,11 @@ class GraspController:
         base_grasp_tau: np.ndarray,
         qdot: np.ndarray,
     ):
-        """Combine centroid DLS position control and null-space grasp torque.
+        """Combine command-axis centroid DLS and null-space grasp torque.
 
-        The same 3-D centroid Jacobian is used for X, Y, and Z. Position torque
-        has task priority. Existing grasp and zero-resultant shape torque are
-        retained only in the null space of that centroid task.
+        Only centroid motion along the requested direction has task priority.
+        Orthogonal centroid directions remain unconstrained. Existing grasp
+        and zero-resultant shape torque are projected out of the 1-D task.
         """
 
         zero = np.zeros(JOINT_COUNT, dtype=np.float64)
@@ -1439,13 +1425,25 @@ class GraspController:
                 for finger in fingers
             ]
         )
-        singular_values = np.linalg.svd(centroid_jacobian, compute_uv=False)
-        sigma_min = float(singular_values[-1]) if singular_values.size else 0.0
-        condition = (
-            float(singular_values[0] / sigma_min)
-            if sigma_min > 1e-12
-            else float("inf")
+        translation_distance = float(
+            np.linalg.norm(self.relative_translation_delta)
         )
+        if not np.isfinite(translation_distance) or translation_distance <= 1e-12:
+            self.relative_translation_phase = "translation_error"
+            self._log("[RELATIVE_TRANSLATION] stopped: invalid translation axis")
+            return (
+                base_grasp_tau.copy(),
+                zero.copy(),
+                zero.copy(),
+                zero.copy(),
+                0.0,
+                float("inf"),
+            )
+        translation_axis = self.relative_translation_delta / translation_distance
+        axis_jacobian = translation_axis.reshape(1, 3) @ centroid_jacobian
+        singular_values = np.linalg.svd(axis_jacobian, compute_uv=False)
+        sigma_min = float(singular_values[-1]) if singular_values.size else 0.0
+        condition = 1.0 if sigma_min > 1e-12 else float("inf")
 
         damping = float(self.cfg.relative_translation_dls_damping)
         rcond = float(self.cfg.relative_translation_nullspace_rcond)
@@ -1499,16 +1497,23 @@ class GraspController:
             self.relative_translation_target_centroid
             - self.relative_translation_error
         )
-        control_error = reference_centroid - current_centroid
-
-        regularizer = (damping * damping) * np.eye(3, dtype=np.float64)
-        try:
-            dls_inverse = centroid_jacobian.T @ np.linalg.solve(
-                centroid_jacobian @ centroid_jacobian.T + regularizer,
-                np.eye(3, dtype=np.float64),
+        control_error = float(
+            np.dot(
+                translation_axis,
+                reference_centroid - current_centroid,
             )
+        )
+
+        try:
+            denominator = float(
+                (axis_jacobian @ axis_jacobian.T).item()
+                + damping * damping
+            )
+            if not np.isfinite(denominator) or denominator <= 1e-15:
+                raise np.linalg.LinAlgError("degenerate command-axis Jacobian")
+            dls_inverse = axis_jacobian.T / denominator
             nullspace_inverse = np.linalg.pinv(
-                centroid_jacobian,
+                axis_jacobian,
                 rcond=rcond,
             )
         except np.linalg.LinAlgError:
@@ -1523,13 +1528,14 @@ class GraspController:
                 condition,
             )
 
-        joint_error_active = dls_inverse @ control_error
+        joint_error_active = dls_inverse[:, 0] * control_error
         maximum_joint_error = float(np.max(np.abs(joint_error_active)))
         if maximum_joint_error > correction_limit:
             joint_error_active *= correction_limit / maximum_joint_error
 
         qdot_active = np.asarray(qdot, dtype=np.float64)[active_indices]
-        task_joint_velocity = dls_inverse @ (centroid_jacobian @ qdot_active)
+        axis_task_velocity = float((axis_jacobian @ qdot_active).item())
+        task_joint_velocity = dls_inverse[:, 0] * axis_task_velocity
         position_tau_active = (
             joint_kp * joint_error_active - joint_kd * task_joint_velocity
         )
@@ -1548,7 +1554,7 @@ class GraspController:
         )
         null_projector = (
             np.eye(len(active_indices), dtype=np.float64)
-            - nullspace_inverse @ centroid_jacobian
+            - nullspace_inverse @ axis_jacobian
         )
         projected_grasp_tau_active = (
             nullspace_grasp_gain
@@ -2973,7 +2979,7 @@ class GraspController:
                         "translation_reached",
                     }:
                         relative_translation_control_mode = (
-                            "centroid_dls_nullspace"
+                            "axis_centroid_dls_nullspace"
                         )
 
             if (

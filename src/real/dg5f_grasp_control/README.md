@@ -147,22 +147,24 @@ P_target_i = P_start_i + delta_link_base
 ```
 
 The Cartesian reference advances with a 0.7-second smoothstep instead of a
-position step. X, Y, and Z all use the same centroid Jacobian and damped
-least-squares (DLS) inverse:
+position step. Let `a` be the unit vector of the requested direction. Only the
+centroid error along `a` is controlled; the two orthogonal centroid directions
+remain unconstrained:
 
 ```text
 Jc = [w1 J1  w2 J2  ...  wn Jn]
-Jc# = Jc.T (Jc Jc.T + lambda^2 I)^-1
-delta_q = Jc# (C_reference - Cg)
-tau_position = Kq delta_q - Dq Jc# Jc qdot
+Ja = a.T Jc
+Ja# = Ja.T / (Ja Ja.T + lambda^2)
+e_axis = a.T (C_reference - Cg)
+delta_q = Ja# e_axis
+tau_position = Kq delta_q - Dq Ja# Ja qdot
 ```
 
-There is no X-only multiplier or direction-specific force boost in this path.
 The existing grasp and relative fingertip-shape torque is treated as a
-secondary task and projected into the centroid task null space:
+secondary task and projected out of the command-axis task:
 
 ```text
-N = I - pinv(Jc) Jc
+N = I - pinv(Ja) Ja
 tau = tau_position + N.T tau_grasp+shape
 ```
 
@@ -177,13 +179,9 @@ sum(f_shape_i) = 0
 
 It can therefore help preserve the captured contact geometry without adding a
 direct object resultant. Joint correction and position-torque limits, DLS
-damping, a 3-second timeout, fingertip/centroid settle checks, and normal grasp
-torque clipping remain active. Start real-hand commissioning with a 1 mm
-command and keep RELEASE ready.
-
-The old direction-dependent `J.T` force normalization parameters remain in
-`RuntimeConfig` only so older YAML/launch files still load; they do not affect
-the DLS motion controller.
+damping, a 3-second timeout, command-axis fingertip/centroid settle checks, and
+normal grasp torque clipping remain active. Start real-hand commissioning with
+a 1 mm command and keep RELEASE ready.
 
 `GraspDebug` reports the start, target, delta, remaining error, centroid
 velocity, virtual Cartesian diagnostic force, and per-finger virtual/shape
@@ -218,11 +216,8 @@ rotation_force_balance_max_alpha_ratio: 10.0
 force_balance_error_ramp_sec: 0.5
 relative_translation_kp: 600.0
 relative_translation_kd: 6.0
-relative_translation_hold_kp: 120.0
-relative_translation_hold_kd: 1.2
 relative_translation_shape_kp: 120.0
 relative_translation_shape_kd: 1.2
-relative_translation_cross_axis_deadband_m: 0.0003
 relative_translation_reference_ramp_sec: 0.7
 relative_translation_force_limit: 8.5
 relative_translation_per_finger_force_limit: 5.5

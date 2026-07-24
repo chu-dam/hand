@@ -312,9 +312,10 @@ overlay, 월드 X/Y/Z 힘 이력 그래프와 시간 초기화, 그리고 Teachi
 상대 회전 목표, Alpha1, rotation matrix 명령을 전송하는 React UI가 있습니다.
 파지 후 활성화되는 `04 Task-Space Position`에서 원하는 이동량(mm)과
 `±X/±Y/±Z` World 방향을 선택할 수 있습니다. 상대 목표를 ROS로 전달하면
-geometric centroid의 3축 Jacobian을 만들고 같은 DLS 위치제어식을 X/Y/Z 모두에
-적용합니다. 기존 파지력과 손끝 형상 복원력은 centroid 이동을 방해하지 않도록
-`N = I - pinv(Jc)Jc`의 null space로 투영됩니다. 목표와 제어 계층은 0.7초
+geometric centroid Jacobian을 선택한 이동 방향에 투영하여 1차원 DLS
+위치제어를 적용합니다. 선택하지 않은 두 방향의 centroid 변위는 제어하지
+않습니다. 기존 파지력과 손끝 형상 복원력은 명령 축 이동을 방해하지 않도록
+`N = I - pinv(Ja)Ja`의 null space로 투영됩니다. 목표와 제어 계층은 0.7초
 smoothstep으로 전환되며, 관절 보정량과 위치 토크에 각각 제한이 적용됩니다.
 
 UI의 `Position torque max`에서는 DLS 위치 토크의 최대 절댓값을, DLS의 `σmin`과

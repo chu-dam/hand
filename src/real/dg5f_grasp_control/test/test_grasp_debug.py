@@ -248,7 +248,7 @@ class GraspDebugTest(unittest.TestCase):
         )
         self.assertEqual(
             message.relative_translation_control_mode,
-            "centroid_dls_nullspace",
+            "axis_centroid_dls_nullspace",
         )
         self.assertGreater(message.relative_translation_dls_sigma_min, 0.0)
         self.assertTrue(np.isfinite(message.relative_translation_dls_condition))

@@ -42,12 +42,10 @@ grasp_real:
     relative_translation_max_m: 0.010
     relative_translation_kp: 600.0
     relative_translation_kd: 6.0
-    # Softer orthogonal hold and zero-resultant fingertip-shape stabilization.
-    relative_translation_hold_kp: 120.0
-    relative_translation_hold_kd: 1.2
+    # Zero-resultant fingertip-shape stabilization. Centroid position is
+    # controlled only along the requested translation axis.
     relative_translation_shape_kp: 120.0
     relative_translation_shape_kd: 1.2
-    relative_translation_cross_axis_deadband_m: 0.0003
     # Smooth the Cartesian reference instead of applying a position step.
     relative_translation_reference_ramp_sec: 0.7
     # Cartesian diagnostic/shape force limits.
@@ -58,8 +56,8 @@ grasp_real:
     relative_translation_velocity_tolerance_mps: 0.003
     relative_translation_settle_sec: 0.20
     relative_translation_timeout_sec: 3.0
-    # Same centroid DLS position controller is used for X, Y, and Z. Existing
-    # grasp/shape torque is projected into the centroid task null space.
+    # One-dimensional centroid DLS task along the requested direction. Existing
+    # grasp/shape torque is projected only out of that command-axis task.
     relative_translation_dls_damping: 0.005
     relative_translation_nullspace_rcond: 0.00001
     relative_translation_joint_kp: 1.20

@@ -47,13 +47,10 @@ class RuntimeConfig:
     # by the DLS joint-position gains below.
     relative_translation_kp: float = 600.0
     relative_translation_kd: float = 6.0
-    # Orthogonal centroid hold and relative fingertip-shape stabilization are
-    # deliberately softer than the commanded motion axis.
-    relative_translation_hold_kp: float = 120.0
-    relative_translation_hold_kd: float = 1.2
+    # Relative fingertip-shape stabilization remains active, but centroid
+    # position control is applied only along the commanded translation axis.
     relative_translation_shape_kp: float = 120.0
     relative_translation_shape_kd: float = 1.2
-    relative_translation_cross_axis_deadband_m: float = 0.0003
     relative_translation_reference_ramp_sec: float = 0.7
     # Hard limits for the diagnostic/shape Cartesian force calculation.
     relative_translation_force_limit: float = 8.50
@@ -63,9 +60,9 @@ class RuntimeConfig:
     relative_translation_velocity_tolerance_mps: float = 0.003
     relative_translation_settle_sec: float = 0.20
     relative_translation_timeout_sec: float = 3.0
-    # Uniform XYZ centroid-position controller. The damped least-squares
-    # inverse maps the 3-D centroid error to an active-joint correction; the
-    # grasp/shape torque is then projected into the centroid task null space.
+    # Command-axis centroid-position controller. The damped least-squares
+    # inverse maps only the scalar error along the requested direction to an
+    # active-joint correction; orthogonal centroid motion stays unconstrained.
     relative_translation_dls_damping: float = 0.005
     relative_translation_nullspace_rcond: float = 1e-5
     relative_translation_joint_kp: float = 1.20
