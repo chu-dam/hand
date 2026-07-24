@@ -97,6 +97,20 @@ class GraspDebugTest(unittest.TestCase):
         self.assertEqual(len(message.collision_forces), 5)
         self.assertEqual(len(message.total_forces), 5)
         self.assertEqual(len(message.translation_torques), 20)
+        self.assertEqual(
+            len(message.relative_rotation_center_joint_error),
+            20,
+        )
+        self.assertEqual(
+            len(message.relative_rotation_center_position_torques),
+            20,
+        )
+        self.assertEqual(
+            len(message.relative_rotation_nullspace_torques),
+            20,
+        )
+        self.assertEqual(len(message.inactive_collision_avoidance_offsets_rad), 5)
+        self.assertEqual(len(message.inactive_collision_avoidance_active), 5)
         self.assertEqual(len(message.controller_torques), 20)
         self.assertEqual(len(message.commanded_efforts), 20)
         self.assertEqual(message.grasp_type, 4)
@@ -113,7 +127,7 @@ class GraspDebugTest(unittest.TestCase):
             np.zeros(3),
         )
 
-    def test_debug_message_reports_immediate_relative_rotation_ready_phase(self):
+    def test_debug_message_reports_active_relative_rotation(self):
         q = np.linspace(-0.05, 0.1, 20)
         controller = GraspController(RuntimeConfig(), log=None)
         controller.apply_grasp_type(3, now=1.0)
@@ -133,7 +147,53 @@ class GraspDebugTest(unittest.TestCase):
             frame_id="link_base",
         )
 
-        self.assertEqual(message.controller_phase, "rotation_ready")
+        self.assertEqual(message.controller_phase, "rotating")
+        self.assertEqual(message.relative_rotation_phase, "rotating")
+        self.assertAlmostEqual(
+            message.relative_rotation_target_rad,
+            np.pi / 6.0,
+        )
+        self.assertAlmostEqual(message.relative_rotation_current_rad, 0.0)
+        self.assertAlmostEqual(message.relative_rotation_error_rad, np.pi / 6.0)
+        self.assertGreater(message.relative_rotation_command_moment, 0.0)
+        self.assertEqual(
+            message.relative_rotation_control_mode,
+            "cartesian_thumb_pivot_jacobian_transpose",
+        )
+        np.testing.assert_allclose(
+            [
+                message.relative_rotation_pivot.x,
+                message.relative_rotation_pivot.y,
+                message.relative_rotation_pivot.z,
+            ],
+            output.fingertip_positions[1],
+            rtol=0.0,
+            atol=0.0,
+        )
+        self.assertEqual(message.relative_rotation_dls_sigma_min, 0.0)
+        self.assertEqual(message.relative_rotation_dls_condition, 0.0)
+        self.assertEqual(
+            len(message.relative_rotation_center_joint_error),
+            20,
+        )
+        self.assertEqual(
+            len(message.relative_rotation_center_position_torques),
+            20,
+        )
+        self.assertEqual(
+            len(message.relative_rotation_nullspace_torques),
+            20,
+        )
+        np.testing.assert_allclose(
+            [
+                message.relative_rotation_axis.x,
+                message.relative_rotation_axis.y,
+                message.relative_rotation_axis.z,
+            ],
+            [-1.0, 0.0, 0.0],
+            rtol=0.0,
+            atol=1e-12,
+        )
 
     def test_debug_message_reports_active_translation_target_and_force(self):
         q = np.linspace(-0.05, 0.1, 20)
@@ -186,8 +246,22 @@ class GraspDebugTest(unittest.TestCase):
             np.linalg.norm(message.translation_torques),
             0.0,
         )
-        self.assertGreater(message.relative_translation_torque_target, 0.0)
-        self.assertGreaterEqual(message.relative_translation_force_scale, 1.0)
+        self.assertEqual(
+            message.relative_translation_control_mode,
+            "centroid_dls_nullspace",
+        )
+        self.assertGreater(message.relative_translation_dls_sigma_min, 0.0)
+        self.assertTrue(np.isfinite(message.relative_translation_dls_condition))
+        self.assertEqual(len(message.relative_translation_joint_error), 20)
+        self.assertEqual(len(message.relative_translation_position_torques), 20)
+        self.assertEqual(
+            len(message.relative_translation_nullspace_grasp_torques),
+            20,
+        )
+        self.assertGreater(
+            np.linalg.norm(message.relative_translation_position_torques),
+            0.0,
+        )
         np.testing.assert_allclose(
             [
                 message.relative_translation_error.x,

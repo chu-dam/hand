@@ -96,6 +96,86 @@ def build_grasp_debug_message(
         if output is not None
         else controller.relative_translation_phase
     )
+    relative_rotation_phase = (
+        output.relative_rotation_phase
+        if output is not None
+        else controller.relative_rotation_phase
+    )
+    relative_rotation_start_centroid = (
+        output.relative_rotation_start_centroid
+        if output is not None
+        else controller.relative_rotation_start_centroid
+    )
+    relative_rotation_pivot = (
+        output.relative_rotation_pivot
+        if output is not None
+        else controller.relative_rotation_pivot
+    )
+    relative_rotation_axis = (
+        output.relative_rotation_axis
+        if output is not None
+        else controller.relative_rotation_axis
+    )
+    relative_rotation_target_rad = (
+        output.relative_rotation_target_rad
+        if output is not None
+        else controller.relative_rotation_target_rad
+    )
+    relative_rotation_current_rad = (
+        output.relative_rotation_current_rad
+        if output is not None
+        else controller.relative_rotation_current_rad
+    )
+    relative_rotation_error_rad = (
+        output.relative_rotation_error_rad
+        if output is not None
+        else controller.relative_rotation_error_rad
+    )
+    relative_rotation_angular_velocity = (
+        output.relative_rotation_angular_velocity
+        if output is not None
+        else controller.relative_rotation_angular_velocity
+    )
+    relative_rotation_command_moment = (
+        output.relative_rotation_command_moment
+        if output is not None
+        else controller.relative_rotation_command_moment
+    )
+    relative_rotation_control_mode = (
+        output.relative_rotation_control_mode
+        if output is not None
+        else "idle"
+    )
+    relative_rotation_center_error = (
+        output.relative_rotation_center_error
+        if output is not None
+        else np.zeros(3, dtype=np.float64)
+    )
+    relative_rotation_dls_sigma_min = (
+        output.relative_rotation_dls_sigma_min
+        if output is not None
+        else 0.0
+    )
+    relative_rotation_dls_condition = (
+        output.relative_rotation_dls_condition
+        if output is not None
+        else 0.0
+    )
+    relative_rotation_center_joint_error = (
+        output.relative_rotation_center_joint_error
+        if output is not None
+        else np.zeros(JOINT_COUNT, dtype=np.float64)
+    )
+    relative_rotation_center_position_torques = (
+        output.relative_rotation_center_position_torques
+        if output is not None
+        else np.zeros(JOINT_COUNT, dtype=np.float64)
+    )
+    relative_rotation_nullspace_torques = (
+        output.relative_rotation_nullspace_torques
+        if output is not None
+        else np.zeros(JOINT_COUNT, dtype=np.float64)
+    )
     relative_translation_start = (
         output.relative_translation_start_centroid
         if output is not None
@@ -136,15 +216,55 @@ def build_grasp_debug_message(
         if output is not None
         else 0.0
     )
+    relative_translation_control_mode = (
+        output.relative_translation_control_mode
+        if output is not None
+        else "idle"
+    )
+    relative_translation_dls_sigma_min = (
+        output.relative_translation_dls_sigma_min
+        if output is not None
+        else 0.0
+    )
+    relative_translation_dls_condition = (
+        output.relative_translation_dls_condition
+        if output is not None
+        else 0.0
+    )
+    relative_translation_joint_error = (
+        output.relative_translation_joint_error
+        if output is not None
+        else np.zeros(JOINT_COUNT, dtype=np.float64)
+    )
+    relative_translation_position_torques = (
+        output.relative_translation_position_torques
+        if output is not None
+        else np.zeros(JOINT_COUNT, dtype=np.float64)
+    )
+    relative_translation_nullspace_grasp_torques = (
+        output.relative_translation_nullspace_grasp_torques
+        if output is not None
+        else np.zeros(JOINT_COUNT, dtype=np.float64)
+    )
+    inactive_collision_min_clearance_m = (
+        output.inactive_collision_min_clearance_m
+        if output is not None
+        else controller.inactive_collision_min_clearance_m
+    )
+    inactive_collision_avoidance_offsets_rad = (
+        output.inactive_collision_avoidance_offsets_rad
+        if output is not None
+        else controller.inactive_collision_avoidance_offsets_rad
+    )
+    inactive_collision_avoidance_active = (
+        output.inactive_collision_avoidance_active
+        if output is not None
+        else controller.inactive_collision_avoidance_active
+    )
 
     if controller_state is None:
         controller_state = output.state if output is not None else controller.state
     if controller_phase is None:
-        relative_rotation_phase = (
-            output.relative_rotation_phase
-            if output is not None
-            else controller.relative_rotation_phase
-        )
         if relative_translation_phase != "idle":
             controller_phase = relative_translation_phase
         elif relative_rotation_phase != "idle":
@@ -170,6 +290,45 @@ def build_grasp_debug_message(
     ]
     message.geometric_centroid = _point(cg)
     message.virtual_centroid = _point(cv)
+    message.relative_rotation_start_centroid = _point(
+        relative_rotation_start_centroid
+    )
+    message.relative_rotation_pivot = _point(relative_rotation_pivot)
+    message.relative_rotation_axis = _vector(relative_rotation_axis)
+    message.relative_rotation_target_rad = float(relative_rotation_target_rad)
+    message.relative_rotation_current_rad = float(relative_rotation_current_rad)
+    message.relative_rotation_error_rad = float(relative_rotation_error_rad)
+    message.relative_rotation_angular_velocity = float(
+        relative_rotation_angular_velocity
+    )
+    message.relative_rotation_command_moment = float(
+        relative_rotation_command_moment
+    )
+    message.relative_rotation_phase = str(relative_rotation_phase)
+    message.relative_rotation_control_mode = str(
+        relative_rotation_control_mode
+    )
+    message.relative_rotation_center_error = _vector(
+        relative_rotation_center_error
+    )
+    message.relative_rotation_dls_sigma_min = float(
+        relative_rotation_dls_sigma_min
+    )
+    message.relative_rotation_dls_condition = float(
+        relative_rotation_dls_condition
+    )
+    message.relative_rotation_center_joint_error = np.asarray(
+        relative_rotation_center_joint_error,
+        dtype=np.float64,
+    ).tolist()
+    message.relative_rotation_center_position_torques = np.asarray(
+        relative_rotation_center_position_torques,
+        dtype=np.float64,
+    ).tolist()
+    message.relative_rotation_nullspace_torques = np.asarray(
+        relative_rotation_nullspace_torques,
+        dtype=np.float64,
+    ).tolist()
     message.relative_translation_start_centroid = _point(
         relative_translation_start
     )
@@ -191,6 +350,37 @@ def build_grasp_debug_message(
         relative_translation_force_scale
     )
     message.relative_translation_phase = str(relative_translation_phase)
+    message.relative_translation_control_mode = str(
+        relative_translation_control_mode
+    )
+    message.relative_translation_dls_sigma_min = float(
+        relative_translation_dls_sigma_min
+    )
+    message.relative_translation_dls_condition = float(
+        relative_translation_dls_condition
+    )
+    message.relative_translation_joint_error = np.asarray(
+        relative_translation_joint_error,
+        dtype=np.float64,
+    ).tolist()
+    message.relative_translation_position_torques = np.asarray(
+        relative_translation_position_torques,
+        dtype=np.float64,
+    ).tolist()
+    message.relative_translation_nullspace_grasp_torques = np.asarray(
+        relative_translation_nullspace_grasp_torques,
+        dtype=np.float64,
+    ).tolist()
+    message.inactive_collision_min_clearance_m = float(
+        inactive_collision_min_clearance_m
+    )
+    message.inactive_collision_avoidance_offsets_rad = np.asarray(
+        inactive_collision_avoidance_offsets_rad,
+        dtype=np.float64,
+    ).tolist()
+    message.inactive_collision_avoidance_active = [
+        bool(value) for value in inactive_collision_avoidance_active
+    ]
     message.alpha = [float(alpha.get(finger, 0.0)) for finger in FINGER_IDS]
     message.grasp_forces = _vectors_for_all_fingers(grasp_forces)
     message.translation_forces = _vectors_for_all_fingers(translation_forces)

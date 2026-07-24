@@ -10,7 +10,6 @@ const GRASP_OPTIONS = [
   { value: 4, label: "Four finger", short: "4F" },
   { value: 5, label: "Five finger", short: "5F" },
   { value: 6, label: "Envelop", short: "ENV" },
-  { value: 7, label: "Rotation", short: "ROT" },
 ];
 
 const POSE_OPTIONS = [
@@ -20,6 +19,7 @@ const POSE_OPTIONS = [
 ];
 
 const MANIPULATION_GRASP_TYPES = new Set([1, 2, 3, 4, 5]);
+const MAX_RELATIVE_ROTATION_DEG = 45;
 
 const TASK_SPACE_DIRECTIONS = ["+X", "+Y", "+Z", "-X", "-Y", "-Z"] as const;
 type TaskSpaceDirection = typeof TASK_SPACE_DIRECTIONS[number];
@@ -133,7 +133,7 @@ export function ControlPanel({
   const [alphaInput, setAlphaInput] = useState("3");
   const [translationMmInput, setTranslationMmInput] = useState("5");
   const [taskSpaceDirection, setTaskSpaceDirection] = useState<TaskSpaceDirection>("+X");
-  const [rotationDegreesInput, setRotationDegreesInput] = useState("10");
+  const [rotationDegreesInput, setRotationDegreesInput] = useState("5");
   const [matrix, setMatrix] = useState([...IDENTITY_MATRIX]);
   const teaching = Boolean(debug?.teaching_mode);
   const commandDisabled = !ready || teaching;
@@ -159,6 +159,7 @@ export function ControlPanel({
   const rotationDegreesValid = (
     rotationDegreesInput.trim() !== ""
     && Number.isFinite(parsedRotationDegrees)
+    && Math.abs(parsedRotationDegrees) <= MAX_RELATIVE_ROTATION_DEG
   );
   const rotationCommandEnabled = rotationSectionActive
     && rotationDegreesValid
@@ -181,6 +182,10 @@ export function ControlPanel({
     ? `${parsedRotationDegrees > 0 ? "+" : ""}${parsedRotationDegrees}°`
     : "—";
   const translationPhase = debug?.relative_translation_phase ?? "idle";
+  const rotationPhase = debug?.relative_rotation_phase ?? "idle";
+  const rotationTargetDegrees = Number(debug?.relative_rotation_target_rad ?? 0) * 180 / Math.PI;
+  const rotationCurrentDegrees = Number(debug?.relative_rotation_current_rad ?? 0) * 180 / Math.PI;
+  const rotationErrorDegrees = Number(debug?.relative_rotation_error_rad ?? 0) * 180 / Math.PI;
   const translationTargetReady = translationPhase !== "idle";
   const translationErrorWorld = debug?.relative_translation_error
     ? rotateVectorToWorld(debug.relative_translation_error, handToWorldRotation)
@@ -228,7 +233,7 @@ export function ControlPanel({
       return;
     }
     if (!rotationDegreesValid || parsedRotationDegrees === 0) {
-      onNotice("Relative angle은 0이 아닌 유한한 degree 값이어야 합니다.", "error");
+      onNotice(`Relative angle은 0이 아니고 ±${MAX_RELATIVE_ROTATION_DEG}° 이하여야 합니다.`, "error");
       return;
     }
     report(
@@ -431,33 +436,33 @@ export function ControlPanel({
                   : "—"}</strong>
               </div>
               <div>
-                <span>Move force · world XYZ [N]</span>
+                <span>Virtual task force · world XYZ [N]</span>
                 <strong>{translationTargetReady
                   ? vectorNewtons(translationForceWorld)
                   : "—"}</strong>
               </div>
               <div>
-                <span>Move torque max · 20 joints</span>
+                <span>Position torque max · 20 joints</span>
                 <strong>{translationTargetReady
-                  ? maxAbsTorque(debug?.translation_torques)
+                  ? maxAbsTorque(debug?.relative_translation_position_torques)
                   : "—"}</strong>
               </div>
               <div>
-                <span>Adaptive torque · target / force scale</span>
+                <span>DLS · σmin / condition</span>
                 <strong>{translationTargetReady
-                  ? `${Number(debug?.relative_translation_torque_target ?? 0).toFixed(4)} N·m · ×${Number(debug?.relative_translation_force_scale ?? 0).toFixed(2)}`
+                  ? `${Number(debug?.relative_translation_dls_sigma_min ?? 0).toFixed(4)} · κ ${Number(debug?.relative_translation_dls_condition ?? 0).toFixed(1)}`
                   : "—"}</strong>
               </div>
             </div>
             <p className="task-space-stage-note">
               {translationPhase === "translating"
-                ? "TRANSLATING · 3-axis Cartesian impedance is active with force and timeout limits."
+                ? "TRANSLATING · 3-axis centroid DLS position control is active; grasp torque runs in its null space."
                 : translationPhase === "translation_reached"
-                  ? "REACHED · target hold is active; Remaining is kept near zero on all axes."
+                  ? "REACHED · DLS target hold is active; Remaining is kept near zero on all axes."
                   : translationPhase === "translation_timeout"
-                    ? "TIMEOUT · translation force was removed. Check the grasp and retry with 1 mm."
-                    : translationPhase === "translation_error"
-                      ? "ERROR · translation force was removed because the Cartesian solve failed."
+                    ? "TIMEOUT · position control was removed. Check the grasp and retry with 1 mm."
+                  : translationPhase === "translation_error"
+                      ? "ERROR · position control was removed because the DLS solve failed."
                       : "Actual motion enabled. Start with 1 mm and keep RELEASE ready."}
             </p>
           </div>
@@ -479,8 +484,10 @@ export function ControlPanel({
                   <input
                     id="rotation-angle-degrees"
                     className="number-input"
-                    type="number"
-                    step="1"
+                  type="number"
+                  step="1"
+                  min={-MAX_RELATIVE_ROTATION_DEG}
+                  max={MAX_RELATIVE_ROTATION_DEG}
                     inputMode="decimal"
                     value={rotationDegreesInput}
                     disabled={!rotationSectionActive}
@@ -500,18 +507,48 @@ export function ControlPanel({
               </div>
             </div>
             <p className="rotation-sign-hint">
-              Positive (+): CCW · Negative (−): CW · 0°: no rotation
+              Positive (+): CCW · Negative (−): CW · palm-normal axis (link_base −X) · max ±45°
             </p>
+            <div className={`rotation-debug-grid ${rotationPhase !== "idle" ? "ready" : "idle"}`}>
+              <div>
+                <span>Target</span>
+                <strong>{rotationPhase !== "idle" ? `${rotationTargetDegrees.toFixed(2)}°` : "—"}</strong>
+              </div>
+              <div>
+                <span>Estimated</span>
+                <strong>{rotationPhase !== "idle" ? `${rotationCurrentDegrees.toFixed(2)}°` : "—"}</strong>
+              </div>
+              <div>
+                <span>Remaining</span>
+                <strong>{rotationPhase !== "idle" ? `${rotationErrorDegrees.toFixed(2)}°` : "—"}</strong>
+              </div>
+              <div>
+                <span>Moment</span>
+                <strong>{rotationPhase !== "idle"
+                  ? `${Number(debug?.relative_rotation_command_moment ?? 0).toFixed(4)} N·m`
+                  : "—"}</strong>
+              </div>
+            </div>
             <div className="rotation-action-row">
               <p className="rotation-stage-note">
-                Target only: Cv = Cg and force balance are already active. Tangential rotation is not applied yet.
+                {rotationPhase === "rotating"
+                  ? "ROTATING · tangential force and centroid hold are active."
+                  : rotationPhase === "rotation_reached"
+                    ? "REACHED · target contact angle is being held."
+                    : rotationPhase === "rotation_timeout"
+                      ? "TIMEOUT · rotation force was removed. Check contact slip and retry."
+                      : rotationPhase === "rotation_error"
+                        ? "ERROR · rotation force was removed because the contact geometry is invalid."
+                        : rotationPhase === "force_balance_error"
+                          ? "FORCE BALANCE ERROR · select the grasp type again before rotating."
+                        : "Closed-loop estimate uses fingertip contacts, not an object-angle sensor."}
               </p>
               <button
                 className="apply-button rotation-prepare-button"
                 disabled={!rotationCommandEnabled}
                 onClick={prepareRelativeRotation}
               >
-                Set target
+                Rotate
               </button>
             </div>
           </div>

@@ -119,8 +119,8 @@ real과 MuJoCo는 각각 별도의 grasp 알고리즘을 구현하지 않습니�
 - centroid 및 virtual centroid 계산
 - `alpha` force distribution
 - Jacobian transpose torque
-- 비사용 손가락 목표 자세
-- 손가락 추가 전 pre-grasp 이동
+- 비사용 손가락의 전체 pre-grasp 자세 유지
+- pre-grasp 대기 손가락의 즉시 grasp torque 전환
 - `1 ↔ 2` 전환 시 3손가락 경유
 - `grasp_type=6` enveloping grasp
 - `grasp_type=7` rotation 및 finger transition
@@ -278,10 +278,15 @@ controller 상태를 다음 topic으로 발행합니다.
 
 - 5개 fingertip position
 - geometric centroid `Cg`와 virtual centroid `Cv`
+- 상대 회전 목표/접촉점 추정 현재각/남은각/각속도/회전 모멘트와 phase,
+  centroid DLS 오차·조건수·위치 토크·null-space 회전/파지 토크
 - 상대 병진 시작/목표 centroid, 명령 변위, 남은 오차와 phase
+- 상대 병진 DLS 최소 특이값/조건수, 관절 보정량, 위치제어 토크,
+  null-space 파지 토크
+- 비사용 손가락 capsule 최소 여유거리, 회피 활성 상태와 joint-1 목표 offset
 - 손가락별 `alpha`
 - grasp, rotation, center-hold, collision, total force
-- 상대 병진 명령으로 추가된 20관절 `translation_torques`
+- 일반 파지 토크 대비 최종 계층 제어의 20관절 차이 `translation_torques`
 - 보상 전 controller torque와 제한 적용 후 최종 commanded effort
 - 현재 grasp type, pose type, teaching mode, controller state/phase
 
@@ -307,22 +312,18 @@ overlay, 월드 X/Y/Z 힘 이력 그래프와 시간 초기화, 그리고 Teachi
 상대 회전 목표, Alpha1, rotation matrix 명령을 전송하는 React UI가 있습니다.
 파지 후 활성화되는 `04 Task-Space Position`에서 원하는 이동량(mm)과
 `±X/±Y/±Z` World 방향을 선택할 수 있습니다. 상대 목표를 ROS로 전달하면
-기존 파지력을 유지하면서 각 활성 손끝에 `현재 위치 + 동일 변위` Cartesian
-목표를 만들고 0.7초 동안 부드럽게 전진시킵니다. 이동축, 낮은 게인의 횡축 위치
-유지, 손끝 형상 복원 내부력으로 제어를 분리합니다. 형상 복원력의 합은 항상 0이며,
-횡축 위치 오차가 0.3 mm deadband 안에 있고 횡축 속도도 0이면 횡축 합력 역시
-0입니다. 이동 중 손끝 오차가 서로 달라지면 물체를 흔드는 합력 대신 파지 형상을
-되돌리는 복원 모멘트가 작용합니다. UI의 `Move torque max`에서 현재 상대 병진
-명령으로 추가된 관절
-토크의 최대 절댓값을 확인할 수 있습니다. `Adaptive torque`에는 현재 위치 오차로
-정한 목표 관절 토크와, 방향별 Jacobian 효율 차이를 보정하기 위해 적용된 힘 배율이
-표시됩니다. 보정은 약한 방향의 힘만 증가시키며 전체 합력 `8.5 N`, 손가락당
-`5.5 N`, 관절 토크 목표 `0.17 N·m`의 제한을 넘지 않습니다. 현재 물리적인
-`link_base X` 방향에는 `1.3배`, Y/Z 방향에는 `1.0배` 목표 토크가 적용됩니다.
-이 방향 보정은 World 명령을 손 좌표계로 변환한 뒤 계산되므로 로봇팔에 장착한
-뒤에도 손의 물리적인 약축을 따라갑니다. 최초 하드웨어 시험은 반드시
-`1 mm`로 시작하십시오. Node.js 24 LTS와
-rosbridge 설치 후
+geometric centroid의 3축 Jacobian을 만들고 같은 DLS 위치제어식을 X/Y/Z 모두에
+적용합니다. 기존 파지력과 손끝 형상 복원력은 centroid 이동을 방해하지 않도록
+`N = I - pinv(Jc)Jc`의 null space로 투영됩니다. 목표와 제어 계층은 0.7초
+smoothstep으로 전환되며, 관절 보정량과 위치 토크에 각각 제한이 적용됩니다.
+
+UI의 `Position torque max`에서는 DLS 위치 토크의 최대 절댓값을, DLS의 `σmin`과
+`condition`에서는 현재 centroid Jacobian 상태를 확인할 수 있습니다. 힘 그래프의
+`total_forces`는 센서 측정값이 아니라 Cartesian policy의 명령 힘입니다. 상대 회전
+중에는 고정 목표 좌표 오차로 계산한 `Fr,i`와 기존 파지력 `Fg,i`의 합을 표시합니다.
+기존 X축 배율과 adaptive `J.T` 힘 증폭 설정은 호환성을 위해 남아 있지만 새 병진
+제어에는 사용되지 않습니다. 최초 하드웨어 시험은 반드시 `1 mm`로
+시작하고 RELEASE를 즉시 누를 수 있게 준비하십시오. Node.js 24 LTS와 rosbridge 설치 후
 다음 순서로 실행합니다.
 
 손 컨트롤러를 별도 터미널에서 먼저 실행한 뒤, rosbridge와 웹 UI를 한꺼번에
@@ -429,15 +430,51 @@ ros2 topic pub --once /grasp_type std_msgs/msg/Int32 "{data: 7}"
 - `1~5`를 보내면 지정된 손가락 조합으로 groped grasp를 수행합니다.
 - 파지 중 다른 grasp type이 들어오면 전체를 먼저 풀지 않고 손가락 조합을 전환합니다.
 - `1 → 2`, `2 → 1` 전환은 안정성을 위해 내부적으로 grasp type 3을 거칩니다.
-- 새로 추가되는 손가락은 먼저 현재 pre-grasp pose로 이동한 뒤 grasp torque 제어로 전환됩니다.
+- 비사용 손가락은 이미 현재 pre-grasp pose에서 대기하므로, 추가 명령 시 별도의
+  PD 준비 지연 없이 즉시 grasp torque 제어에 포함됩니다.
 
 ### 비사용 손가락 자세
 
 일반 groped grasp에서 사용하지 않는 손가락은 PD로 다음 자세를 유지합니다.
 
-- 엄지, 검지, 중지, 약지: 첫 번째 관절만 `HAND_PRE_GRASP_POSE` 값 사용
-- 새끼: 첫 번째와 두 번째 관절을 `HAND_PRE_GRASP_POSE` 값 사용
-- 나머지 관절: `0.0 rad`
+- 선택된 `HAND_PRE_GRASP_POSE` 또는 `HAND_COMPACT_PRE_GRASP_POSE`에서 해당
+  손가락의 관절 4개 목표를 모두 사용합니다.
+- 따라서 비사용 손가락은 펴지지 않고, 물체를 잡기 직전 자세로 대기합니다.
+- `grasp_type=7`의 새끼 hold와 손가락 전환은 전용 목표 자세를 그대로 사용합니다.
+
+### 비사용 손가락 링크 충돌 회피
+
+일반 `grasp_type=1~5`에서는 활성 손가락이 외력에 따라 움직여 인접한 비사용
+손가락에 접근할 수 있습니다. 제어기는 XML의 링크 체인 치수와 실시간 관절
+피드백 FK를 이용해 각 손가락의 움직이는 마디를 3개의 capsule 중심선으로
+단순화하고, 활성/비사용 인접 손가락 사이의 최소 표면 여유거리를 계산합니다.
+활성 손가락을 피하느라 움직이는 비사용 손가락도 다음 비사용 인접 손가락의
+회피 기준이 됩니다. 따라서 `활성 중지 → 비사용 약지 → 비사용 새끼`처럼
+회피가 연쇄적으로 전달되며, 아무 손가락도 피하고 있지 않은 평상시 대기
+자세에서는 비사용 손가락끼리 불필요하게 벌어지지 않습니다.
+손바닥에 고정된 뿌리 쪽 첫 segment는 원래부터 서로 가까우므로 기본 설정에서
+거리 검사에서 제외합니다.
+
+- 현재 자세, 관절 속도로 예측한 `0.18 s` 뒤 자세, 회피 명령이 같은 시간 동안
+  이동시킬 자세 중 가장 위험한 거리를 사용합니다.
+- capsule 반지름은 보수적으로 `9 mm`이며 두 반지름을 뺀 표면 여유거리로
+  판정합니다.
+- 여유거리가 `9 mm` 미만이면 회피를 시작하고 `10 mm` 이상이면 해제합니다.
+- 가까워질수록 회피량을 smoothstep으로 증가시킵니다.
+- 검지·중지·약지는 첫 번째 관절, 새끼는 두 번째 관절을 `±1°` 시험 FK로
+  평가해 실제 거리가 증가하는 방향을 매 주기 선택합니다.
+- 선택된 회피 관절 목표만 최대 `0.40 rad`, `1.2 rad/s`로 이동하고, 회피 중에는
+  진동을 줄인 전용 PD `Kp=0.5`, `Kd=0.10`, torque limit `0.25 N·m`를
+  사용합니다. `±1°` 시험 결과의 거리 차이가 `0.1 mm`보다 작으면 이전 회피
+  방향을 유지합니다. 나머지
+  세 관절은 선택된 pre-grasp 목표와 기존 PD 설정을 그대로 유지합니다.
+- `ENV`와 `grasp_type=7`에는 이 일반 회피기를 적용하지 않습니다.
+
+`GraspDebug`의 `inactive_collision_min_clearance_m`,
+`inactive_collision_avoidance_offsets_rad`,
+`inactive_collision_avoidance_active`로 동작을 확인할 수 있습니다. 주요 설정은
+`inactive_collision_*` YAML 항목이며, 실제 손에서는 capsule 반지름과 활성화
+여유거리부터 보수적으로 조정하십시오.
 
 ---
 
@@ -459,7 +496,9 @@ ros2 topic pub --once /pose_type std_msgs/msg/Int32 "{data: 2}"
 ros2 topic pub --once /pose_type std_msgs/msg/Int32 "{data: 3}"
 ```
 
-`pose_type=2` 또는 `3`을 보내면 즉시 해당 pre-grasp 자세로 이동하며, 이후 `grasp_type=0`을 보내도 마지막으로 선택된 pre-grasp 자세를 사용합니다. 새로 추가되는 손가락 역시 선택된 pre-grasp pose를 사용합니다.
+`pose_type=2` 또는 `3`을 보내면 즉시 해당 pre-grasp 자세로 이동하며, 이후
+`grasp_type=0`을 보내도 마지막으로 선택된 pre-grasp 자세를 사용합니다. 일반
+파지 중인 비사용 손가락도 마지막으로 선택된 pre-grasp pose를 계속 유지합니다.
 
 ---
 
@@ -529,15 +568,16 @@ fhat_i      = (Cg - P_i) / d_i
 거리 반비례 분포, 마지막 active finger를 pivot으로 사용하는 legacy
 heuristic을 그대로 유지합니다.
 
-위 합력 0 조건은 손가락 구성이 안정된 일반 grasp의 계산값 기준입니다. 손가락을
-추가하는 짧은 blend 구간에는 새 손가락 force를 단계적으로 연결하므로 UI 합력에
-일시적인 잔차가 보일 수 있으며, 이 동안 상대 회전 명령은 잠깁니다.
+위 합력 0 조건은 일반 grasp의 계산값 기준입니다. 새 손가락은 비사용 상태에서
+이미 pre-grasp 자세를 유지하고 있으므로 별도의 PD 준비나 force blend 없이 즉시
+새 force-balance 계산에 포함됩니다. `2F-I ↔ 2F-M` 전환 중에는 안정성을 위해
+3F를 0.5초 거치며, 이 구간에는 상대 회전 명령이 잠깁니다.
 
-### Relative rotation command (immediate ready)
+### Relative rotation command
 
 `grasp_type=1~5`로 물체를 잡은 상태에서 다음 topic에 signed degree를 보내면,
-현재 물체 자세를 기준으로 한 상대 회전 목표를 저장합니다. 이 값은 절대
-각도가 아니며 연속 명령을 누적한 절대 자세도 아닙니다.
+명령 순간의 fingertip 접촉 형상을 기준으로 한 상대 회전을 시작합니다. 이 값은
+절대 각도가 아니며, 새 명령은 그 순간의 접촉 형상을 다시 0°로 잡습니다.
 
 ```bash
 ros2 topic pub --once \
@@ -546,25 +586,53 @@ ros2 topic pub --once \
   "{data: 30.0}"
 ```
 
-- 양수: 이후 구현할 회전축 기준 CCW 상대 회전
-- 음수: 이후 구현할 회전축 기준 CW 상대 회전
+- 양수: 손바닥 법선(`link_base -X`) 기준 right-hand-rule CCW 상대 회전
+- 음수: 같은 축 기준 CW 상대 회전
+- 허용 범위: `±45°`
 - `0`, `NaN`, `Inf`: 거부
 - `grasp_type=1~5`: 최소 한 번의 정상 force-balance control cycle이 확인되면,
-  별도의 centroid 이동이나 시간 전환 없이 즉시 `rotation_ready`
+  즉시 `rotating` 시작
 - 손가락 추가·제거 전환 중이거나 Teaching Hold 중인 경우 명령 거부
 - `force_balance_error` 상태에서는 명령을 거부하며 grasp type 재선택 필요
 
 기존의 `centroid_redistributing` 단계와
 `rotation_centroid_transition_sec`에 따른 `Cv → Cg` 전환은 더 이상 사용하지
-않습니다. Debug의 `controller_phase`는 유효한 명령을 받으면 즉시
-`rotation_ready`로 표시됩니다. pose/grasp 변경 또는 Teaching ON은 저장된 상대
-각도와 phase를 초기화합니다.
+않습니다. 또한 회전 경로는 논문 식 (16)~(17) 및 DLS/null-space 제어와 분리되어
+있습니다. 명령 순간 엄지 위치 `Pt,0`와 각 `Pi,0`를 한 번만 저장합니다. 엄지는
+기존 파지력만 유지하고 회전 추가력은 0으로 둡니다. 나머지 손가락은 다음 목표를
+추종합니다.
 
-> 현재는 상대 회전 목표만 저장하며 접선 회전력은 아직 적용하지
-> 않습니다. `rotation_ready`는 명령이 수락되었고 centroid/force 조건이
-> 이미 준비됐다는 뜻이지, 물체가 입력 각도만큼 회전했다는 뜻이 아닙니다.
-> `Cg`는 live joint 위치에서 매 cycle 다시 계산되고 접촉력/물체 pose sensor
-> feedback은 없으므로 실제 물체의 완전한 무이동은 보장하지 않습니다.
+```text
+Fr,thumb = 0
+Pi,d = Pt + R(theta_ref)(Pi,0 - Pt,0)     # non-thumb only
+Fr,i = relative_rotation_position_kp
+       / max(rho_i, relative_rotation_radius_min)
+       * (Pi,d - Pi)
+     + relative_rotation_position_kd
+       / max(rho_i, relative_rotation_radius_min)
+       * (Pdot_i,d - Pdot_i)
+Fi   = Fg,i + Fr,i
+tau_i = Ji.T Fi
+```
+
+`theta_ref`만 0에서 명령각까지 smoothstep으로 증가하고, 목표 계산의 기준 좌표는
+현재 비엄지 좌표로 갱신하지 않습니다. `Pt`에는 현재 엄지 위치를 사용하므로 엄지가
+조금 이동하면 비엄지 목표도 같은 만큼 병진하고, 저장된 상대 회전 목표는 변하지
+않습니다. 현재 손끝 속도는 `Ji*qdot`, 목표 속도는 엄지 속도와 smoothstep
+각속도로 계산하여 D항에 사용합니다. 손끝 위치 오차·회전력·최종
+관절 토크에는 각각 제한이 적용됩니다. 최종 목표에 대한 모든 손끝 오차가
+허용 범위 이내가 되면 `rotation_reached`가 되지만, 비엄지 손가락의 Cartesian
+PD는 명령 시작 후 2초가 될 때까지만 목표 유지용으로 적용됩니다. 2초가 되면
+도달 여부와 관계없이 `rotation_timeout`으로 전환하고 `Fr`을 0으로 만들어
+기본 파지력만 유지합니다.
+`controller_phase`는
+`rotating`, `rotation_reached`, `rotation_timeout`, `rotation_error` 중 하나를
+표시하며 pose/grasp 변경 또는 Teaching ON은 목표와 phase를 초기화합니다.
+
+> 현재각은 물체 pose 센서가 아니라 FK로 계산한 fingertip 접촉 다각형의 회전으로
+> 추정합니다. 비엄지 손가락 벡터를 현재 엄지 위치 기준으로 계산하므로 centroid
+> 이동은 허용됩니다. 접촉이 미끄러지거나 구르면 표시 각도와 실제 물체각이 달라질 수
+> 있으므로 최초 시험은 작은 각도에서 수행하십시오.
 
 ### Fingertip collision repel (중지<->약지<->새끼 간 충돌 방지용)
 
@@ -909,6 +977,7 @@ src/real/dg5f_grasp_control/config/grasp_real.yaml
 | Groped grasp (type 1~5) | `alpha1`, `groped_tau_limit`, `rotation_force_balance_max_alpha_ratio`, `force_balance_error_ramp_sec` |
 | Collision repel | `min_tip_distance`, `collision_repel_gain`, `collision_repel_limit` |
 | Type 6 | `envelop_tau_scale`, `envelop_joint_delay`, torque signs |
+| Relative rotation (type 1~5) | `relative_rotation_position_*`, `relative_rotation_force_limit`, `relative_rotation_radius_min`, `relative_rotation_reference_ramp_sec` |
 | Type 7 legacy grasp | `thumb_centroid_bias`, `alpha1` |
 | Type 7 rotation | `rotation_theta_rad`, `rotation_gain`, `rotation_force_limit` |
 | Type 7 center hold | `grasp_type7_center_hold_*` |

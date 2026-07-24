@@ -43,7 +43,8 @@ grasp_real:
     rotation_force_balance_max_alpha_ratio: 10.0
     # Fade the last valid regular-grasp command to zero on a balance failure.
     force_balance_error_ramp_sec: 0.5
-    # Hybrid grasp-force/fingertip-position motion. Start hardware tests at 1 mm.
+    # Virtual-force diagnostics and zero-resultant shape stabilization. The
+    # centroid motion itself uses the DLS joint-position settings below.
     relative_translation_max_m: 0.010
     relative_translation_kp: 600.0
     relative_translation_kd: 6.0
@@ -55,10 +56,11 @@ grasp_real:
     relative_translation_cross_axis_deadband_m: 0.0003
     # Smooth the Cartesian reference instead of applying a position step.
     relative_translation_reference_ramp_sec: 0.7
-    # Direction-dependent J^T efficiency compensation. Weak directions are
-    # boosted toward the torque target, subject to these hard force limits.
+    # Cartesian diagnostic/shape force limits.
     relative_translation_force_limit: 8.50
     relative_translation_per_finger_force_limit: 5.50
+    # Legacy J.T adaptive settings, retained only for config compatibility.
+    # The uniform XYZ DLS controller does not use these values.
     relative_translation_torque_normalization_enable: true
     relative_translation_torque_gain_nm_per_m: 24.0
     # Direction compensation is evaluated after World -> link_base rotation.
@@ -71,11 +73,57 @@ grasp_real:
     relative_translation_velocity_tolerance_mps: 0.003
     relative_translation_settle_sec: 0.20
     relative_translation_timeout_sec: 3.0
+    # Same centroid DLS position controller is used for X, Y, and Z. Existing
+    # grasp/shape torque is projected into the centroid task null space.
+    relative_translation_dls_damping: 0.005
+    relative_translation_nullspace_rcond: 0.00001
+    relative_translation_joint_kp: 1.20
+    relative_translation_joint_kd: 0.06
+    relative_translation_joint_correction_limit_rad: 0.30
+    relative_translation_position_torque_limit: 0.30
+    relative_translation_nullspace_grasp_gain: 1.0
     jacobian_eps: 0.000001
 
     min_tip_distance: 0.018
     collision_repel_gain: 100.0
     collision_repel_limit: 0.8
+
+    # Capsule-based avoidance between adjacent fingers.
+    # Surface clearance is capsule centerline distance minus both radii.
+    # Index/middle/ring move joint 1; pinky moves joint 2.
+    inactive_collision_avoidance_enable: true
+    inactive_collision_capsule_radius_m: 0.009
+    inactive_collision_activation_clearance_m: 0.009
+    inactive_collision_critical_clearance_m: 0.002
+    inactive_collision_release_hysteresis_m: 0.001
+    inactive_collision_max_joint1_offset_rad: 0.40
+    inactive_collision_joint1_target_rate_radps: 1.2
+    inactive_collision_prediction_sec: 0.18
+    # Dedicated selected-joint PD used only while avoidance is active/returning.
+    inactive_collision_pd_kp: 0.5
+    inactive_collision_pd_kd: 0.10
+    inactive_collision_pd_limit: 0.25
+    inactive_collision_gradient_eps_rad: 0.0174533
+    # Keep the previous direction unless +/-1 deg differs by at least 0.1 mm.
+    inactive_collision_direction_min_delta_m: 0.00010
+    inactive_collision_joint_limit_margin_rad: 0.03
+    # Ignore the naturally close palm-side root segment; monitor moving links.
+    inactive_collision_first_segment: 1
+
+    # Closed-loop relative rotation for regular grasp types 1..5. Positive is
+    # right-hand-rule rotation about the palm normal (link_base -X).
+    # Fixed command-time fingertip targets use normalized Cartesian PD;
+    # the resulting force is added directly to the ordinary grasp force.
+    relative_rotation_max_abs_deg: 45.0
+    relative_rotation_reference_ramp_sec: 0.5
+    relative_rotation_position_kp: 48.0
+    relative_rotation_position_kd: 0.80
+    relative_rotation_position_error_limit_m: 0.025
+    relative_rotation_position_tolerance_m: 0.002
+    relative_rotation_force_limit: 10.00
+    relative_rotation_radius_min: 0.015
+    relative_rotation_velocity_alpha: 0.20
+    relative_rotation_timeout_sec: 2.0
 
     # grasp_type=7 rotation assist.
     # theta is not closed-loop object angle; it scales tangential rotation force.

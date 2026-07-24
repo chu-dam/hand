@@ -520,7 +520,7 @@ export function ForceHistoryPanel({
           <p className="section-kicker">FORCE HISTORY</p>
           <h2 id="force-history-title">World X/Y/Z Force History</h2>
           <p>
-            {debug?.header.frame_id || "link_base"} → world · R_hand_to_world ({orientationFromTopic ? "topic" : "default identity"}) × total_forces · elapsed time since reset
+            {debug?.header.frame_id || "link_base"} → world · R_hand_to_world ({orientationFromTopic ? "topic" : "default identity"}) × displayed fingertip force · elapsed time since reset
           </p>
         </div>
         <div className="force-history-tools">
@@ -557,7 +557,7 @@ export function ForceHistoryPanel({
           <span><i className="sum-line" />Sum</span>
         </div>
         <span className="force-history-note">
-          world frame · 0 N reference · calculated values (not sensor measurements) · {sampleCount.toLocaleString()} samples
+          world frame · 0 N reference · Cartesian command forces (not sensor measurements) · {sampleCount.toLocaleString()} samples
         </span>
       </div>
     </section>

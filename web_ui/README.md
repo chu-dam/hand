@@ -192,11 +192,19 @@ Rotation 입력은 현재 물체 자세 기준의 상대 각도입니다. 양수
 일반 `grasp_type=1~5`는 항상 `Cv=Cg`를 사용합니다. 엄지(Finger ID 1)의
 `alpha1`을 기준으로 centroid 거리 비례 nominal force를 만들며, 4F·5F는 비음수
 3차원 평형 해로 보정합니다. 최소 한 번의 정상 control cycle 후 유효한 상대 회전
-명령은 별도 centroid 전환 없이 즉시 `controller_phase=rotation_ready`가 됩니다.
-평형 계산이 안전 제한을 넘으면 `force_balance_error`가 표시되고 grasp type을 다시
-선택할 때까지 회전 명령을 거부합니다. 현재는 상대 목표만 저장하고 접선 회전력은 아직
-적용하지 않으므로, 이 상태는 물체가 입력 각도만큼 회전했다는 뜻이 아닙니다. 센서 기반
-물체 pose hold도 아니므로 실제 무이동은 별도로 확인해야 합니다.
+명령은 별도 centroid 전환 없이 즉시 `controller_phase=rotating`이 됩니다. 회전
+시작 때 저장한 엄지 위치 `Pt,0`를 pivot으로 사용합니다. 엄지에는 회전 추가력을
+주지 않고, 현재 엄지 병진을 따라가는 비엄지 손가락 목표
+`Pi,d=Pt+R(Pi,0-Pt,0)`를 만들고,
+`Fr,i=[kr(Pi,d-Pi)+kd(Pdot_i,d-Pdot_i)]/rho_i`를 기존 파지력에 더해
+`Ji.T`로 변환합니다. 도달 뒤에도 목표 PD를 유지하지만, 명령 시작 후 2초가
+되면 회전 추가력을 제거합니다.
+현재 손끝 좌표로 목표를 다시 생성하지 않습니다.
+UI에는 target, fingertip 접촉 형상으로 추정한 current angle, remaining angle,
+command moment가 표시됩니다. 평형 계산이 안전 제한을 넘으면
+`force_balance_error`가 표시되고 grasp type을 다시 선택할 때까지 회전 명령을
+거부합니다. 물체 pose 센서값이 아니므로 접촉 미끄러짐이 있으면 실제 물체각과
+표시값이 달라질 수 있습니다.
 
 ## 5. 빌드
 

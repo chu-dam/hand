@@ -20,6 +20,26 @@ FINGER_JOINT_INDEX = {
     5: [16, 17, 18, 19],
 }
 
+# Per-finger joint used by inactive-finger collision avoidance. Index, middle,
+# and ring spread with joint 1. Pinky instead flexes joint 2 to move away from
+# ring in the physical hand geometry.
+FINGER_AVOIDANCE_JOINT_LOCAL_INDEX = {
+    1: 0,
+    2: 0,
+    3: 0,
+    4: 0,
+    5: 1,
+}
+
+# Limits copied from dg5fs_left_w_mount.xml for each selected avoidance joint.
+FINGER_AVOIDANCE_JOINT_LIMITS = {
+    1: (-1.57079632679, 1.57079632679),
+    2: (-0.261799387799, 0.837758040957),
+    3: (-0.733038285838, 0.575958653158),
+    4: (-0.837758040957, 0.209439510239),
+    5: (-1.57079632679, 0.645771823238),
+}
+
 GRASP_TAU_SIGN = np.ones(JOINT_COUNT, dtype=np.float64)
 
 

@@ -75,24 +75,58 @@ until a grasp type is selected again.
 inverse-distance coefficients, and the last active finger as the pivot.
 `thumb_centroid_bias` applies only to this legacy type-7 path.
 
-The zero-resultant statement applies after a regular grasp's finger-composition
-blend has settled. A short transient residual can appear while a newly added
-finger is blended in; relative-rotation targets are rejected during that
-transition.
+Every inactive finger in regular grasp types 1-5 holds all four joints at the
+currently selected pre-grasp pose. Because a newly selected finger is already
+waiting there, it joins the Jacobian-transpose grasp immediately without a
+separate PD preparation delay or force blend. A 2F-I/2F-M switch still holds
+the three-finger bridge for 0.5 s to preserve grasp continuity; relative-
+rotation targets are rejected during that bridge.
+
+Regular grasp types also run predictive adjacent-finger link avoidance. Joint
+feedback and the XML chain dimensions produce a simplified capsule model for
+each moving phalanx. An inactive finger first avoids an adjacent active finger;
+while that inactive finger is moving, it becomes an avoidance source for the
+next inactive neighbor. This chained propagation handles cases such as active
+middle -> avoiding ring -> avoiding pinky without spreading undisturbed
+inactive fingers. Both measured-velocity prediction and the previewed avoidance
+command are checked. Index, middle, and ring move joint 1; pinky moves joint 2
+to avoid ring. The smaller of current and 0.18-second predicted surface
+clearance activates avoidance below 9 mm and releases it above 10 mm. Capsules
+use a conservative 9 mm radius. Finite-difference FK selects the sign that
+increases clearance; only the selected avoidance-joint PD target moves,
+with a 0.40 rad offset, 1.2 rad/s target rate, and a damped dedicated command
+(`Kp=0.5`, `Kd=0.10`, limit=0.25 N.m). A direction change requires at least
+0.1 mm difference between the +/-1 degree FK trials. The other three joints
+remain at pre-grasp. The palm-side root segment is ignored because adjacent
+roots are naturally close. Debug fields report minimum clearance, five joint
+offsets, and five activation flags.
 
 ## Relative rotation command
 
 `/dg5f_grasp_control/relative_rotation_deg_cmd` contains a signed angle in
-degrees relative to the current object pose. Because ordinary grasp modes
-already use `Cv = Cg` and a balanced force distribution, a valid command for
-`grasp_type=1~5` immediately reports `controller_phase=rotation_ready` after
-at least one successful force-balance control cycle; there is no timed
-`Cv -> Cg` transition. The old `centroid_redistributing` phase and
-`rotation_centroid_transition_sec` setting are obsolete.
+degrees relative to the current fingertip contact constellation. For regular
+`grasp_type=1~5`, command time captures the thumb pivot `Pt,0` and every
+`Pi,0`. The thumb receives only its ordinary grasp force. For each non-thumb
+finger a fixed target is formed as
+`Pi,d=Pt+R(theta_ref)(Pi,0-Pt,0)`, where current `Pt` allows common translation
+without changing the stored relative geometry. The additional force is
+`Fr,i=[kr(Pi,d-Pi)+kd(Pdot_i,d-Pdot_i)]/max(rho_i,rho_min)`. `Pdot_i` comes
+from `Ji*qdot`, while `Pdot_i,d` includes the smooth reference-ramp velocity.
+The ordinary grasp force remains active, so `Fi=Fg,i+Fr,i` and
+`tau_i=Ji.T Fi`. All target coordinates and `rho_i` remain based on the
+command-time geometry. Positive commands follow the right-hand rule about
+`link_base -X`; the default command limit is +/-45 degrees.
 
-The current implementation only stores the relative target. Tangential
-rotation force is not implemented yet, so `rotation_ready` does not mean that
-the object has rotated through the requested angle.
+The phase is `rotating`, `rotation_reached`, `rotation_timeout`, or
+`rotation_error`. Once every driven fingertip is within the configured
+final-position tolerance, the phase becomes `rotation_reached`; Cartesian PD
+remains active as a position hold only until the command timeout. At 2 seconds
+the additional rotation force is removed even if the target was reached. The
+estimated angle uses non-thumb contact vectors relative to the current thumb,
+but it is not an object-pose measurement:
+rolling or slipping contacts can make it differ from the physical object
+angle. There is no timed `Cv -> Cg` transition; the obsolete
+`rotation_centroid_transition_sec` parameter remains for compatibility.
 
 ## Relative task-space translation
 
@@ -105,63 +139,61 @@ command for `grasp_type=1~5` captures the current geometric centroid and stores
 C_target = C_start + delta_link_base
 ```
 
-The maximum command norm defaults to `relative_translation_max_m=0.010`.
-The regular grasp policy remains active and continues to supply the holding
-force. At command time the controller captures every active fingertip and sets
+The maximum command norm defaults to `relative_translation_max_m=0.010`. At
+command time the controller captures every active fingertip and sets
 
 ```text
 P_target_i = P_start_i + delta_link_base
 ```
 
 The Cartesian reference advances with a 0.7-second smoothstep instead of a
-position step. The task force is split into the commanded motion axis, a softer
-orthogonal centroid hold, and a relative fingertip-shape term. The shape term
-is projected so its sum is exactly zero:
+position step. X, Y, and Z all use the same centroid Jacobian and damped
+least-squares (DLS) inverse:
+
+```text
+Jc = [w1 J1  w2 J2  ...  wn Jn]
+Jc# = Jc.T (Jc Jc.T + lambda^2 I)^-1
+delta_q = Jc# (C_reference - Cg)
+tau_position = Kq delta_q - Dq Jc# Jc qdot
+```
+
+There is no X-only multiplier or direction-specific force boost in this path.
+The existing grasp and relative fingertip-shape torque is treated as a
+secondary task and projected into the centroid task null space:
+
+```text
+N = I - pinv(Jc) Jc
+tau = tau_position + N.T tau_grasp+shape
+```
+
+The null-space transition uses the same smooth reference progress so pressing
+Move does not create an instantaneous grasp-torque step. The shape force is
+constructed with zero resultant:
 
 ```text
 f_shape_i = g_i - w_i * sum(g)
 sum(f_shape_i) = 0
 ```
 
-It can therefore create the restoring moment needed to preserve the captured
-contact geometry without shaking the object through an unintended resultant.
-The orthogonal hold uses lower gains and a 0.3 mm position deadband; inside the
-deadband its position-force resultant is zero, while velocity damping remains
-active. Every contact force is mapped through the fingertip Jacobian and added
-to the unchanged grasp-force torque.
+It can therefore help preserve the captured contact geometry without adding a
+direct object resultant. Joint correction and position-torque limits, DLS
+damping, a 3-second timeout, fingertip/centroid settle checks, and normal grasp
+torque clipping remain active. Start real-hand commissioning with a 1 mm
+command and keep RELEASE ready.
 
-Resultant/per-finger force limits, a 3-second timeout, fingertip and centroid
-position/velocity settle checks, and torque clipping remain active. Start
-real-hand commissioning with a 1 mm command.
-
-Because the same Cartesian force can produce very different joint torque in
-each direction through `J.T`, weak directions are adaptively boosted toward
-
-```text
-translation torque target = min(
-    relative_translation_torque_gain_nm_per_m
-        * hand_frame_direction_multiplier
-        * |Kp * axis_error - Kd * axis_velocity| / Kp,
-    relative_translation_torque_limit
-)
-```
-
-The normalization only increases force components parallel to the commanded
-axis when their incremental joint torque is below this target. It therefore
-does not amplify the cross-axis resultant, and remains bounded by
-`relative_translation_force_limit` and
-`relative_translation_per_finger_force_limit`. The current physical hand uses
-an X multiplier of `1.30` and Y/Z multipliers of `1.00`. This is evaluated in
-`link_base` after a World-frame command is rotated into the hand, so it follows
-the physical weak direction when the hand is later mounted on a moving arm.
+The old direction-dependent `J.T` force normalization parameters remain in
+`RuntimeConfig` only so older YAML/launch files still load; they do not affect
+the DLS motion controller.
 
 `GraspDebug` reports the start, target, delta, remaining error, centroid
-velocity, commanded translation resultant, per-finger translation forces, and
-the exact 20-joint incremental `translation_torques` remaining after the
-combined grasp command is clipped. It also reports the adaptive
-`relative_translation_torque_target`, `relative_translation_force_scale`, and
-one of `translating`, `translation_reached`, `translation_timeout`, or
-`translation_error`.
+velocity, virtual Cartesian diagnostic force, and per-finger virtual/shape
+forces. These Cartesian values are not sensor measurements and do not include
+the DLS position torque. It also reports `relative_translation_joint_error`,
+`relative_translation_position_torques`, the retained
+`relative_translation_nullspace_grasp_torques`, DLS minimum singular value and
+condition number, and the exact clipped 20-joint delta in
+`translation_torques`. The phase is one of `translating`,
+`translation_reached`, `translation_timeout`, or `translation_error`.
 
 ## Tuning
 
@@ -194,12 +226,22 @@ relative_translation_cross_axis_deadband_m: 0.0003
 relative_translation_reference_ramp_sec: 0.7
 relative_translation_force_limit: 8.5
 relative_translation_per_finger_force_limit: 5.5
-relative_translation_torque_normalization_enable: true
-relative_translation_torque_gain_nm_per_m: 24.0
-relative_translation_torque_axis_multiplier_x: 1.3
-relative_translation_torque_axis_multiplier_y: 1.0
-relative_translation_torque_axis_multiplier_z: 1.0
-relative_translation_torque_limit: 0.17
+relative_translation_dls_damping: 0.005
+relative_translation_nullspace_rcond: 0.00001
+relative_translation_joint_kp: 1.20
+relative_translation_joint_kd: 0.06
+relative_translation_joint_correction_limit_rad: 0.30
+relative_translation_position_torque_limit: 0.30
+relative_translation_nullspace_grasp_gain: 1.0
+relative_rotation_max_abs_deg: 45.0
+relative_rotation_reference_ramp_sec: 0.5
+relative_rotation_position_kp: 48.0
+relative_rotation_position_kd: 0.80
+relative_rotation_position_error_limit_m: 0.025
+relative_rotation_position_tolerance_m: 0.002
+relative_rotation_force_limit: 10.00
+relative_rotation_radius_min: 0.015
+relative_rotation_timeout_sec: 2.0  # always removes Fr after command start
 ```
 
 ## File Roles
@@ -245,6 +287,5 @@ python3 src/mujoco/grasp_sim.py
 The simulator reads `config/grasp_real.yaml` and subscribes to the same
 `/grasp_type`, `/pose_type`, alpha1, relative-rotation-degree, and
 rotation-matrix topics as the real node. The relative command topic is
-`/dg5f_grasp_control/relative_rotation_deg_cmd`; the current implementation
-stores a current-pose-relative target and immediately reports
-`rotation_ready`, but does not yet apply tangential rotation force.
+`/dg5f_grasp_control/relative_rotation_deg_cmd`; it runs the same thumb-pivot
+Cartesian PD rotation and target hold as the real controller.

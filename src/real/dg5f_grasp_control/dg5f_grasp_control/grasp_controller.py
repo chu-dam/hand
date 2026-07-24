@@ -8,16 +8,24 @@ from dg5f_grasp_control.control_utils import pose_pd
 from dg5f_grasp_control.grasp_policy import (
     ALPHA_DISTRIBUTION_LEGACY,
     ALPHA_DISTRIBUTION_THUMB_DISTANCE_PROPORTIONAL,
+    BASE_JOINT_TAU_LIMIT,
     GraspPolicy,
     GraspPolicyResult,
 )
 from dg5f_grasp_control.hand_model import (
+    FINGER_AVOIDANCE_JOINT_LIMITS,
+    FINGER_AVOIDANCE_JOINT_LOCAL_INDEX,
     FINGER_JOINT_INDEX,
     GRASP_TAU_SIGN,
     JOINT_COUNT,
     selected_fingers,
 )
-from dg5f_grasp_control.kinematics import tip_jacobian, tip_position
+from dg5f_grasp_control.kinematics import (
+    capsule_segments_clearance,
+    finger_capsule_segments,
+    tip_jacobian,
+    tip_position,
+)
 from dg5f_grasp_control.poses import (
     HAND_NORMAL_POSE,
     HAND_PRE_GRASP_POSE,
@@ -25,10 +33,6 @@ from dg5f_grasp_control.poses import (
 )
 
 FINGER_SWITCH_VIA_THREE_DELAY = 0.5
-ADD_FINGER_PRE_GRASP_DELAY = 0.15
-ADD_FINGER_PRE_GRASP_KP_SCALE = 1.4
-ADD_FINGER_PRE_GRASP_KD_SCALE = 1.2
-ADD_FINGER_BLEND_TIME = 0.7
 
 ENVELOP_FINGER_ORDER = [2, 3, 4, 5]
 ENVELOP_FINGER_TORQUE_LOCAL_JOINTS = [1, 2, 3]
@@ -86,10 +90,45 @@ class ControlOutput:
     inactive_pd_target: np.ndarray = field(
         default_factory=lambda: np.full(JOINT_COUNT, np.nan, dtype=np.float64)
     )
+    inactive_collision_min_clearance_m: float = -1.0
+    inactive_collision_avoidance_offsets_rad: np.ndarray = field(
+        default_factory=lambda: np.zeros(5, dtype=np.float64)
+    )
+    inactive_collision_avoidance_active: List[bool] = field(
+        default_factory=lambda: [False] * 5
+    )
     envelop_info: Dict[str, object] = field(default_factory=dict)
     g7_phase: str = "idle"
     relative_rotation_phase: str = "idle"
     relative_rotation_target_rad: float = 0.0
+    relative_rotation_current_rad: float = 0.0
+    relative_rotation_error_rad: float = 0.0
+    relative_rotation_angular_velocity: float = 0.0
+    relative_rotation_command_moment: float = 0.0
+    relative_rotation_axis: np.ndarray = field(
+        default_factory=lambda: np.zeros(3, dtype=np.float64)
+    )
+    relative_rotation_start_centroid: np.ndarray = field(
+        default_factory=lambda: np.zeros(3, dtype=np.float64)
+    )
+    relative_rotation_pivot: np.ndarray = field(
+        default_factory=lambda: np.zeros(3, dtype=np.float64)
+    )
+    relative_rotation_control_mode: str = "idle"
+    relative_rotation_center_error: np.ndarray = field(
+        default_factory=lambda: np.zeros(3, dtype=np.float64)
+    )
+    relative_rotation_dls_sigma_min: float = 0.0
+    relative_rotation_dls_condition: float = 0.0
+    relative_rotation_center_joint_error: np.ndarray = field(
+        default_factory=lambda: np.zeros(JOINT_COUNT, dtype=np.float64)
+    )
+    relative_rotation_center_position_torques: np.ndarray = field(
+        default_factory=lambda: np.zeros(JOINT_COUNT, dtype=np.float64)
+    )
+    relative_rotation_nullspace_torques: np.ndarray = field(
+        default_factory=lambda: np.zeros(JOINT_COUNT, dtype=np.float64)
+    )
     relative_translation_phase: str = "idle"
     relative_translation_start_centroid: np.ndarray = field(
         default_factory=lambda: np.zeros(3, dtype=np.float64)
@@ -111,6 +150,18 @@ class ControlOutput:
     )
     relative_translation_torque_target: float = 0.0
     relative_translation_force_scale: float = 0.0
+    relative_translation_control_mode: str = "idle"
+    relative_translation_dls_sigma_min: float = 0.0
+    relative_translation_dls_condition: float = 0.0
+    relative_translation_joint_error: np.ndarray = field(
+        default_factory=lambda: np.zeros(JOINT_COUNT, dtype=np.float64)
+    )
+    relative_translation_position_torques: np.ndarray = field(
+        default_factory=lambda: np.zeros(JOINT_COUNT, dtype=np.float64)
+    )
+    relative_translation_nullspace_grasp_torques: np.ndarray = field(
+        default_factory=lambda: np.zeros(JOINT_COUNT, dtype=np.float64)
+    )
     effective_thumb_centroid_bias: float = 0.0
     relative_rotation_force_balance_blend: float = 0.0
 
@@ -141,15 +192,18 @@ class GraspController:
 
         self.deferred_finger_count = None
         self.deferred_finger_count_at = None
-        self.adding_finger_target_count = None
-        self.adding_pre_grasp_fingers = []
-        self.adding_ready_at = None
-        self.skip_add_pre_grasp_once = False
-        self.blending_fingers = []
-        self.blend_started_at = None
-        self.blend_until = None
 
         self.inactive_pd_target = np.full(JOINT_COUNT, np.nan, dtype=np.float64)
+        self.inactive_collision_avoidance_offsets_rad = np.zeros(
+            5,
+            dtype=np.float64,
+        )
+        self.inactive_collision_avoidance_active = [False] * 5
+        self.inactive_collision_avoidance_direction = np.zeros(
+            5,
+            dtype=np.float64,
+        )
+        self.inactive_collision_min_clearance_m = -1.0
 
         self.envelop_hold_pose = None
         self.envelop_started_at = None
@@ -189,9 +243,24 @@ class GraspController:
         self.relative_rotation_phase = "idle"
         self.relative_rotation_target_rad = 0.0
         self.relative_rotation_started_at = None
+        self.relative_rotation_start_centroid = np.zeros(3, dtype=np.float64)
+        self.relative_rotation_pivot = np.zeros(3, dtype=np.float64)
+        self.relative_rotation_start_fingertips = {}
+        self.relative_rotation_contact_weights = {}
+        self.relative_rotation_current_rad = 0.0
+        self.relative_rotation_error_rad = 0.0
+        self.relative_rotation_angular_velocity = 0.0
+        self.relative_rotation_command_moment = 0.0
+        self.relative_rotation_axis = np.zeros(3, dtype=np.float64)
+        self.relative_rotation_last_wrapped_angle = None
+        self.relative_rotation_last_time = None
+        self.relative_rotation_last_centroid = None
+        self.relative_rotation_centroid_velocity = np.zeros(3, dtype=np.float64)
+        self.relative_rotation_reached_since = None
+        self.relative_rotation_reference_progress = 0.0
         # Relative task-space motion state. The grasp policy keeps the normal
-        # holding force active while a Cartesian impedance tracks one stored
-        # target for every active fingertip.
+        # holding force active in the null space while a centroid DLS
+        # joint-position controller tracks the stored Cartesian target.
         self.relative_translation_phase = "idle"
         self.relative_translation_start_centroid = np.zeros(3, dtype=np.float64)
         self.relative_translation_target_centroid = np.zeros(3, dtype=np.float64)
@@ -199,6 +268,7 @@ class GraspController:
         self.relative_translation_error = np.zeros(3, dtype=np.float64)
         self.relative_translation_centroid_velocity = np.zeros(3, dtype=np.float64)
         self.relative_translation_command_force = np.zeros(3, dtype=np.float64)
+        self.relative_translation_shape_forces = {}
         self.relative_translation_start_fingertips = {}
         self.relative_translation_target_fingertips = {}
         self.relative_translation_last_fingertips = {}
@@ -239,9 +309,24 @@ class GraspController:
         self.relative_rotation_phase = "idle"
         self.relative_rotation_target_rad = 0.0
         self.relative_rotation_started_at = None
+        self.relative_rotation_start_centroid[:] = 0.0
+        self.relative_rotation_pivot[:] = 0.0
+        self.relative_rotation_start_fingertips = {}
+        self.relative_rotation_contact_weights = {}
+        self.relative_rotation_current_rad = 0.0
+        self.relative_rotation_error_rad = 0.0
+        self.relative_rotation_angular_velocity = 0.0
+        self.relative_rotation_command_moment = 0.0
+        self.relative_rotation_axis[:] = 0.0
+        self.relative_rotation_last_wrapped_angle = None
+        self.relative_rotation_last_time = None
+        self.relative_rotation_last_centroid = None
+        self.relative_rotation_centroid_velocity[:] = 0.0
+        self.relative_rotation_reached_since = None
+        self.relative_rotation_reference_progress = 0.0
 
     def cancel_relative_translation(self) -> None:
-        """Cancel the stored Cartesian translation target and impedance."""
+        """Cancel the stored Cartesian translation target and DLS control."""
 
         self.relative_translation_phase = "idle"
         self.relative_translation_start_centroid[:] = 0.0
@@ -250,6 +335,7 @@ class GraspController:
         self.relative_translation_error[:] = 0.0
         self.relative_translation_centroid_velocity[:] = 0.0
         self.relative_translation_command_force[:] = 0.0
+        self.relative_translation_shape_forces = {}
         self.relative_translation_start_fingertips = {}
         self.relative_translation_target_fingertips = {}
         self.relative_translation_last_fingertips = {}
@@ -345,17 +431,20 @@ class GraspController:
         return self.policy.calc_zero_grasp_result(self.hand_q)
 
     def prepare_relative_rotation(self, angle_rad: float, now: float) -> bool:
-        """Store a signed rotation target relative to the current object pose.
-
-        Regular grasp types already use Cv == Cg and force-balanced
-        coefficients, so the preparation is immediately ready. No tangential
-        rotation force is generated by the current generic grasp path.
-        """
+        """Start closed-loop rotation relative to the contact configuration."""
 
         angle_rad = float(angle_rad)
         now = float(now)
         if not np.isfinite(angle_rad) or angle_rad == 0.0:
             raise ValueError("relative rotation angle must be finite and non-zero")
+        maximum = float(np.deg2rad(self.cfg.relative_rotation_max_abs_deg))
+        if not np.isfinite(maximum) or maximum <= 0.0:
+            raise ValueError("relative rotation maximum must be finite and > 0")
+        if abs(angle_rad) > maximum + 1e-12:
+            raise ValueError(
+                "relative rotation magnitude must be <= "
+                f"{self.cfg.relative_rotation_max_abs_deg:.3f} deg"
+            )
         if not np.isfinite(now):
             raise ValueError("now must be finite")
         if self.state != "GROPED_GRASP" or self.active_finger_count not in range(1, 6):
@@ -364,11 +453,7 @@ class GraspController:
                 f"(state={self.state}, grasp_type={self.active_finger_count})"
             )
             return False
-        if (
-            self.deferred_finger_count is not None
-            or self.adding_finger_target_count is not None
-            or bool(self.blending_fingers)
-        ):
+        if self.deferred_finger_count is not None:
             self._log(
                 "[RELATIVE_ROTATION] ignored: finger composition transition "
                 "is still active"
@@ -394,13 +479,64 @@ class GraspController:
             )
             return False
 
+        start_centroid = np.asarray(
+            self.last_regular_policy_result.cg,
+            dtype=np.float64,
+        )
+        start_fingertips = _copy_finger_vectors(
+            self.last_regular_policy_result.fingertip_positions
+        )
+        if (
+            start_centroid.shape != (3,)
+            or not np.all(np.isfinite(start_centroid))
+            or set(start_fingertips) != set(self.use_fingers)
+            or 1 not in start_fingertips
+        ):
+            self._log(
+                "[RELATIVE_ROTATION] ignored: contact geometry is incomplete"
+            )
+            return False
+        axis = np.array(
+            [
+                self.cfg.rotation_palm_normal_x,
+                self.cfg.rotation_palm_normal_y,
+                self.cfg.rotation_palm_normal_z,
+            ],
+            dtype=np.float64,
+        )
+        axis_norm = float(np.linalg.norm(axis))
+        if not np.isfinite(axis_norm) or axis_norm <= 1e-12:
+            raise ValueError("rotation palm-normal axis must be finite and non-zero")
+        axis /= axis_norm
+        contact_weights = self._calc_centroid_contact_weights(
+            start_centroid,
+            start_fingertips,
+        )
+
         self.cancel_relative_translation()
+        self.cancel_relative_rotation()
         self.relative_rotation_target_rad = angle_rad
-        self.relative_rotation_phase = "rotation_ready"
-        self.relative_rotation_started_at = None
+        self.relative_rotation_start_centroid = start_centroid.copy()
+        self.relative_rotation_pivot = start_fingertips[1].copy()
+        self.relative_rotation_start_fingertips = start_fingertips
+        self.relative_rotation_contact_weights = contact_weights
+        self.relative_rotation_current_rad = 0.0
+        self.relative_rotation_error_rad = angle_rad
+        self.relative_rotation_angular_velocity = 0.0
+        self.relative_rotation_command_moment = 0.0
+        self.relative_rotation_axis = axis
+        self.relative_rotation_last_wrapped_angle = 0.0
+        self.relative_rotation_last_time = now
+        self.relative_rotation_last_centroid = start_centroid.copy()
+        self.relative_rotation_centroid_velocity[:] = 0.0
+        self.relative_rotation_reached_since = None
+        self.relative_rotation_reference_progress = 0.0
+        self.relative_rotation_phase = "rotating"
+        self.relative_rotation_started_at = now
         self._log(
-            "[RELATIVE_ROTATION] centroid and force distribution ready "
-            f"target_delta_deg={np.degrees(angle_rad):.3f}"
+            "[RELATIVE_ROTATION] closed-loop contact rotation started "
+            f"target_delta_deg={np.degrees(angle_rad):.3f}, "
+            f"axis={np.round(axis, 4).tolist()}"
         )
         return True
 
@@ -428,11 +564,7 @@ class GraspController:
                 f"(state={self.state}, grasp_type={self.active_finger_count})"
             )
             return False
-        if (
-            self.deferred_finger_count is not None
-            or self.adding_finger_target_count is not None
-            or bool(self.blending_fingers)
-        ):
+        if self.deferred_finger_count is not None:
             self._log(
                 "[RELATIVE_TRANSLATION] ignored: finger composition transition "
                 "is still active"
@@ -492,6 +624,10 @@ class GraspController:
         self.relative_translation_error = delta_hand.copy()
         self.relative_translation_centroid_velocity[:] = 0.0
         self.relative_translation_command_force[:] = 0.0
+        self.relative_translation_shape_forces = {
+            finger: np.zeros(3, dtype=np.float64)
+            for finger in start_fingertips
+        }
         self.relative_translation_start_fingertips = start_fingertips
         self.relative_translation_target_fingertips = {
             finger: position + delta_hand
@@ -516,7 +652,7 @@ class GraspController:
         self.relative_translation_reached_since = None
         self.relative_translation_phase = "translating"
         self._log(
-            "[RELATIVE_TRANSLATION] hybrid grasp/Cartesian fingertip targets started "
+            "[RELATIVE_TRANSLATION] centroid DLS/null-space grasp target started "
             f"delta_link_base_mm={np.round(1000.0 * delta_hand, 3).tolist()}"
         )
         return True
@@ -604,16 +740,377 @@ class GraspController:
             for finger in tip_positions
         }
 
+    @staticmethod
+    def _wrap_angle(angle: float) -> float:
+        return float(np.arctan2(np.sin(angle), np.cos(angle)))
+
+    def _estimate_relative_rotation_angle(
+        self,
+        cg: np.ndarray,
+        tip_positions: Dict[int, np.ndarray],
+    ) -> float:
+        """Estimate signed contact-constellation rotation about the saved axis."""
+
+        axis = np.asarray(self.relative_rotation_axis, dtype=np.float64)
+        weighted_sine = 0.0
+        weighted_cosine = 0.0
+        usable = 0
+        radius_min = max(
+            float(self.cfg.relative_rotation_radius_min),
+            1e-6,
+        )
+        current_pivot = tip_positions.get(1)
+        if current_pivot is None:
+            raise ValueError("thumb pivot is unavailable")
+        current_pivot = np.asarray(current_pivot, dtype=np.float64)
+        for finger, start_position in self.relative_rotation_start_fingertips.items():
+            if finger == 1:
+                continue
+            current_position = tip_positions.get(finger)
+            if current_position is None:
+                continue
+            start_radius = (
+                np.asarray(start_position, dtype=np.float64)
+                - self.relative_rotation_pivot
+            )
+            # Remove any common translation of the thumb pivot when estimating
+            # the object/contact-constellation angle.
+            current_radius = (
+                np.asarray(current_position, dtype=np.float64)
+                - current_pivot
+            )
+            start_planar = start_radius - np.dot(start_radius, axis) * axis
+            current_planar = current_radius - np.dot(current_radius, axis) * axis
+            start_norm = float(np.linalg.norm(start_planar))
+            current_norm = float(np.linalg.norm(current_planar))
+            if start_norm < radius_min or current_norm < radius_min:
+                continue
+            sine = float(
+                np.dot(
+                    axis,
+                    np.cross(start_planar, current_planar),
+                )
+                / (start_norm * current_norm)
+            )
+            cosine = float(
+                np.dot(start_planar, current_planar)
+                / (start_norm * current_norm)
+            )
+            weight = start_norm * current_norm
+            weighted_sine += weight * sine
+            weighted_cosine += weight * cosine
+            usable += 1
+
+        if usable == 0 or (
+            abs(weighted_sine) <= 1e-15
+            and abs(weighted_cosine) <= 1e-15
+        ):
+            raise ValueError("no usable contact radius for angle estimation")
+        return float(np.arctan2(weighted_sine, weighted_cosine))
+
+    def _calc_relative_rotation_forces(
+        self,
+        cg: np.ndarray,
+        tip_positions: Dict[int, np.ndarray],
+        now: float,
+        qdot: np.ndarray | None = None,
+    ):
+        """Track fixed fingertip targets rotated about the saved centroid."""
+
+        rotation_forces = self._zero_translation_forces(tip_positions)
+        center_forces = self._zero_translation_forces(tip_positions)
+        self.relative_rotation_command_moment = 0.0
+        active_phases = {"rotating", "rotation_reached"}
+        if self.relative_rotation_phase not in active_phases:
+            return rotation_forces, center_forces
+
+        cg = np.asarray(cg, dtype=np.float64)
+        tip_positions = {
+            int(finger): np.asarray(position, dtype=np.float64)
+            for finger, position in tip_positions.items()
+        }
+        qdot = (
+            np.zeros(JOINT_COUNT, dtype=np.float64)
+            if qdot is None
+            else np.asarray(qdot, dtype=np.float64)
+        )
+        now = float(now)
+        expected_fingers = set(self.relative_rotation_start_fingertips)
+        if (
+            cg.shape != (3,)
+            or not np.all(np.isfinite(cg))
+            or qdot.shape != (JOINT_COUNT,)
+            or not np.all(np.isfinite(qdot))
+            or not np.isfinite(now)
+            or set(tip_positions) != expected_fingers
+            or set(self.relative_rotation_contact_weights) != expected_fingers
+            or any(
+                position.shape != (3,) or not np.all(np.isfinite(position))
+                for position in tip_positions.values()
+            )
+        ):
+            self.relative_rotation_phase = "rotation_error"
+            self._log("[RELATIVE_ROTATION] stopped: invalid contact geometry/time")
+            return rotation_forces, center_forces
+
+        try:
+            wrapped_angle = self._estimate_relative_rotation_angle(
+                cg,
+                tip_positions,
+            )
+        except ValueError as exc:
+            self.relative_rotation_phase = "rotation_error"
+            self._log(f"[RELATIVE_ROTATION] stopped: {exc}")
+            return rotation_forces, center_forces
+
+        dt = None
+        if self.relative_rotation_last_time is not None:
+            dt = now - float(self.relative_rotation_last_time)
+        if dt is not None and dt > 1e-6:
+            previous_wrapped = (
+                wrapped_angle
+                if self.relative_rotation_last_wrapped_angle is None
+                else float(self.relative_rotation_last_wrapped_angle)
+            )
+            angle_step = self._wrap_angle(wrapped_angle - previous_wrapped)
+            self.relative_rotation_current_rad += angle_step
+            raw_angular_velocity = angle_step / dt
+            velocity_alpha = float(
+                np.clip(self.cfg.relative_rotation_velocity_alpha, 0.0, 1.0)
+            )
+            self.relative_rotation_angular_velocity = (
+                (1.0 - velocity_alpha)
+                * self.relative_rotation_angular_velocity
+                + velocity_alpha * raw_angular_velocity
+            )
+            if self.relative_rotation_last_centroid is not None:
+                raw_centroid_velocity = (
+                    cg - self.relative_rotation_last_centroid
+                ) / dt
+                self.relative_rotation_centroid_velocity = (
+                    (1.0 - velocity_alpha)
+                    * self.relative_rotation_centroid_velocity
+                    + velocity_alpha * raw_centroid_velocity
+                )
+        else:
+            self.relative_rotation_current_rad = wrapped_angle
+
+        self.relative_rotation_last_wrapped_angle = wrapped_angle
+        self.relative_rotation_last_time = now
+        self.relative_rotation_last_centroid = cg.copy()
+        self.relative_rotation_error_rad = (
+            self.relative_rotation_target_rad
+            - self.relative_rotation_current_rad
+        )
+
+        elapsed = (
+            0.0
+            if self.relative_rotation_started_at is None
+            else max(0.0, now - float(self.relative_rotation_started_at))
+        )
+        timeout = float(self.cfg.relative_rotation_timeout_sec)
+        if (
+            np.isfinite(timeout)
+            and timeout > 0.0
+            and elapsed >= timeout
+        ):
+            self.relative_rotation_phase = "rotation_timeout"
+            self.relative_rotation_reached_since = None
+            self._log(
+                "[RELATIVE_ROTATION] timeout; Cartesian rotation force removed "
+                f"error_deg={np.degrees(self.relative_rotation_error_rad):.3f}"
+            )
+            return rotation_forces, center_forces
+
+        ramp_sec = max(
+            0.0,
+            float(self.cfg.relative_rotation_reference_ramp_sec),
+        )
+        if not np.isfinite(ramp_sec):
+            self.relative_rotation_phase = "rotation_error"
+            self._log("[RELATIVE_ROTATION] stopped: invalid reference ramp")
+            return rotation_forces, center_forces
+        ramp_linear = 1.0 if ramp_sec <= 0.0 else np.clip(
+            elapsed / ramp_sec,
+            0.0,
+            1.0,
+        )
+        reference_progress = float(
+            ramp_linear * ramp_linear * (3.0 - 2.0 * ramp_linear)
+        )
+        self.relative_rotation_reference_progress = reference_progress
+        reference_angle = reference_progress * self.relative_rotation_target_rad
+        if ramp_sec > 0.0 and 0.0 < elapsed < ramp_sec:
+            ramp_u = elapsed / ramp_sec
+            reference_angular_velocity = (
+                self.relative_rotation_target_rad
+                * (6.0 * ramp_u * (1.0 - ramp_u) / ramp_sec)
+            )
+        else:
+            reference_angular_velocity = 0.0
+
+        position_kp = float(self.cfg.relative_rotation_position_kp)
+        position_kd = float(self.cfg.relative_rotation_position_kd)
+        position_error_limit = float(
+            self.cfg.relative_rotation_position_error_limit_m
+        )
+        position_tolerance = float(
+            self.cfg.relative_rotation_position_tolerance_m
+        )
+        force_limit = float(self.cfg.relative_rotation_force_limit)
+        radius_min = float(self.cfg.relative_rotation_radius_min)
+        values = (
+            position_kp,
+            position_kd,
+            position_error_limit,
+            position_tolerance,
+            force_limit,
+            radius_min,
+        )
+        if (
+            not all(np.isfinite(value) for value in values)
+            or position_kp < 0.0
+            or position_kd < 0.0
+            or position_error_limit <= 0.0
+            or position_tolerance < 0.0
+            or force_limit < 0.0
+            or radius_min <= 0.0
+        ):
+            self.relative_rotation_phase = "rotation_error"
+            self._log("[RELATIVE_ROTATION] stopped: invalid rotation gains")
+            return rotation_forces, center_forces
+
+        axis = np.asarray(self.relative_rotation_axis, dtype=np.float64)
+        start_pivot = self.relative_rotation_pivot
+        current_pivot = tip_positions[1]
+        thumb_indices = np.asarray(FINGER_JOINT_INDEX[1], dtype=int)
+        thumb_velocity = (
+            tip_jacobian(
+                self.hand_q,
+                1,
+                eps=self.cfg.jacobian_eps,
+            )
+            @ qdot[thumb_indices]
+        )
+        driven_fingers = [
+            finger
+            for finger in self.relative_rotation_start_fingertips
+            if finger != 1
+        ]
+        if not driven_fingers:
+            self.relative_rotation_phase = "rotation_error"
+            self._log("[RELATIVE_ROTATION] stopped: no non-thumb driven finger")
+            return rotation_forces, center_forces
+        axis_cross = np.array(
+            [
+                [0.0, -axis[2], axis[1]],
+                [axis[2], 0.0, -axis[0]],
+                [-axis[1], axis[0], 0.0],
+            ],
+            dtype=np.float64,
+        )
+        reference_rotation = (
+            np.eye(3, dtype=np.float64)
+            + np.sin(reference_angle) * axis_cross
+            + (1.0 - np.cos(reference_angle)) * (axis_cross @ axis_cross)
+        )
+        target_angle = self.relative_rotation_target_rad
+        target_rotation = (
+            np.eye(3, dtype=np.float64)
+            + np.sin(target_angle) * axis_cross
+            + (1.0 - np.cos(target_angle)) * (axis_cross @ axis_cross)
+        )
+
+        final_errors = {}
+        for finger in driven_fingers:
+            start_position = self.relative_rotation_start_fingertips[finger]
+            start_radius = start_position - start_pivot
+            final_target = current_pivot + target_rotation @ start_radius
+            final_errors[finger] = final_target - tip_positions[finger]
+        maximum_final_error = max(
+            (float(np.linalg.norm(error)) for error in final_errors.values()),
+            default=float("inf"),
+        )
+
+        if (
+            self.relative_rotation_phase != "rotation_reached"
+            and reference_progress >= 1.0 - 1e-12
+            and maximum_final_error <= position_tolerance
+        ):
+            self.relative_rotation_phase = "rotation_reached"
+            self._log(
+                "[RELATIVE_ROTATION] target reached; thumb-pivot hold active "
+                f"max_tip_error_mm={1000.0 * maximum_final_error:.3f}, "
+                f"current_deg="
+                f"{np.degrees(self.relative_rotation_current_rad):.3f}"
+            )
+
+        # Thumb receives only the ordinary grasp force. Every other active
+        # finger tracks a target rotated about the command-time thumb contact.
+        rotation_forces[1][:] = 0.0
+        for finger in driven_fingers:
+            start_position = self.relative_rotation_start_fingertips[finger]
+            start_radius = start_position - start_pivot
+            rho = float(np.linalg.norm(start_radius))
+            target_position = current_pivot + reference_rotation @ start_radius
+            target_velocity = (
+                thumb_velocity
+                + reference_angular_velocity
+                * np.cross(axis, reference_rotation @ start_radius)
+            )
+            position_error = target_position - tip_positions[finger]
+            error_norm = float(np.linalg.norm(position_error))
+            if error_norm > position_error_limit:
+                position_error *= position_error_limit / error_norm
+
+            indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
+            fingertip_velocity = (
+                tip_jacobian(
+                    self.hand_q,
+                    finger,
+                    eps=self.cfg.jacobian_eps,
+                )
+                @ qdot[indices]
+            )
+            velocity_error = target_velocity - fingertip_velocity
+            force = (
+                position_kp * position_error
+                + position_kd * velocity_error
+            ) / max(rho, radius_min)
+            force_norm = float(np.linalg.norm(force))
+            if force_limit > 0.0 and force_norm > force_limit:
+                force *= force_limit / force_norm
+            rotation_forces[finger] = force
+
+        self.relative_rotation_command_moment = sum(
+            (
+                float(
+                    np.dot(
+                        np.cross(
+                            position - current_pivot,
+                            rotation_forces[finger],
+                        ),
+                        axis,
+                    )
+                )
+                for finger, position in tip_positions.items()
+            ),
+            0.0,
+        )
+
+        return rotation_forces, center_forces
+
     def _calc_relative_translation_forces(
         self,
         cg: np.ndarray,
         tip_positions: Dict[int, np.ndarray],
         now: float,
     ) -> Dict[int, np.ndarray]:
-        """Track independent Cartesian fingertip targets while grasping."""
+        """Update target state, virtual-force diagnostics, and shape forces."""
 
         zero = self._zero_translation_forces(tip_positions)
         self.relative_translation_command_force[:] = 0.0
+        self.relative_translation_shape_forces = _copy_finger_vectors(zero)
         self.relative_translation_control_axis_drive_force = 0.0
         active_phases = {"translating", "translation_reached"}
         if self.relative_translation_phase not in active_phases:
@@ -746,7 +1243,7 @@ class GraspController:
             self.relative_translation_phase = "translation_timeout"
             self.relative_translation_reached_since = None
             self._log(
-                "[RELATIVE_TRANSLATION] timeout; motion force removed "
+                "[RELATIVE_TRANSLATION] timeout; position control removed "
                 f"centroid_error_mm="
                 f"{np.round(1000.0 * self.relative_translation_error, 3).tolist()}, "
                 f"max_tip_error_mm="
@@ -916,11 +1413,242 @@ class GraspController:
         if scale < 1.0:
             for finger in forces:
                 forces[finger] *= scale
+                shape_force = (
+                    forces[finger]
+                    - float(self.relative_translation_contact_weights[finger])
+                    * (scale * object_force)
+                )
+                self.relative_translation_shape_forces[finger] = shape_force
+        else:
+            for finger, force in forces.items():
+                self.relative_translation_shape_forces[finger] = (
+                    force
+                    - float(self.relative_translation_contact_weights[finger])
+                    * object_force
+                )
         self.relative_translation_command_force = sum(
             forces.values(),
             np.zeros(3, dtype=np.float64),
         )
         return forces
+
+    def _clip_regular_grasp_tau(self, tau: np.ndarray) -> np.ndarray:
+        """Apply the same joint limits used by the Cartesian grasp policy."""
+
+        clipped = np.clip(
+            np.asarray(tau, dtype=np.float64),
+            -float(self.cfg.groped_tau_limit),
+            float(self.cfg.groped_tau_limit),
+        )
+        for joint_index, limit in BASE_JOINT_TAU_LIMIT.items():
+            clipped[joint_index] = np.clip(
+                clipped[joint_index], -float(limit), float(limit)
+            )
+        return clipped
+
+    def _calc_relative_translation_joint_control(
+        self,
+        *,
+        base_total_forces: Dict[int, np.ndarray],
+        base_grasp_tau: np.ndarray,
+        qdot: np.ndarray,
+    ):
+        """Combine centroid DLS position control and null-space grasp torque.
+
+        The same 3-D centroid Jacobian is used for X, Y, and Z. Position torque
+        has task priority. Existing grasp and zero-resultant shape torque are
+        retained only in the null space of that centroid task.
+        """
+
+        zero = np.zeros(JOINT_COUNT, dtype=np.float64)
+        active_phases = {"translating", "translation_reached"}
+        if self.relative_translation_phase not in active_phases:
+            return (
+                base_grasp_tau.copy(),
+                zero.copy(),
+                zero.copy(),
+                zero.copy(),
+                0.0,
+                0.0,
+            )
+
+        fingers = list(self.use_fingers)
+        if (
+            not fingers
+            or set(self.relative_translation_contact_weights) != set(fingers)
+        ):
+            self.relative_translation_phase = "translation_error"
+            self._log("[RELATIVE_TRANSLATION] stopped: invalid centroid weights")
+            return (
+                base_grasp_tau.copy(),
+                zero.copy(),
+                zero.copy(),
+                zero.copy(),
+                0.0,
+                0.0,
+            )
+
+        active_indices = np.concatenate(
+            [np.asarray(FINGER_JOINT_INDEX[finger], dtype=int) for finger in fingers]
+        )
+        centroid_jacobian = np.hstack(
+            [
+                float(self.relative_translation_contact_weights[finger])
+                * tip_jacobian(
+                    self.hand_q,
+                    finger,
+                    eps=self.cfg.jacobian_eps,
+                )
+                for finger in fingers
+            ]
+        )
+        singular_values = np.linalg.svd(centroid_jacobian, compute_uv=False)
+        sigma_min = float(singular_values[-1]) if singular_values.size else 0.0
+        condition = (
+            float(singular_values[0] / sigma_min)
+            if sigma_min > 1e-12
+            else float("inf")
+        )
+
+        damping = float(self.cfg.relative_translation_dls_damping)
+        rcond = float(self.cfg.relative_translation_nullspace_rcond)
+        joint_kp = float(self.cfg.relative_translation_joint_kp)
+        joint_kd = float(self.cfg.relative_translation_joint_kd)
+        correction_limit = float(
+            self.cfg.relative_translation_joint_correction_limit_rad
+        )
+        position_torque_limit = float(
+            self.cfg.relative_translation_position_torque_limit
+        )
+        nullspace_grasp_gain = float(
+            self.cfg.relative_translation_nullspace_grasp_gain
+        )
+        values = (
+            damping,
+            rcond,
+            joint_kp,
+            joint_kd,
+            correction_limit,
+            position_torque_limit,
+            nullspace_grasp_gain,
+        )
+        if (
+            not all(np.isfinite(value) for value in values)
+            or damping < 0.0
+            or rcond < 0.0
+            or joint_kp < 0.0
+            or joint_kd < 0.0
+            or correction_limit <= 0.0
+            or position_torque_limit <= 0.0
+            or nullspace_grasp_gain < 0.0
+        ):
+            self.relative_translation_phase = "translation_error"
+            self._log("[RELATIVE_TRANSLATION] stopped: invalid DLS/null-space gains")
+            return (
+                base_grasp_tau.copy(),
+                zero.copy(),
+                zero.copy(),
+                zero.copy(),
+                sigma_min,
+                condition,
+            )
+
+        reference_centroid = (
+            self.relative_translation_start_centroid
+            + self.relative_translation_reference_progress
+            * self.relative_translation_delta
+        )
+        current_centroid = (
+            self.relative_translation_target_centroid
+            - self.relative_translation_error
+        )
+        control_error = reference_centroid - current_centroid
+
+        regularizer = (damping * damping) * np.eye(3, dtype=np.float64)
+        try:
+            dls_inverse = centroid_jacobian.T @ np.linalg.solve(
+                centroid_jacobian @ centroid_jacobian.T + regularizer,
+                np.eye(3, dtype=np.float64),
+            )
+            nullspace_inverse = np.linalg.pinv(
+                centroid_jacobian,
+                rcond=rcond,
+            )
+        except np.linalg.LinAlgError:
+            self.relative_translation_phase = "translation_error"
+            self._log("[RELATIVE_TRANSLATION] stopped: centroid Jacobian solve failed")
+            return (
+                base_grasp_tau.copy(),
+                zero.copy(),
+                zero.copy(),
+                zero.copy(),
+                sigma_min,
+                condition,
+            )
+
+        joint_error_active = dls_inverse @ control_error
+        maximum_joint_error = float(np.max(np.abs(joint_error_active)))
+        if maximum_joint_error > correction_limit:
+            joint_error_active *= correction_limit / maximum_joint_error
+
+        qdot_active = np.asarray(qdot, dtype=np.float64)[active_indices]
+        task_joint_velocity = dls_inverse @ (centroid_jacobian @ qdot_active)
+        position_tau_active = (
+            joint_kp * joint_error_active - joint_kd * task_joint_velocity
+        )
+        position_tau_active = np.clip(
+            position_tau_active,
+            -position_torque_limit,
+            position_torque_limit,
+        )
+
+        internal_forces = _copy_finger_vectors(base_total_forces)
+        for finger, shape_force in self.relative_translation_shape_forces.items():
+            internal_forces[finger] += np.asarray(shape_force, dtype=np.float64)
+        internal_tau = self.policy.calc_tau_from_total_forces(
+            self.hand_q,
+            internal_forces,
+        )
+        null_projector = (
+            np.eye(len(active_indices), dtype=np.float64)
+            - nullspace_inverse @ centroid_jacobian
+        )
+        projected_grasp_tau_active = (
+            nullspace_grasp_gain
+            * null_projector.T
+            @ internal_tau[active_indices]
+        )
+        # Avoid a torque step when a move starts. The same smooth reference
+        # progress transitions the secondary grasp/shape command into the
+        # strict centroid-task null space.
+        hierarchy_blend = float(
+            np.clip(self.relative_translation_reference_progress, 0.0, 1.0)
+        )
+        nullspace_tau_active = (
+            (1.0 - hierarchy_blend) * base_grasp_tau[active_indices]
+            + hierarchy_blend * projected_grasp_tau_active
+        )
+
+        combined_tau = base_grasp_tau.copy()
+        combined_tau[active_indices] = (
+            position_tau_active + nullspace_tau_active
+        )
+        combined_tau = self._clip_regular_grasp_tau(combined_tau)
+
+        joint_error = zero.copy()
+        position_tau = zero.copy()
+        nullspace_tau = zero.copy()
+        joint_error[active_indices] = joint_error_active
+        position_tau[active_indices] = position_tau_active
+        nullspace_tau[active_indices] = nullspace_tau_active
+        return (
+            combined_tau,
+            joint_error,
+            position_tau,
+            nullspace_tau,
+            sigma_min,
+            condition,
+        )
 
     def sync_joint_state(self, q: np.ndarray) -> None:
         q = np.asarray(q, dtype=np.float64)
@@ -956,11 +1684,326 @@ class GraspController:
         self._log(f"[POSE_TYPE] pose_type={pose_type} -> {label}")
         return state, now, 0.0
 
-    def _inactive_pre_grasp_pd(self, active_fingers, qdot, pre_grasp_fingers=None):
+    def _reset_inactive_collision_avoidance(self):
+        self.inactive_collision_avoidance_offsets_rad[:] = 0.0
+        self.inactive_collision_avoidance_active = [False] * 5
+        self.inactive_collision_avoidance_direction[:] = 0.0
+        self.inactive_collision_min_clearance_m = -1.0
+
+    @staticmethod
+    def _inactive_clearance_to_avoidance_sources(
+        inactive_segments,
+        inactive_finger,
+        source_fingers,
+        segment_cache,
+        capsule_radius,
+    ):
+        neighbors = [
+            int(finger)
+            for finger in source_fingers
+            if abs(int(finger) - int(inactive_finger)) == 1
+        ]
+        if not neighbors:
+            return float("inf")
+
+        return min(
+            capsule_segments_clearance(
+                inactive_segments,
+                segment_cache[active_finger],
+                capsule_radius,
+            )
+            for active_finger in neighbors
+        )
+
+    def _update_inactive_collision_avoidance(self, active_fingers, qdot):
+        """Update rate-limited joint-1 offsets with chained avoidance."""
+
+        active_set = {int(finger) for finger in active_fingers}
+        # An inactive finger that is moving away from an active finger becomes
+        # an avoidance source for the next inactive neighbor. This propagates
+        # middle -> ring -> pinky clearance without making fingers spread in
+        # their undisturbed pre-grasp pose.
+        avoidance_sources = set(active_set)
+        if not bool(self.cfg.inactive_collision_avoidance_enable):
+            self._reset_inactive_collision_avoidance()
+            return self.inactive_collision_avoidance_offsets_rad.copy()
+
+        prediction_sec = max(
+            0.0,
+            float(self.cfg.inactive_collision_prediction_sec),
+        )
+        predicted_q = self.hand_q + prediction_sec * np.asarray(
+            qdot,
+            dtype=np.float64,
+        )
+        radius = max(
+            0.0,
+            float(self.cfg.inactive_collision_capsule_radius_m),
+        )
+        first_segment = int(
+            np.clip(self.cfg.inactive_collision_first_segment, 0, 3)
+        )
+        current_segment_cache = {
+            finger: finger_capsule_segments(self.hand_q, finger)[
+                first_segment:
+            ]
+            for finger in FINGER_JOINT_INDEX
+        }
+        predicted_segment_cache = {
+            finger: finger_capsule_segments(predicted_q, finger)[
+                first_segment:
+            ]
+            for finger in FINGER_JOINT_INDEX
+        }
+        activation = max(
+            0.0,
+            float(self.cfg.inactive_collision_activation_clearance_m),
+        )
+        critical = min(
+            float(self.cfg.inactive_collision_critical_clearance_m),
+            activation - 1e-6,
+        )
+        release = activation + max(
+            0.0,
+            float(self.cfg.inactive_collision_release_hysteresis_m),
+        )
+        maximum_offset = max(
+            0.0,
+            float(self.cfg.inactive_collision_max_joint1_offset_rad),
+        )
+        gradient_eps = max(
+            1e-6,
+            float(self.cfg.inactive_collision_gradient_eps_rad),
+        )
+        minimum_delta = max(
+            0.0,
+            float(self.cfg.inactive_collision_direction_min_delta_m),
+        )
+        rate = max(
+            0.0,
+            float(self.cfg.inactive_collision_joint1_target_rate_radps),
+        )
+        maximum_step = rate * max(float(self.cfg.dt), 1e-6)
+        margin = max(
+            0.0,
+            float(self.cfg.inactive_collision_joint_limit_margin_rad),
+        )
+        pre_grasp_pose = self._current_pre_grasp_pose()
+        observed_clearances = []
+
+        for finger in FINGER_JOINT_INDEX:
+            state_index = int(finger) - 1
+            if finger in active_set or finger == 1:
+                self.inactive_collision_avoidance_offsets_rad[state_index] = 0.0
+                self.inactive_collision_avoidance_active[state_index] = False
+                self.inactive_collision_avoidance_direction[state_index] = 0.0
+                continue
+
+            current_clearance = self._inactive_clearance_to_avoidance_sources(
+                current_segment_cache[finger],
+                finger,
+                avoidance_sources,
+                current_segment_cache,
+                radius,
+            )
+            predicted_clearance = (
+                self._inactive_clearance_to_avoidance_sources(
+                    predicted_segment_cache[finger],
+                    finger,
+                    avoidance_sources,
+                    predicted_segment_cache,
+                    radius,
+            )
+            )
+            clearance = min(current_clearance, predicted_clearance)
+            if np.isfinite(clearance):
+                observed_clearances.append(float(clearance))
+            else:
+                self.inactive_collision_avoidance_active[state_index] = False
+
+            if (
+                not self.inactive_collision_avoidance_active[state_index]
+                and clearance < activation
+            ):
+                self.inactive_collision_avoidance_active[state_index] = True
+            elif (
+                self.inactive_collision_avoidance_active[state_index]
+                and clearance >= release
+            ):
+                self.inactive_collision_avoidance_active[state_index] = False
+
+            desired_offset = 0.0
+            if self.inactive_collision_avoidance_active[state_index]:
+                proximity = float(
+                    np.clip(
+                        (release - clearance) / max(release - critical, 1e-6),
+                        0.0,
+                        1.0,
+                    )
+                )
+                proximity = proximity * proximity * (3.0 - 2.0 * proximity)
+                direction_q = (
+                    self.hand_q
+                    if current_clearance <= predicted_clearance
+                    else predicted_q
+                ).copy()
+                direction_segment_cache = (
+                    current_segment_cache
+                    if current_clearance <= predicted_clearance
+                    else predicted_segment_cache
+                )
+                local_joint_index = int(
+                    FINGER_AVOIDANCE_JOINT_LOCAL_INDEX[finger]
+                )
+                joint_index = int(
+                    FINGER_JOINT_INDEX[finger][local_joint_index]
+                )
+                lower, upper = FINGER_AVOIDANCE_JOINT_LIMITS[finger]
+                usable_margin = min(margin, 0.49 * (upper - lower))
+                lower += usable_margin
+                upper -= usable_margin
+
+                plus_q = direction_q.copy()
+                minus_q = direction_q.copy()
+                plus_q[joint_index] = min(
+                    upper,
+                    plus_q[joint_index] + gradient_eps,
+                )
+                minus_q[joint_index] = max(
+                    lower,
+                    minus_q[joint_index] - gradient_eps,
+                )
+                plus_clearance = (
+                    self._inactive_clearance_to_avoidance_sources(
+                        finger_capsule_segments(plus_q, finger)[first_segment:],
+                        finger,
+                        avoidance_sources,
+                        direction_segment_cache,
+                        radius,
+                )
+                )
+                minus_clearance = (
+                    self._inactive_clearance_to_avoidance_sources(
+                        finger_capsule_segments(minus_q, finger)[first_segment:],
+                        finger,
+                        avoidance_sources,
+                        direction_segment_cache,
+                    radius,
+                )
+                )
+                clearance_delta = plus_clearance - minus_clearance
+                if abs(clearance_delta) >= minimum_delta:
+                    self.inactive_collision_avoidance_direction[state_index] = (
+                        1.0 if clearance_delta > 0.0 else -1.0
+                    )
+
+                desired_offset = (
+                    self.inactive_collision_avoidance_direction[state_index]
+                    * maximum_offset
+                    * proximity
+                )
+                pre_grasp_joint = float(pre_grasp_pose[joint_index])
+                desired_target = float(
+                    np.clip(
+                        pre_grasp_joint + desired_offset,
+                        lower,
+                        upper,
+                    )
+                )
+                desired_offset = desired_target - pre_grasp_joint
+
+            previous_offset = float(
+                self.inactive_collision_avoidance_offsets_rad[state_index]
+            )
+            offset_step = float(
+                np.clip(
+                    desired_offset - previous_offset,
+                    -maximum_step,
+                    maximum_step,
+                )
+            )
+            self.inactive_collision_avoidance_offsets_rad[state_index] = (
+                previous_offset + offset_step
+            )
+            offset = float(
+                self.inactive_collision_avoidance_offsets_rad[state_index]
+            )
+            if (
+                not self.inactive_collision_avoidance_active[state_index]
+                and abs(offset) <= 1e-12
+            ):
+                self.inactive_collision_avoidance_direction[state_index] = 0.0
+
+            if (
+                self.inactive_collision_avoidance_active[state_index]
+                or abs(offset) > 1e-12
+            ):
+                # Let the following inactive finger see both the measured
+                # velocity prediction and where this avoidance command can
+                # move the source finger during the same preview horizon.
+                # Keeping both capsule sets makes the check conservative.
+                local_joint_index = int(
+                    FINGER_AVOIDANCE_JOINT_LOCAL_INDEX[finger]
+                )
+                joint_index = int(
+                    FINGER_JOINT_INDEX[finger][local_joint_index]
+                )
+                lower, upper = FINGER_AVOIDANCE_JOINT_LIMITS[finger]
+                usable_margin = min(margin, 0.49 * (upper - lower))
+                lower += usable_margin
+                upper -= usable_margin
+                preview_target = float(
+                    np.clip(
+                        pre_grasp_pose[joint_index] + desired_offset,
+                        lower,
+                        upper,
+                    )
+                )
+                preview_q = predicted_q.copy()
+                preview_step = rate * prediction_sec
+                preview_q[joint_index] = float(
+                    self.hand_q[joint_index]
+                    + np.clip(
+                        preview_target - self.hand_q[joint_index],
+                        -preview_step,
+                        preview_step,
+                    )
+                )
+                predicted_segment_cache[finger] = np.concatenate(
+                    (
+                        predicted_segment_cache[finger],
+                        finger_capsule_segments(preview_q, finger)[
+                            first_segment:
+                        ],
+                    ),
+                    axis=0,
+                )
+                avoidance_sources.add(int(finger))
+
+        self.inactive_collision_min_clearance_m = (
+            min(observed_clearances) if observed_clearances else -1.0
+        )
+        return self.inactive_collision_avoidance_offsets_rad.copy()
+
+    def _inactive_pre_grasp_pd(
+        self,
+        active_fingers,
+        qdot,
+        *,
+        collision_avoidance_enabled=False,
+    ):
         inactive_pd = np.zeros(JOINT_COUNT, dtype=np.float64)
         self.inactive_pd_target[:] = np.nan
         active_set = set(active_fingers)
-        pre_grasp_set = set(pre_grasp_fingers or [])
+        pre_grasp_pose = self._current_pre_grasp_pose()
+        if collision_avoidance_enabled:
+            avoidance_offsets = self._update_inactive_collision_avoidance(
+                active_fingers,
+                qdot,
+            )
+        else:
+            self._reset_inactive_collision_avoidance()
+            avoidance_offsets = self.inactive_collision_avoidance_offsets_rad
 
         for finger, idxs in FINGER_JOINT_INDEX.items():
             if finger in active_set:
@@ -972,19 +2015,49 @@ class GraspController:
                 and self.pinky_special_hold_pose is not None
             ):
                 target = self.pinky_special_hold_pose
-                kp = self.cfg.pose_kp
-                kd = self.cfg.pose_kd
-            elif finger in pre_grasp_set:
-                target = self._current_pre_grasp_pose()[idxs]
-                kp = self.cfg.pose_kp * ADD_FINGER_PRE_GRASP_KP_SCALE
-                kd = self.cfg.pose_kd * ADD_FINGER_PRE_GRASP_KD_SCALE
             else:
-                target = np.zeros(len(idxs), dtype=np.float64)
-                target[0] = HAND_PRE_GRASP_POSE[idxs[0]]
-                if finger == PINKY_FINGER_ID:
-                    target[1] = HAND_PRE_GRASP_POSE[idxs[1]]
-                kp = self.cfg.pose_kp
-                kd = self.cfg.pose_kd
+                # Every unused finger waits at the complete selected
+                # pre-grasp pose. It is therefore ready to join the grasp
+                # without a separate PD preparation stage.
+                target = pre_grasp_pose[idxs].copy()
+                avoidance_joint = int(
+                    FINGER_AVOIDANCE_JOINT_LOCAL_INDEX[finger]
+                )
+                target[avoidance_joint] += avoidance_offsets[
+                    int(finger) - 1
+                ]
+
+            kp = np.full(len(idxs), self.cfg.pose_kp, dtype=np.float64)
+            kd = np.full(len(idxs), self.cfg.pose_kd, dtype=np.float64)
+            limit = np.full(
+                len(idxs),
+                self.cfg.pose_pd_limit,
+                dtype=np.float64,
+            )
+            avoidance_state_index = int(finger) - 1
+            avoidance_moving = (
+                collision_avoidance_enabled
+                and self.pinky_special_hold_pose is None
+                and (
+                    self.inactive_collision_avoidance_active[
+                        avoidance_state_index
+                    ]
+                    or abs(avoidance_offsets[avoidance_state_index]) > 1e-12
+                )
+            )
+            if avoidance_moving:
+                kp[avoidance_joint] = max(
+                    0.0,
+                    float(self.cfg.inactive_collision_pd_kp),
+                )
+                kd[avoidance_joint] = max(
+                    0.0,
+                    float(self.cfg.inactive_collision_pd_kd),
+                )
+                limit[avoidance_joint] = max(
+                    0.0,
+                    float(self.cfg.inactive_collision_pd_limit),
+                )
 
             # Save the exact target that is actually sent to the inactive-finger
             # PD controller. This is used only by the periodic debug log.
@@ -996,7 +2069,7 @@ class GraspController:
                 qdot[idxs],
                 kp=kp,
                 kd=kd,
-                limit=self.cfg.pose_pd_limit,
+                limit=limit,
             )
             inactive_pd[idxs] = pd
 
@@ -1005,13 +2078,7 @@ class GraspController:
     def _clear_transition_state(self):
         self.deferred_finger_count = None
         self.deferred_finger_count_at = None
-        self.adding_finger_target_count = None
-        self.adding_pre_grasp_fingers = []
-        self.adding_ready_at = None
-        self.skip_add_pre_grasp_once = False
-        self.blending_fingers = []
-        self.blend_started_at = None
-        self.blend_until = None
+        self._reset_inactive_collision_avoidance()
 
     def _reset_envelop_grasp(self):
         self.envelop_hold_pose = None
@@ -1644,7 +2711,7 @@ class GraspController:
         self.state_start = state_start
 
     def _cancel_deferred_for_external_command(self) -> None:
-        if self.deferred_finger_count is not None and not self.skip_add_pre_grasp_once:
+        if self.deferred_finger_count is not None:
             self.deferred_finger_count = None
             self.deferred_finger_count_at = None
 
@@ -1660,10 +2727,6 @@ class GraspController:
             self._cancel_deferred_for_external_command()
 
         command_count = requested_count
-        if not self.skip_add_pre_grasp_once:
-            self.blending_fingers = []
-            self.blend_started_at = None
-            self.blend_until = None
 
         if requested_count == -1:
             self.active_finger_count = 0
@@ -1731,30 +2794,9 @@ class GraspController:
         target_fingers = selected_fingers(command_count)
         new_fingers = set(target_fingers)
         added = sorted(new_fingers - prev_fingers)
-
-        if (
-            0 < self.active_finger_count <= 5
-            and added
-            and not self.skip_add_pre_grasp_once
-        ):
-            self.adding_finger_target_count = command_count
-            self.adding_pre_grasp_fingers = added
-            self.adding_ready_at = now + ADD_FINGER_PRE_GRASP_DELAY
-            self.state = "GROPED_GRASP"
-            self.state_start = now
-            self._log(
-                f"[COMMAND] grasp_type={command_count} prepare added fingers "
-                f"{added} at PRE_GRASP for {ADD_FINGER_PRE_GRASP_DELAY:.2f}s"
-            )
-            return
-
-        self.skip_add_pre_grasp_once = False
         self.use_fingers = target_fingers
         self.policy = GraspPolicy(self.use_fingers, self.cfg)
         self.active_finger_count = command_count
-        self.adding_finger_target_count = None
-        self.adding_pre_grasp_fingers = []
-        self.adding_ready_at = None
         self.state = "GROPED_GRASP"
         self.state_start = now
 
@@ -1777,25 +2819,8 @@ class GraspController:
 
     def _process_timers(self, now: float) -> None:
         if (
-            self.adding_finger_target_count is not None
-            and self.adding_ready_at is not None
-            and now >= self.adding_ready_at
-        ):
-            command = self.adding_finger_target_count
-            self.blending_fingers = []
-            self.blend_started_at = None
-            self.blend_until = None
-            self.adding_finger_target_count = None
-            self.adding_pre_grasp_fingers = []
-            self.adding_ready_at = None
-            self.skip_add_pre_grasp_once = True
-            self.apply_grasp_type(command, now, internal=True)
-            return
-
-        if (
             self.deferred_finger_count is not None
             and self.deferred_finger_count_at is not None
-            and self.adding_finger_target_count is None
             and now >= self.deferred_finger_count_at
         ):
             command = self.deferred_finger_count
@@ -1831,8 +2856,36 @@ class GraspController:
         rotation_enabled = False
         effective_thumb_centroid_bias = 0.0
         relative_rotation_force_balance_blend = 0.0
+        relative_rotation_control_mode = "idle"
+        relative_rotation_center_error = np.zeros(3, dtype=np.float64)
+        relative_rotation_dls_sigma_min = 0.0
+        relative_rotation_dls_condition = 0.0
+        relative_rotation_center_joint_error = np.zeros(
+            JOINT_COUNT,
+            dtype=np.float64,
+        )
+        relative_rotation_center_position_torques = np.zeros(
+            JOINT_COUNT,
+            dtype=np.float64,
+        )
+        relative_rotation_nullspace_torques = np.zeros(
+            JOINT_COUNT,
+            dtype=np.float64,
+        )
         relative_translation_torque_target = 0.0
         relative_translation_force_scale = 0.0
+        relative_translation_control_mode = "idle"
+        relative_translation_dls_sigma_min = 0.0
+        relative_translation_dls_condition = 0.0
+        relative_translation_joint_error = np.zeros(
+            JOINT_COUNT, dtype=np.float64
+        )
+        relative_translation_position_torques = np.zeros(
+            JOINT_COUNT, dtype=np.float64
+        )
+        relative_translation_nullspace_grasp_torques = np.zeros(
+            JOINT_COUNT, dtype=np.float64
+        )
         self.inactive_pd_target[:] = np.nan
 
         if self.state == "NORMAL_POSE":
@@ -1919,9 +2972,8 @@ class GraspController:
                     )
                     self.regular_force_balance_error_started_at = float(now)
                     self.cancel_relative_translation()
+                    self.cancel_relative_rotation()
                     self.relative_rotation_phase = "force_balance_error"
-                    self.relative_rotation_target_rad = 0.0
-                    self.relative_rotation_started_at = None
                     relative_rotation_force_balance_blend = 0.0
                     using_force_balance_fallback = True
                     policy_result = (
@@ -1942,6 +2994,39 @@ class GraspController:
 
             if regular_grasp:
                 base_total_forces = _copy_finger_vectors(total_forces)
+                (
+                    generic_rotation_forces,
+                    generic_center_hold_forces,
+                ) = self._calc_relative_rotation_forces(
+                    cg,
+                    fingertip_positions,
+                    now,
+                    qdot,
+                )
+                rotation_forces.update(generic_rotation_forces)
+                center_hold_forces.update(generic_center_hold_forces)
+                if self.relative_rotation_phase in {
+                    "rotating",
+                    "rotation_reached",
+                }:
+                    total_forces = _copy_finger_vectors(base_total_forces)
+                    for finger in self.use_fingers:
+                        total_forces[finger] += rotation_forces[finger]
+                    grasp_tau = self.policy.calc_tau_from_total_forces(
+                        self.hand_q,
+                        total_forces,
+                    )
+                    relative_rotation_center_error = (
+                        self.relative_rotation_start_centroid - cg
+                    )
+                    if self.relative_rotation_phase == "rotating":
+                        relative_rotation_control_mode = (
+                            "cartesian_thumb_pivot_jacobian_transpose"
+                        )
+                    else:
+                        relative_rotation_control_mode = (
+                            "cartesian_thumb_pivot_hold"
+                        )
                 translation_forces.update(
                     self._calc_relative_translation_forces(
                         cg,
@@ -1949,231 +3034,42 @@ class GraspController:
                         now,
                     )
                 )
-                if any(
-                    np.linalg.norm(force) > 0.0
-                    for force in translation_forces.values()
-                ):
+                if self.relative_translation_phase in {
+                    "translating",
+                    "translation_reached",
+                }:
                     grasp_tau_without_translation = grasp_tau.copy()
-                    relative_translation_force_scale = 1.0
-
-                    def apply_translation_forces():
-                        combined_forces = _copy_finger_vectors(base_total_forces)
-                        for active_finger, active_force in translation_forces.items():
-                            combined_forces[active_finger] += active_force
-                        combined_tau = self.policy.calc_tau_from_total_forces(
-                            self.hand_q,
-                            combined_forces,
-                        )
-                        return combined_forces, combined_tau
-
-                    total_forces, grasp_tau = apply_translation_forces()
-                    # This is the exact incremental controller torque that
-                    # survives the same clipping as the combined grasp command.
-                    translation_torques = grasp_tau - grasp_tau_without_translation
-
-                    if bool(
-                        self.cfg.relative_translation_torque_normalization_enable
-                    ):
-                        torque_gain = max(
-                            0.0,
-                            float(
-                                self.cfg.relative_translation_torque_gain_nm_per_m
-                            ),
-                        )
-                        torque_limit = max(
-                            0.0,
-                            float(self.cfg.relative_translation_torque_limit),
-                        )
-                        position_gain = max(
-                            0.0,
-                            float(self.cfg.relative_translation_kp),
-                        )
-                        damped_equivalent_error = (
-                            abs(
-                                self.relative_translation_control_axis_drive_force
-                            )
-                            / position_gain
-                            if position_gain > 1e-12
-                            else 0.0
-                        )
-                        translation_axis = self.relative_translation_delta.copy()
-                        translation_axis /= max(
-                            float(np.linalg.norm(translation_axis)),
-                            1e-12,
-                        )
-                        axis_multipliers = np.array(
-                            [
-                                self.cfg.relative_translation_torque_axis_multiplier_x,
-                                self.cfg.relative_translation_torque_axis_multiplier_y,
-                                self.cfg.relative_translation_torque_axis_multiplier_z,
-                            ],
-                            dtype=np.float64,
-                        )
-                        if (
-                            not np.all(np.isfinite(axis_multipliers))
-                            or np.any(axis_multipliers <= 0.0)
-                        ):
-                            axis_multipliers = np.ones(3, dtype=np.float64)
-                        direction_multiplier = float(
-                            np.linalg.norm(axis_multipliers * translation_axis)
-                        )
-                        relative_translation_torque_target = min(
-                            torque_gain
-                            * direction_multiplier
-                            * damped_equivalent_error,
-                            torque_limit,
-                        )
-
-                        def axis_translation_torques():
-                            axis_forces = _copy_finger_vectors(base_total_forces)
-                            for active_finger, active_force in translation_forces.items():
-                                axis_forces[active_finger] += (
-                                    translation_axis
-                                    * float(np.dot(translation_axis, active_force))
-                                )
-                            axis_tau = self.policy.calc_tau_from_total_forces(
-                                self.hand_q,
-                                axis_forces,
-                            )
-                            return axis_tau - grasp_tau_without_translation
-
-                        def axis_scaled_forces(axis_scale):
-                            proposed = {}
-                            for active_finger, active_force in translation_forces.items():
-                                parallel = (
-                                    translation_axis
-                                    * float(np.dot(translation_axis, active_force))
-                                )
-                                proposed[active_finger] = (
-                                    active_force
-                                    + (axis_scale - 1.0) * parallel
-                                )
-                            return proposed
-
-                        force_limit = max(
-                            0.0,
-                            float(self.cfg.relative_translation_force_limit),
-                        )
-                        per_finger_limit = max(
-                            0.0,
-                            float(
-                                self.cfg.relative_translation_per_finger_force_limit
-                            ),
-                        )
-
-                        def forces_within_limits(proposed):
-                            resultant = sum(
-                                proposed.values(),
-                                np.zeros(3, dtype=np.float64),
-                            )
-                            if (
-                                force_limit > 0.0
-                                and np.linalg.norm(resultant) > force_limit + 1e-12
-                            ):
-                                return False
-                            if per_finger_limit > 0.0 and any(
-                                np.linalg.norm(force)
-                                > per_finger_limit + 1e-12
-                                for force in proposed.values()
-                            ):
-                                return False
-                            return True
-
-                        # Two passes account for the fact that combined grasp
-                        # torque clipping makes the incremental J^T F mapping
-                        # mildly nonlinear. Only the commanded-axis component
-                        # is boosted, so cross-axis hold and shape damping are
-                        # not amplified into an oscillation.
-                        for _ in range(2):
-                            motion_axis_torques = axis_translation_torques()
-                            torque_max = float(
-                                np.max(np.abs(motion_axis_torques))
-                            )
-                            if (
-                                torque_max <= 1e-12
-                                or torque_max
-                                >= relative_translation_torque_target - 1e-9
-                            ):
-                                break
-
-                            scale = (
-                                relative_translation_torque_target / torque_max
-                            )
-                            if scale <= 1.0 + 1e-9:
-                                break
-
-                            proposed = axis_scaled_forces(scale)
-                            if not forces_within_limits(proposed):
-                                lower = 1.0
-                                upper = scale
-                                for _ in range(24):
-                                    candidate = 0.5 * (lower + upper)
-                                    candidate_forces = axis_scaled_forces(candidate)
-                                    if forces_within_limits(candidate_forces):
-                                        lower = candidate
-                                    else:
-                                        upper = candidate
-                                scale = lower
-                                proposed = axis_scaled_forces(scale)
-                            if scale <= 1.0 + 1e-9:
-                                break
-
-                            translation_forces = proposed
-                            relative_translation_force_scale *= scale
-                            self.relative_translation_command_force = sum(
-                                translation_forces.values(),
-                                np.zeros(3, dtype=np.float64),
-                            )
-                            total_forces, grasp_tau = apply_translation_forces()
-                            translation_torques = (
-                                grasp_tau - grasp_tau_without_translation
-                            )
-
-            blend_pd = np.zeros(JOINT_COUNT, dtype=np.float64)
-            if (
-                not using_force_balance_fallback
-                and self.blending_fingers
-                and self.blend_started_at is not None
-                and self.blend_until is not None
-            ):
-                duration = max(self.blend_until - self.blend_started_at, 1e-6)
-                blend_raw = np.clip((now - self.blend_started_at) / duration, 0.0, 1.0)
-                blend = blend_raw * blend_raw * (3.0 - 2.0 * blend_raw)
-                for finger in list(self.blending_fingers):
-                    idxs = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
-                    pd, _ = pose_pd(
-                        self._current_pre_grasp_pose()[idxs],
-                        self.hand_q[idxs],
-                        qdot[idxs],
-                        kp=self.cfg.pose_kp,
-                        kd=self.cfg.pose_kd,
-                        limit=self.cfg.pose_pd_limit,
+                    (
+                        grasp_tau,
+                        relative_translation_joint_error,
+                        relative_translation_position_torques,
+                        relative_translation_nullspace_grasp_torques,
+                        relative_translation_dls_sigma_min,
+                        relative_translation_dls_condition,
+                    ) = self._calc_relative_translation_joint_control(
+                        base_total_forces=base_total_forces,
+                        base_grasp_tau=grasp_tau_without_translation,
+                        qdot=qdot,
                     )
-                    grasp_tau[idxs] *= blend
-                    translation_torques[idxs] *= blend
-                    grasp_forces[finger] *= blend
-                    translation_forces[finger] *= blend
-                    rotation_forces[finger] *= blend
-                    center_hold_forces[finger] *= blend
-                    collision_forces[finger] *= blend
-                    total_forces[finger] *= blend
-                    blend_pd[idxs] = (1.0 - blend) * pd
-                if blend_raw >= 1.0:
-                    self.blending_fingers = []
-                    self.blend_started_at = None
-                    self.blend_until = None
+                    translation_torques = (
+                        grasp_tau - grasp_tau_without_translation
+                    )
+                    if self.relative_translation_phase in {
+                        "translating",
+                        "translation_reached",
+                    }:
+                        relative_translation_control_mode = (
+                            "centroid_dls_nullspace"
+                        )
 
             if (
                 regular_grasp
                 and not using_force_balance_fallback
-                and not self.blending_fingers
             ):
-                # Keep the fail-closed cache free of manipulation force. If a
-                # later balance solve fails, translation must disappear
-                # immediately while only the stable grasp command fades out.
-                cached_total_forces = _copy_finger_vectors(total_forces)
-                for finger, force in translation_forces.items():
-                    cached_total_forces[finger] -= force
+                # Keep the fail-closed cache free of translation and rotation
+                # manipulation. Only the stable regular grasp command may be
+                # replayed and faded after a later balance failure.
+                cached_total_forces = _copy_finger_vectors(base_total_forces)
                 self.last_regular_policy_result = replace(
                     policy_result,
                     tau=self.policy.calc_tau_from_total_forces(
@@ -2184,12 +3080,18 @@ class GraspController:
                         int(finger): float(np.linalg.norm(force))
                         for finger, force in grasp_forces.items()
                     },
-                    grasp_forces=_copy_finger_vectors(grasp_forces),
-                    rotation_forces=_copy_finger_vectors(rotation_forces),
-                    center_hold_forces=_copy_finger_vectors(
-                        center_hold_forces
+                    grasp_forces=_copy_finger_vectors(
+                        policy_result.grasp_forces
                     ),
-                    collision_forces=_copy_finger_vectors(collision_forces),
+                    rotation_forces=_copy_finger_vectors(
+                        policy_result.rotation_forces
+                    ),
+                    center_hold_forces=_copy_finger_vectors(
+                        policy_result.center_hold_forces
+                    ),
+                    collision_forces=_copy_finger_vectors(
+                        policy_result.collision_forces
+                    ),
                     total_forces=cached_total_forces,
                 )
                 self.last_regular_policy_fingers = tuple(self.use_fingers)
@@ -2221,12 +3123,11 @@ class GraspController:
             inactive_pd = self._inactive_pre_grasp_pd(
                 inactive_control_fingers,
                 qdot,
-                self.adding_pre_grasp_fingers,
+                collision_avoidance_enabled=regular_grasp,
             )
             tau = (
                 grasp_tau
                 + inactive_pd
-                + blend_pd
                 + g7_transition_pd
                 + g7_transition_attach_tau
             )
@@ -2260,10 +3161,57 @@ class GraspController:
             use_fingers=list(self.use_fingers),
             active_finger_count=int(self.active_finger_count),
             inactive_pd_target=self.inactive_pd_target.copy(),
+            inactive_collision_min_clearance_m=float(
+                self.inactive_collision_min_clearance_m
+            ),
+            inactive_collision_avoidance_offsets_rad=(
+                self.inactive_collision_avoidance_offsets_rad.copy()
+            ),
+            inactive_collision_avoidance_active=list(
+                self.inactive_collision_avoidance_active
+            ),
             envelop_info=dict(self.envelop_last_info),
             g7_phase=str(self.grasp_type7_phase),
             relative_rotation_phase=str(self.relative_rotation_phase),
             relative_rotation_target_rad=float(self.relative_rotation_target_rad),
+            relative_rotation_current_rad=float(
+                self.relative_rotation_current_rad
+            ),
+            relative_rotation_error_rad=float(
+                self.relative_rotation_error_rad
+            ),
+            relative_rotation_angular_velocity=float(
+                self.relative_rotation_angular_velocity
+            ),
+            relative_rotation_command_moment=float(
+                self.relative_rotation_command_moment
+            ),
+            relative_rotation_axis=self.relative_rotation_axis.copy(),
+            relative_rotation_start_centroid=(
+                self.relative_rotation_start_centroid.copy()
+            ),
+            relative_rotation_pivot=self.relative_rotation_pivot.copy(),
+            relative_rotation_control_mode=str(
+                relative_rotation_control_mode
+            ),
+            relative_rotation_center_error=(
+                relative_rotation_center_error.copy()
+            ),
+            relative_rotation_dls_sigma_min=float(
+                relative_rotation_dls_sigma_min
+            ),
+            relative_rotation_dls_condition=float(
+                relative_rotation_dls_condition
+            ),
+            relative_rotation_center_joint_error=(
+                relative_rotation_center_joint_error.copy()
+            ),
+            relative_rotation_center_position_torques=(
+                relative_rotation_center_position_torques.copy()
+            ),
+            relative_rotation_nullspace_torques=(
+                relative_rotation_nullspace_torques.copy()
+            ),
             relative_translation_phase=str(self.relative_translation_phase),
             relative_translation_start_centroid=(
                 self.relative_translation_start_centroid.copy()
@@ -2284,6 +3232,24 @@ class GraspController:
             ),
             relative_translation_force_scale=float(
                 relative_translation_force_scale
+            ),
+            relative_translation_control_mode=str(
+                relative_translation_control_mode
+            ),
+            relative_translation_dls_sigma_min=float(
+                relative_translation_dls_sigma_min
+            ),
+            relative_translation_dls_condition=float(
+                relative_translation_dls_condition
+            ),
+            relative_translation_joint_error=(
+                relative_translation_joint_error.copy()
+            ),
+            relative_translation_position_torques=(
+                relative_translation_position_torques.copy()
+            ),
+            relative_translation_nullspace_grasp_torques=(
+                relative_translation_nullspace_grasp_torques.copy()
             ),
             effective_thumb_centroid_bias=float(effective_thumb_centroid_bias),
             relative_rotation_force_balance_blend=float(

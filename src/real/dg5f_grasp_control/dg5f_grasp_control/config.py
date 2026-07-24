@@ -49,8 +49,9 @@ class RuntimeConfig:
     # Cartesian command to zero instead of switching to the legacy policy.
     force_balance_error_ramp_sec: float = 0.5
     relative_translation_max_m: float = 0.010
-    # Hybrid grasp-force/fingertip-position impedance defaults for real-hand
-    # commissioning.
+    # Cartesian gains retained for virtual-force diagnostics and the
+    # zero-resultant fingertip-shape term. Centroid motion itself is controlled
+    # by the DLS joint-position gains below.
     relative_translation_kp: float = 600.0
     relative_translation_kd: float = 6.0
     # Orthogonal centroid hold and relative fingertip-shape stabilization are
@@ -61,11 +62,11 @@ class RuntimeConfig:
     relative_translation_shape_kd: float = 1.2
     relative_translation_cross_axis_deadband_m: float = 0.0003
     relative_translation_reference_ramp_sec: float = 0.7
-    # Hard Cartesian limits used after direction-dependent torque
-    # normalization. The normalization only boosts weak directions; it never
-    # reduces a direction that already produces sufficient joint torque.
+    # Hard limits for the diagnostic/shape Cartesian force calculation.
     relative_translation_force_limit: float = 8.50
     relative_translation_per_finger_force_limit: float = 5.50
+    # Compatibility-only legacy J.T-force normalization parameters. They are
+    # no longer used by the uniform XYZ DLS controller.
     relative_translation_torque_normalization_enable: bool = True
     relative_translation_torque_gain_nm_per_m: float = 24.0
     # Physical hand-frame directional compensation. The palm-normal/link-base
@@ -79,11 +80,58 @@ class RuntimeConfig:
     relative_translation_velocity_tolerance_mps: float = 0.003
     relative_translation_settle_sec: float = 0.20
     relative_translation_timeout_sec: float = 3.0
+    # Uniform XYZ centroid-position controller. The damped least-squares
+    # inverse maps the 3-D centroid error to an active-joint correction; the
+    # grasp/shape torque is then projected into the centroid task null space.
+    relative_translation_dls_damping: float = 0.005
+    relative_translation_nullspace_rcond: float = 1e-5
+    relative_translation_joint_kp: float = 1.20
+    relative_translation_joint_kd: float = 0.06
+    relative_translation_joint_correction_limit_rad: float = 0.30
+    relative_translation_position_torque_limit: float = 0.30
+    relative_translation_nullspace_grasp_gain: float = 1.0
     jacobian_eps: float = 1e-6
 
     min_tip_distance: float = 0.018
     collision_repel_gain: float = 100.0
     collision_repel_limit: float = 0.8
+
+    # Predictive link-capsule avoidance for fingers that are inactive in a
+    # regular grasp. Index/middle/ring shift joint 1; pinky shifts joint 2.
+    # The remaining joints continue to hold the selected pre-grasp pose.
+    inactive_collision_avoidance_enable: bool = True
+    inactive_collision_capsule_radius_m: float = 0.009
+    inactive_collision_activation_clearance_m: float = 0.009
+    inactive_collision_critical_clearance_m: float = 0.002
+    inactive_collision_release_hysteresis_m: float = 0.001
+    inactive_collision_max_joint1_offset_rad: float = 0.40
+    inactive_collision_joint1_target_rate_radps: float = 1.2
+    inactive_collision_prediction_sec: float = 0.18
+    inactive_collision_pd_kp: float = 0.5
+    inactive_collision_pd_kd: float = 0.10
+    inactive_collision_pd_limit: float = 0.25
+    inactive_collision_gradient_eps_rad: float = 0.0174533
+    inactive_collision_direction_min_delta_m: float = 0.00010
+    inactive_collision_joint_limit_margin_rad: float = 0.03
+    # Segment 0 is the palm-side proximal segment whose roots are naturally
+    # close together. Start at segment 1 to monitor the moving phalanges.
+    inactive_collision_first_segment: int = 1
+
+    # Closed-loop relative rotation for regular grasp types 1..5.  At command
+    # time C0 and every Pi,0 are frozen.  The controller tracks
+    # Pi,d=C0+R(theta_ref)(Pi,0-C0) with a normalized Cartesian PD force,
+    # adds the ordinary grasp force, and maps the result through each J.T.
+    # No centroid/null-space controller is used in this rotation path.
+    relative_rotation_max_abs_deg: float = 45.0
+    relative_rotation_reference_ramp_sec: float = 0.5
+    relative_rotation_position_kp: float = 48.0
+    relative_rotation_position_kd: float = 0.80
+    relative_rotation_position_error_limit_m: float = 0.025
+    relative_rotation_position_tolerance_m: float = 0.002
+    relative_rotation_force_limit: float = 10.00
+    relative_rotation_radius_min: float = 0.015
+    relative_rotation_velocity_alpha: float = 0.20
+    relative_rotation_timeout_sec: float = 2.0
 
     # grasp_type=7 rotation assist based on groped-grasp tangential force.
     # theta is used as a force command scale, not as closed-loop object angle.
