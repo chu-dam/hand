@@ -90,11 +90,11 @@ next inactive neighbor. This chained propagation handles cases such as active
 middle -> avoiding ring -> avoiding pinky without spreading undisturbed
 inactive fingers. Both measured-velocity prediction and the previewed avoidance
 command are checked. Index, middle, and ring move joint 1; pinky moves joint 2
-to avoid ring. The smaller of current and 0.18-second predicted surface
+to avoid ring. The smaller of current and 0.25-second predicted surface
 clearance activates avoidance below 9 mm and releases it above 10 mm. Capsules
 use a conservative 9 mm radius. Finite-difference FK selects the sign that
 increases clearance; only the selected avoidance-joint PD target moves,
-with a 0.40 rad offset, 1.2 rad/s target rate, and a damped dedicated command
+with a 0.40 rad offset, 1.5 rad/s target rate, and a damped dedicated command
 (`Kp=0.5`, `Kd=0.10`, limit=0.25 N.m). A direction change requires at least
 0.1 mm difference between the +/-1 degree FK trials. The other three joints
 remain at pre-grasp. The palm-side root segment is ignored because adjacent
@@ -115,12 +115,12 @@ from `Ji*qdot`, while `Pdot_i,d` includes the smooth reference-ramp velocity.
 The ordinary grasp force remains active, so `Fi=Fg,i+Fr,i` and
 `tau_i=Ji.T Fi`. All target coordinates and `rho_i` remain based on the
 command-time geometry. Positive commands follow the right-hand rule about
-`link_base -X`; the default command limit is +/-45 degrees.
+`link_base -X`; the default command limit is +/-10 degrees.
 
 The phase is `rotating`, `rotation_reached`, `rotation_timeout`, or
 `rotation_error`. Once every driven fingertip is within the configured
 final-position tolerance, the phase becomes `rotation_reached`; Cartesian PD
-remains active as a position hold only until the command timeout. At 2 seconds
+remains active as a position hold only until the command timeout. At 1 second
 the additional rotation force is removed even if the target was reached. The
 estimated angle uses non-thumb contact vectors relative to the current thumb,
 but it is not an object-pose measurement:
@@ -228,15 +228,15 @@ relative_translation_joint_kd: 0.06
 relative_translation_joint_correction_limit_rad: 0.30
 relative_translation_position_torque_limit: 0.30
 relative_translation_nullspace_grasp_gain: 1.0
-relative_rotation_max_abs_deg: 45.0
+relative_rotation_max_abs_deg: 10.0
 relative_rotation_reference_ramp_sec: 0.5
 relative_rotation_position_kp: 48.0
-relative_rotation_position_kd: 0.80
+relative_rotation_position_kd: 1.00
 relative_rotation_position_error_limit_m: 0.025
 relative_rotation_position_tolerance_m: 0.002
 relative_rotation_force_limit: 10.00
 relative_rotation_radius_min: 0.015
-relative_rotation_timeout_sec: 2.0  # always removes Fr after command start
+relative_rotation_timeout_sec: 1.0  # always removes Fr after command start
 ```
 
 ## File Roles

@@ -133,7 +133,7 @@ class GraspDebugTest(unittest.TestCase):
         controller.apply_grasp_type(3, now=1.0)
         controller.step(q, np.zeros(20), now=1.0)
         self.assertTrue(
-            controller.prepare_relative_rotation(np.pi / 6.0, now=1.0)
+            controller.prepare_relative_rotation(np.deg2rad(10.0), now=1.0)
         )
         output = controller.step(q, np.zeros(20), now=1.1)
 
@@ -151,10 +151,13 @@ class GraspDebugTest(unittest.TestCase):
         self.assertEqual(message.relative_rotation_phase, "rotating")
         self.assertAlmostEqual(
             message.relative_rotation_target_rad,
-            np.pi / 6.0,
+            np.deg2rad(10.0),
         )
         self.assertAlmostEqual(message.relative_rotation_current_rad, 0.0)
-        self.assertAlmostEqual(message.relative_rotation_error_rad, np.pi / 6.0)
+        self.assertAlmostEqual(
+            message.relative_rotation_error_rad,
+            np.deg2rad(10.0),
+        )
         self.assertGreater(message.relative_rotation_command_moment, 0.0)
         self.assertEqual(
             message.relative_rotation_control_mode,

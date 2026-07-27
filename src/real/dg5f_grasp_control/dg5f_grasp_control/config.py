@@ -85,8 +85,8 @@ class RuntimeConfig:
     inactive_collision_critical_clearance_m: float = 0.002
     inactive_collision_release_hysteresis_m: float = 0.001
     inactive_collision_max_joint1_offset_rad: float = 0.40
-    inactive_collision_joint1_target_rate_radps: float = 1.2
-    inactive_collision_prediction_sec: float = 0.18
+    inactive_collision_joint1_target_rate_radps: float = 1.5
+    inactive_collision_prediction_sec: float = 0.25
     inactive_collision_pd_kp: float = 0.5
     inactive_collision_pd_kd: float = 0.10
     inactive_collision_pd_limit: float = 0.25
@@ -102,16 +102,16 @@ class RuntimeConfig:
     # Pi,d=C0+R(theta_ref)(Pi,0-C0) with a normalized Cartesian PD force,
     # adds the ordinary grasp force, and maps the result through each J.T.
     # No centroid/null-space controller is used in this rotation path.
-    relative_rotation_max_abs_deg: float = 45.0
+    relative_rotation_max_abs_deg: float = 10.0
     relative_rotation_reference_ramp_sec: float = 0.5
     relative_rotation_position_kp: float = 48.0
-    relative_rotation_position_kd: float = 0.80
+    relative_rotation_position_kd: float = 1.00
     relative_rotation_position_error_limit_m: float = 0.025
     relative_rotation_position_tolerance_m: float = 0.002
     relative_rotation_force_limit: float = 10.00
     relative_rotation_radius_min: float = 0.015
     relative_rotation_velocity_alpha: float = 0.20
-    relative_rotation_timeout_sec: float = 2.0
+    relative_rotation_timeout_sec: float = 1.0
 
     # grasp_type=7 rotation assist based on groped-grasp tangential force.
     # theta is used as a force command scale, not as closed-loop object angle.

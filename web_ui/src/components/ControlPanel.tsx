@@ -19,7 +19,7 @@ const POSE_OPTIONS = [
 ];
 
 const MANIPULATION_GRASP_TYPES = new Set([1, 2, 3, 4, 5]);
-const MAX_RELATIVE_ROTATION_DEG = 45;
+const MAX_RELATIVE_ROTATION_DEG = 10;
 
 const TASK_SPACE_DIRECTIONS = ["+X", "+Y", "+Z", "-X", "-Y", "-Z"] as const;
 type TaskSpaceDirection = typeof TASK_SPACE_DIRECTIONS[number];
@@ -507,7 +507,7 @@ export function ControlPanel({
               </div>
             </div>
             <p className="rotation-sign-hint">
-              Positive (+): CCW · Negative (−): CW · palm-normal axis (link_base −X) · max ±45°
+              Positive (+): CCW · Negative (−): CW · palm-normal axis (link_base −X) · max ±10°
             </p>
             <div className={`rotation-debug-grid ${rotationPhase !== "idle" ? "ready" : "idle"}`}>
               <div>

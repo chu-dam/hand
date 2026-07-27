@@ -510,11 +510,11 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
         controller.apply_grasp_type(3, now=1.0)
 
         self.assertFalse(
-            controller.prepare_relative_rotation(np.pi / 6.0, now=1.0)
+            controller.prepare_relative_rotation(np.deg2rad(10.0), now=1.0)
         )
         controller.step(Q_FIXED, QDOT_ZERO, now=1.0)
         self.assertTrue(
-            controller.prepare_relative_rotation(np.pi / 6.0, now=1.01)
+            controller.prepare_relative_rotation(np.deg2rad(10.0), now=1.01)
         )
 
     def test_regular_grasp_controllers_always_use_centered_balanced_distribution(self):
@@ -542,7 +542,7 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
                 )
 
     def test_relative_rotation_tracks_fixed_cartesian_targets_with_jacobian_transpose(self):
-        angle = np.pi / 6.0
+        angle = np.deg2rad(10.0)
 
         for grasp_type in (1, 2, 3, 4, 5):
             with self.subTest(grasp_type=grasp_type):
@@ -694,13 +694,17 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
         controller.apply_grasp_type(3, now=3.0)
         controller.step(Q_FIXED, QDOT_ZERO, now=3.0)
 
-        self.assertTrue(controller.prepare_relative_rotation(np.pi / 6.0, now=3.0))
-        self.assertTrue(controller.prepare_relative_rotation(-np.pi / 4.0, now=3.1))
+        self.assertTrue(
+            controller.prepare_relative_rotation(np.deg2rad(5.0), now=3.0)
+        )
+        self.assertTrue(
+            controller.prepare_relative_rotation(np.deg2rad(-10.0), now=3.1)
+        )
 
         self.assertEqual(controller.relative_rotation_phase, "rotating")
         self.assertAlmostEqual(
             controller.relative_rotation_target_rad,
-            -np.pi / 4.0,
+            np.deg2rad(-10.0),
         )
 
     def test_negative_rotation_command_generates_negative_moment(self):
@@ -840,20 +844,25 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
 
         controller.step(Q_FIXED, QDOT_ZERO, now=1.1)
         with self.assertRaises(ValueError):
-            controller.prepare_relative_rotation(np.deg2rad(45.1), now=1.1)
+            controller.prepare_relative_rotation(np.deg2rad(10.1), now=1.1)
 
         for grasp_type in (-1, 6, 7):
             with self.subTest(grasp_type=grasp_type):
                 controller.apply_grasp_type(grasp_type, now=2.0)
                 self.assertFalse(
-                    controller.prepare_relative_rotation(np.pi / 6.0, now=2.0)
+                    controller.prepare_relative_rotation(
+                        np.deg2rad(10.0),
+                        now=2.0,
+                    )
                 )
 
     def test_pose_or_grasp_restart_cancels_active_rotation_request(self):
         controller = GraspController(RuntimeConfig(), log=None)
         controller.apply_grasp_type(3, now=10.0)
         controller.step(Q_FIXED, QDOT_ZERO, now=10.0)
-        self.assertTrue(controller.prepare_relative_rotation(np.pi / 6.0, now=10.0))
+        self.assertTrue(
+            controller.prepare_relative_rotation(np.deg2rad(10.0), now=10.0)
+        )
         self.assertEqual(controller.relative_rotation_phase, "rotating")
 
         controller.apply_pose_type(1, now=10.1)
@@ -861,7 +870,9 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
 
         controller.apply_grasp_type(3, now=11.0)
         controller.step(Q_FIXED, QDOT_ZERO, now=11.0)
-        self.assertTrue(controller.prepare_relative_rotation(np.pi / 6.0, now=11.0))
+        self.assertTrue(
+            controller.prepare_relative_rotation(np.deg2rad(10.0), now=11.0)
+        )
         controller.apply_grasp_type(-1, now=11.1)
         self.assertEqual(controller.relative_rotation_phase, "idle")
 
@@ -974,7 +985,7 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
         controller.apply_grasp_type(3, now=1.0)
         valid = controller.step(Q_FIXED, QDOT_ZERO, now=1.0)
         self.assertTrue(
-            controller.prepare_relative_rotation(np.pi / 6.0, now=1.01)
+            controller.prepare_relative_rotation(np.deg2rad(10.0), now=1.01)
         )
 
         controller.update_config(
@@ -1011,7 +1022,7 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
             atol=1e-8,
         )
         self.assertFalse(
-            controller.prepare_relative_rotation(np.pi / 6.0, now=1.1)
+            controller.prepare_relative_rotation(np.deg2rad(10.0), now=1.1)
         )
 
         halfway = controller.step(shifted_q, QDOT_ZERO, now=1.35)
@@ -1070,7 +1081,7 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
             atol=1e-8,
         )
         self.assertTrue(
-            controller.prepare_relative_rotation(np.pi / 6.0, now=2.0)
+            controller.prepare_relative_rotation(np.deg2rad(10.0), now=2.0)
         )
 
 
