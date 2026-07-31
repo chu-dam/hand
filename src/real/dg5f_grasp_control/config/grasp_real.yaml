@@ -95,12 +95,13 @@ grasp_real:
 
     # Closed-loop relative rotation for regular grasp types 1..5. Positive is
     # right-hand-rule rotation about the palm normal (link_base -X).
-    # Fixed command-time fingertip targets use normalized Cartesian PD;
-    # the resulting force is added directly to the ordinary grasp force.
+    # Fixed command-time fingertip targets use a normalized Cartesian position
+    # force. Explicit D is disabled by default; the real mechanism supplies
+    # damping through its transmission and joint friction.
     relative_rotation_max_abs_deg: 10.0
     relative_rotation_reference_ramp_sec: 0.5
-    relative_rotation_position_kp: 48.0
-    relative_rotation_position_kd: 1.00
+    relative_rotation_position_kp: 24.0
+    relative_rotation_position_kd: 0.0
     relative_rotation_position_error_limit_m: 0.025
     relative_rotation_position_tolerance_m: 0.002
     relative_rotation_force_limit: 10.00

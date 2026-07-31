@@ -99,13 +99,15 @@ class RuntimeConfig:
 
     # Closed-loop relative rotation for regular grasp types 1..5.  At command
     # time C0 and every Pi,0 are frozen.  The controller tracks
-    # Pi,d=C0+R(theta_ref)(Pi,0-C0) with a normalized Cartesian PD force,
-    # adds the ordinary grasp force, and maps the result through each J.T.
+    # Pi,d=C0+R(theta_ref)(Pi,0-C0) with a normalized Cartesian position
+    # force, adds the ordinary grasp force, and maps the result through each
+    # J.T.  Explicit D gain defaults to zero because the real transmission and
+    # joint friction already provide substantial physical damping.
     # No centroid/null-space controller is used in this rotation path.
     relative_rotation_max_abs_deg: float = 10.0
     relative_rotation_reference_ramp_sec: float = 0.5
-    relative_rotation_position_kp: float = 48.0
-    relative_rotation_position_kd: float = 1.00
+    relative_rotation_position_kp: float = 24.0
+    relative_rotation_position_kd: float = 0.0
     relative_rotation_position_error_limit_m: float = 0.025
     relative_rotation_position_tolerance_m: float = 0.002
     relative_rotation_force_limit: float = 10.00

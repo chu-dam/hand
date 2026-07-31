@@ -110,8 +110,10 @@ degrees relative to the current fingertip contact constellation. For regular
 finger a fixed target is formed as
 `Pi,d=Pt+R(theta_ref)(Pi,0-Pt,0)`, where current `Pt` allows common translation
 without changing the stored relative geometry. The additional force is
-`Fr,i=[kr(Pi,d-Pi)+kd(Pdot_i,d-Pdot_i)]/max(rho_i,rho_min)`. `Pdot_i` comes
-from `Ji*qdot`, while `Pdot_i,d` includes the smooth reference-ramp velocity.
+`Fr,i=[kr(Pi,d-Pi)+kd(Pdot_i,d-Pdot_i)]/max(rho_i,rho_min)`. The defaults are
+`relative_rotation_position_kp=24.0` and `relative_rotation_position_kd=0.0`;
+set the latter above zero to use `Pdot_i` from `Ji*qdot` and `Pdot_i,d` from
+the smooth reference-ramp velocity.
 The ordinary grasp force remains active, so `Fi=Fg,i+Fr,i` and
 `tau_i=Ji.T Fi`. All target coordinates and `rho_i` remain based on the
 command-time geometry. Positive commands follow the right-hand rule about
@@ -119,8 +121,8 @@ command-time geometry. Positive commands follow the right-hand rule about
 
 The phase is `rotating`, `rotation_reached`, `rotation_timeout`, or
 `rotation_error`. Once every driven fingertip is within the configured
-final-position tolerance, the phase becomes `rotation_reached`; Cartesian PD
-remains active as a position hold only until the command timeout. At 1 second
+final-position tolerance, the phase becomes `rotation_reached`; the Cartesian
+position term remains active as a hold only until the command timeout. At 1 second
 the additional rotation force is removed even if the target was reached. The
 estimated angle uses non-thumb contact vectors relative to the current thumb,
 but it is not an object-pose measurement:
@@ -230,8 +232,8 @@ relative_translation_position_torque_limit: 0.30
 relative_translation_nullspace_grasp_gain: 1.0
 relative_rotation_max_abs_deg: 10.0
 relative_rotation_reference_ramp_sec: 0.5
-relative_rotation_position_kp: 48.0
-relative_rotation_position_kd: 1.00
+relative_rotation_position_kp: 24.0
+relative_rotation_position_kd: 0.0
 relative_rotation_position_error_limit_m: 0.025
 relative_rotation_position_tolerance_m: 0.002
 relative_rotation_force_limit: 10.00
@@ -282,5 +284,5 @@ python3 src/mujoco/grasp_sim.py
 The simulator reads `config/grasp_real.yaml` and subscribes to the same
 `/grasp_type`, `/pose_type`, alpha1, relative-rotation-degree, and
 rotation-matrix topics as the real node. The relative command topic is
-`/dg5f_grasp_control/relative_rotation_deg_cmd`; it runs the same thumb-pivot
-Cartesian PD rotation and target hold as the real controller.
+`/dg5f_grasp_control/relative_rotation_deg_cmd`; it runs the same shared
+relative-rotation controller.

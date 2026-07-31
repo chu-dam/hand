@@ -614,6 +614,9 @@ Fi   = Fg,i + Fr,i
 tau_i = Ji.T Fi
 ```
 
+기본값은 `relative_rotation_position_kp=24.0`, `relative_rotation_position_kd=0.0`이며
+실제 기구의 감쇠를 사용합니다. 필요할 때만 D 게인을 설정합니다.
+
 `theta_ref`만 0에서 명령각까지 smoothstep으로 증가하고, 목표 계산의 기준 좌표는
 현재 비엄지 좌표로 갱신하지 않습니다. `Pt`에는 현재 엄지 위치를 사용하므로 엄지가
 조금 이동하면 비엄지 목표도 같은 만큼 병진하고, 저장된 상대 회전 목표는 변하지
