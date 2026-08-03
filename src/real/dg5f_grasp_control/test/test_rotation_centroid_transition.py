@@ -285,6 +285,43 @@ class ThumbDistanceProportionalPolicyTest(unittest.TestCase):
         self.assertLessEqual(result.alpha[3], 0.6 * cfg.alpha1)
 
 
+class EnvelopingGraspTest(unittest.TestCase):
+    def test_pinky_starts_with_joint3_while_other_fingers_start_with_joint2(self):
+        controller = GraspController(RuntimeConfig(), log=None)
+        controller.step(Q_FIXED, QDOT_ZERO, now=0.5)
+        controller.apply_grasp_type(6, now=1.0)
+
+        output = controller.step(Q_FIXED, QDOT_ZERO, now=1.0)
+        active = set(np.flatnonzero(output.grasp_tau))
+
+        self.assertEqual(
+            active,
+            {
+                FINGER_JOINT_INDEX[2][1],
+                FINGER_JOINT_INDEX[3][1],
+                FINGER_JOINT_INDEX[4][1],
+                FINGER_JOINT_INDEX[5][2],
+            },
+        )
+        self.assertEqual(output.grasp_tau[FINGER_JOINT_INDEX[5][1]], 0.0)
+
+    def test_thumb_joint3_starts_one_stage_before_joint4(self):
+        cfg = RuntimeConfig(envelop_joint_delay=0.20)
+        controller = GraspController(cfg, log=None)
+        q = np.zeros(20, dtype=np.float64)
+        controller.step(q, QDOT_ZERO, now=0.5)
+        controller.apply_grasp_type(6, now=1.0)
+
+        joint3_started = controller.step(q, QDOT_ZERO, now=1.20)
+        thumb_joint3 = FINGER_JOINT_INDEX[1][2]
+        thumb_joint4 = FINGER_JOINT_INDEX[1][3]
+        self.assertNotEqual(joint3_started.grasp_tau[thumb_joint3], 0.0)
+        self.assertEqual(joint3_started.grasp_tau[thumb_joint4], 0.0)
+
+        joint4_started = controller.step(q, QDOT_ZERO, now=1.40)
+        self.assertNotEqual(joint4_started.grasp_tau[thumb_joint4], 0.0)
+
+
 class InactiveFingerPreGraspTest(unittest.TestCase):
     def _assert_inactive_targets(self, grasp_type, expected_pose):
         controller = GraspController(RuntimeConfig(), log=None)

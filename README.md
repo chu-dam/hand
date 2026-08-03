@@ -665,24 +665,25 @@ ros2 topic pub --once /grasp_type std_msgs/msg/Int32 "{data: 6}"
 
 `grasp_type=6`이 시작될 때의 전체 관절 위치를 hold pose로 저장합니다.
 
-- 검지·중지·약지·새끼의 첫 번째 관절: 시작 위치를 PD로 유지
-- 엄지의 첫 번째·두 번째 관절: 시작 위치를 PD로 유지
+- 검지·중지·약지·새끼의 첫 번째 관절과 새끼의 두 번째 관절:
+  시작 위치를 PD로 유지
+- 엄지 첫 번째·두 번째 관절: 시작 위치를 PD로 유지
 - torque가 활성화되지 않은 나머지 관절도 시작 위치를 PD로 유지
 
 토크 시작 순서는 다음과 같습니다.
 
 ```text
 t = 0
-→ 검지/중지/약지/새끼의 2번째 관절 torque 시작
+→ 검지/중지/약지의 2번째 관절 torque 시작
+→ 새끼의 3번째 관절 torque 시작
 
 t = envelop_joint_delay
-→ 검지/중지/약지/새끼의 3번째 관절 torque 시작
-
-t = envelop_joint_delay × 2
-→ 검지/중지/약지/새끼의 4번째 관절 torque 시작
+→ 검지/중지/약지의 3번째 관절 torque 시작
+→ 새끼의 4번째 관절 torque 시작
 → 엄지 3번째 관절 torque 시작
 
-t = envelop_joint_delay × 3
+t = envelop_joint_delay × 2
+→ 검지/중지/약지의 4번째 관절 torque 시작
 → 엄지 4번째 관절 torque 시작
 ```
 

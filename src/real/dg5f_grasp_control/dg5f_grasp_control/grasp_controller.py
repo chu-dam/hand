@@ -36,6 +36,7 @@ FINGER_SWITCH_VIA_THREE_DELAY = 0.5
 
 ENVELOP_FINGER_ORDER = [2, 3, 4, 5]
 ENVELOP_FINGER_TORQUE_LOCAL_JOINTS = [1, 2, 3]
+ENVELOP_PINKY_TORQUE_LOCAL_JOINTS = [2, 3]
 ENVELOP_THUMB_TORQUE_LOCAL_JOINTS = [2, 3]
 
 PINKY_SPECIAL_COMMAND = 7
@@ -2573,11 +2574,12 @@ class GraspController:
         }
 
     def _envelop_non_thumb_joint_start_time(self, finger, local_joint):
-        # Joint-stage sequencing: all non-thumb 2nd joints start together,
-        # then all 3rd joints, then all 4th joints. The `finger` argument is
-        # intentionally unused except for API symmetry/readability.
-        _ = finger
-        joint_order_idx = ENVELOP_FINGER_TORQUE_LOCAL_JOINTS.index(local_joint)
+        local_joints = (
+            ENVELOP_PINKY_TORQUE_LOCAL_JOINTS
+            if finger == PINKY_FINGER_ID
+            else ENVELOP_FINGER_TORQUE_LOCAL_JOINTS
+        )
+        joint_order_idx = local_joints.index(local_joint)
         return self.envelop_started_at + joint_order_idx * self.cfg.envelop_joint_delay
 
     def _calc_envelop_grasp(self, qdot, now):
@@ -2598,14 +2600,18 @@ class GraspController:
         tau_level = min(tau_level, float(self.cfg.groped_tau_limit))
 
         # Time-only joint-stage sequencing:
-        #   t0 + 0*delay: non-thumb 2nd joints
-        #   t0 + 1*delay: non-thumb 3rd joints
-        #   t0 + 2*delay: non-thumb 4th joints + thumb 3rd joint
-        #   t0 + 3*delay: thumb 4th joint
+        #   t0 + 0*delay: index/middle/ring 2nd joints + pinky 3rd joint
+        #   t0 + 1*delay: index/middle/ring J3 + pinky J4 + thumb J3
+        #   t0 + 2*delay: index/middle/ring J4 + thumb J4
         # No qdot/stall condition is used for thumb triggering.
         for finger in ENVELOP_FINGER_ORDER:
             idxs = FINGER_JOINT_INDEX[finger]
-            for local_joint in ENVELOP_FINGER_TORQUE_LOCAL_JOINTS:
+            local_joints = (
+                ENVELOP_PINKY_TORQUE_LOCAL_JOINTS
+                if finger == PINKY_FINGER_ID
+                else ENVELOP_FINGER_TORQUE_LOCAL_JOINTS
+            )
+            for local_joint in local_joints:
                 joint_idx = idxs[local_joint]
                 start_t = self._envelop_non_thumb_joint_start_time(finger, local_joint)
                 if now >= start_t:
@@ -2615,12 +2621,12 @@ class GraspController:
 
         thumb_idxs = FINGER_JOINT_INDEX[1]
         for order_idx, local_joint in enumerate(ENVELOP_THUMB_TORQUE_LOCAL_JOINTS):
-            # Thumb starts one stage later than before:
-            # thumb joint 3 starts with the four non-thumb 4th joints,
-            # thumb joint 4 starts one joint-delay after that.
-            stage_idx = order_idx + 2
+            # Thumb J3 starts one stage before J4.
             joint_idx = thumb_idxs[local_joint]
-            start_t = self.envelop_started_at + stage_idx * self.cfg.envelop_joint_delay
+            start_t = (
+                self.envelop_started_at
+                + (order_idx + 1) * self.cfg.envelop_joint_delay
+            )
             if now >= start_t:
                 hold_mask[joint_idx] = False
                 tau[joint_idx] = float(self.cfg.envelop_thumb_tau_sign) * tau_level
@@ -2701,7 +2707,9 @@ class GraspController:
             self._log(
                 "[COMMAND] grasp_type=6 -> ENVELOP_GRASP "
                 f"tau_per_joint={self.cfg.alpha1 * self.cfg.envelop_tau_scale:.4f}, "
-                "joint_stage_order=2 -> 3 -> (4+thumb3) -> thumb4"
+                "joint_stage_order=(index/middle/ring J2+pinky J3) -> "
+                "(index/middle/ring J3+pinky J4+thumb J3) -> "
+                "(index/middle/ring J4+thumb J4)"
             )
             return
 

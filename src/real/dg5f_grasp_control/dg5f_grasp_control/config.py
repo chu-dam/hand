@@ -205,10 +205,9 @@ class RuntimeConfig:
 
     # grasp_type=6: enveloping grasp mode
     # - Time-only joint-stage sequence:
-    #   1) non-thumb 2nd joints
-    #   2) non-thumb 3rd joints
-    #   3) non-thumb 4th joints + thumb 3rd joint
-    #   4) thumb 4th joint
+    #   1) index/middle/ring J2 + pinky J3
+    #   2) index/middle/ring J3 + pinky J4 + thumb J3
+    #   3) index/middle/ring J4 + thumb J4
     # - Previous alpha1*0.25 was too strong on hardware, so the default is reduced.
     envelop_tau_scale: float = 0.10
     envelop_joint_delay: float = 0.20
