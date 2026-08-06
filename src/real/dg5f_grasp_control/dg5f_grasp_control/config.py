@@ -22,7 +22,7 @@ class RuntimeConfig:
 
     use_finger_count: int = 0
 
-    pose_kp: float = 0.4
+    pose_kp: float = 0.285
     pose_kd: float = 0.05
     pose_pd_limit: float = 0.25
 
@@ -76,26 +76,15 @@ class RuntimeConfig:
     collision_repel_gain: float = 100.0
     collision_repel_limit: float = 0.8
 
-    # Predictive link-capsule avoidance for fingers that are inactive in a
-    # regular grasp. Index/middle/ring shift joint 1; pinky shifts joint 2.
-    # The remaining joints continue to hold the selected pre-grasp pose.
+    # Adjacent-joint following for fingers that are inactive in a regular
+    # grasp. Index/middle/ring use joint 1; pinky uses joint 2.
     inactive_collision_avoidance_enable: bool = True
-    inactive_collision_capsule_radius_m: float = 0.009
-    inactive_collision_activation_clearance_m: float = 0.009
-    inactive_collision_critical_clearance_m: float = 0.002
-    inactive_collision_release_hysteresis_m: float = 0.001
-    inactive_collision_max_joint1_offset_rad: float = 0.40
-    inactive_collision_joint1_target_rate_radps: float = 1.5
-    inactive_collision_prediction_sec: float = 0.25
+    inactive_collision_joint_match_tolerance_rad: float = 0.0349066
+    inactive_collision_joint_release_margin_rad: float = 0.0349066
     inactive_collision_pd_kp: float = 0.5
     inactive_collision_pd_kd: float = 0.10
     inactive_collision_pd_limit: float = 0.25
-    inactive_collision_gradient_eps_rad: float = 0.0174533
-    inactive_collision_direction_min_delta_m: float = 0.00010
     inactive_collision_joint_limit_margin_rad: float = 0.03
-    # Segment 0 is the palm-side proximal segment whose roots are naturally
-    # close together. Start at segment 1 to monitor the moving phalanges.
-    inactive_collision_first_segment: int = 1
 
     # Closed-loop relative rotation for regular grasp types 1..5.  At command
     # time C0 and every Pi,0 are frozen.  The controller tracks
@@ -115,93 +104,29 @@ class RuntimeConfig:
     relative_rotation_velocity_alpha: float = 0.20
     relative_rotation_timeout_sec: float = 1.0
 
-    # grasp_type=7 rotation assist based on groped-grasp tangential force.
-    # theta is used as a force command scale, not as closed-loop object angle.
-    rotation_enable_for_grasp_type7: bool = True
-    rotation_theta_rad: float = 0.174533  # +10 deg equivalent. Change sign for opposite direction.
-    rotation_gain: float = 0.25
-    rotation_force_limit: float = 0.75
-    rotation_radius_min: float = 0.035
-    # For cleaner in-place rotation, the rotation force can be balanced so its
-    # weighted net force becomes zero. Radius compensation can be disabled so
-    # fingers close to the centroid do not dominate the motion.
-    grasp_type7_rotation_mode: str = "pure_moment"
-    grasp_type7_rotation_zero_net_force: bool = True
-    grasp_type7_rotation_use_radius_compensation: bool = False
-    grasp_type7_rotation_nominal_radius: float = 0.060
     rotation_palm_normal_x: float = -1.0
     rotation_palm_normal_y: float = 0.0
     rotation_palm_normal_z: float = 0.0
 
-    # grasp_type=7 rotation-center hold. Grasp force keeps using the
-    # thumb-biased virtual centroid, while rotation and center hold use the
-    # unbiased geometric centroid captured at rotation_start.
-    grasp_type7_center_hold_enable: bool = True
-    grasp_type7_center_hold_gain: float = 1.0
-    grasp_type7_center_hold_force_limit: float = 0.10
-    grasp_type7_center_hold_project_to_rotation_plane: bool = True
-
-    # grasp_type=7 rotation state detection based on active-finger joint velocity.
-    # Rotation starts only after the 4 grasp fingers stay nearly stopped for the
-    # hold time. After rotation starts, another near-zero velocity hold marks
-    # rotation completion. After that, the first index transition step can run.
-    grasp_type7_start_qdot_threshold: float = 0.08
-    grasp_type7_start_hold_sec: float = 0.20
-    grasp_type7_done_qdot_threshold: float = 0.08
-    grasp_type7_done_hold_sec: float = 0.20
-    grasp_type7_min_rotation_sec: float = 0.50
-    grasp_type7_stop_rotation_when_done: bool = True
-    # If true, after index->middle->thumb->ring transition finishes, return to
-    # grasp_stabilizing and repeat rotation + transition indefinitely until a
-    # new command/pose_type is received.
-    grasp_type7_repeat_transition_cycle: bool = True
-
-
-    # grasp_type=7 first transition step after rotation completion.
-    # Current scope: index finger only. After rotation_done, remove index from
-    # the active grasp set first (centroid/force redistribution), detach index
-    # to pose_type=2 by PD, move index joint_2_1 to 45 deg by PD, then reattach
-    # index toward the current centroid by Jacobian-transpose torque.
-    grasp_type7_index_transition_enable: bool = True
-    grasp_type7_index_pd_tolerance_rad: float = 0.0872665  # 5 deg
-    grasp_type7_index_first_joint_target_rad: float = 0.785398  # 45 deg
-    grasp_type7_index_attach_force: float = 1.0
-    grasp_type7_index_attach_tau_limit: float = 0.8
-
-    # grasp_type=7 second transition step after index reattachment.
-    # Remove middle from the active grasp set first, move only middle joint_3_1
-    # to 30 deg while holding middle joints 2~4 at pose_type=2, then reattach
-    # the middle fingertip toward the current centroid by Jacobian-transpose torque.
-    grasp_type7_middle_transition_enable: bool = True
-    grasp_type7_middle_first_joint_target_rad: float = 0.523599  # 30 deg
-    grasp_type7_middle_attach_force: float = 1.0
-    grasp_type7_middle_attach_tau_limit: float = 0.8
-
-    # grasp_type=7 third transition step after middle reattachment.
-    # Remove thumb from the active grasp set first, so centroid/force redistributes
-    # to the currently contacting index+middle+ring fingers. Then PD-control thumb
-    # to [0, 140 deg, 0, pose_type=2 thumb joint_1_4] before reattaching it toward a thumb-biased centroid.
-    grasp_type7_thumb_transition_enable: bool = True
-    grasp_type7_thumb_joint1_target_rad: float = 0.0
-    grasp_type7_thumb_joint2_target_rad: float = 2.443461  # 140 deg
-    grasp_type7_thumb_joint3_target_rad: float = 0.0
-    grasp_type7_thumb_joint4_target_rad: float = -0.2340
-    grasp_type7_thumb_attach_force: float = 1.0
-    grasp_type7_thumb_attach_tau_limit: float = 0.8
-
-    # grasp_type=7 fourth transition step after thumb reattachment.
-    # Ring is detached while thumb remains in the active grasp set, so the
-    # ordinary thumb-biased centroid is used. Move only ring joint_4_1 to 9 deg
-    # while holding ring joints 2~4 at pose_type=2, then reattach by J^T torque.
-    grasp_type7_ring_transition_enable: bool = True
-    grasp_type7_ring_first_joint_target_rad: float = 0.157080  # 9 deg
-    grasp_type7_ring_attach_force: float = 1.0
-    grasp_type7_ring_attach_tau_limit: float = 0.8
-
-    # Shared attach completion detector for transition fingers.
-    grasp_type7_transition_attach_qdot_threshold: float = 0.08
-    grasp_type7_transition_attach_hold_sec: float = 0.20
-    grasp_type7_transition_attach_min_sec: float = 0.30
+    # grasp_type=7: World -Z floor contact followed by thumb/index pinch hold.
+    card_floor_force_n: float = 3.0
+    card_floor_hold_force_n: float = 3.0
+    card_pinch_force_n: float = 4.0
+    card_pinch_z_kp: float = 500.0
+    card_pinch_z_force_limit_n: float = 5.0
+    card_index_tip_target_deg: float = 80.0
+    card_index_tip_kp: float = 6.0
+    card_index_tip_kd: float = 3.0
+    card_index_tip_tau_limit: float = 0.50
+    card_tip_stall_threshold_m: float = 0.0002
+    card_floor_stall_sec: float = 0.20
+    card_pinch_stall_sec: float = 0.10
+    card_thumb_j1_hold_kp: float = 0.60
+    card_thumb_j1_hold_kd: float = 0.10
+    card_thumb_j1_hold_tau_limit: float = 0.40
+    card_floor_timeout_sec: float = 2.0
+    card_pinch_timeout_sec: float = 1.0
+    card_joint_state_timeout_sec: float = 0.10
 
     # grasp_type=6: enveloping grasp mode
     # - Time-only joint-stage sequence:

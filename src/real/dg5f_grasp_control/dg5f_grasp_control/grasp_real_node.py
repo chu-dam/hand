@@ -15,6 +15,8 @@ from dg5f_grasp_control.config import RuntimeConfig
 from dg5f_grasp_control.control_utils import pose_pd, publish_effort, zero_effort
 from dg5f_grasp_control.friction import calc_friction
 from dg5f_grasp_control.grasp_controller import (
+    CARD_INDEX_ID,
+    CARD_THUMB_ID,
     GraspController,
     PINKY_FINGER_ID,
 )
@@ -58,7 +60,9 @@ class GraspRealRunner:
         self.model_xml_path = model_xml_path
 
         self.hand_q = np.zeros(JOINT_COUNT, dtype=np.float64)
+        self.hand_qdot = np.zeros(JOINT_COUNT, dtype=np.float64)
         self.got_state = False
+        self.last_joint_state_time = None
         self.pending_finger_count = None
         self.pending_pose_type = None
         self.pending_teaching_mode = None
@@ -108,10 +112,33 @@ class GraspRealRunner:
 
     def joint_cb(self, msg):
         positions = dict(zip(msg.name, msg.position))
+        new_q = self.hand_q.copy()
         for index, name in enumerate(HAND_JOINT_NAMES):
             if name in positions:
-                self.hand_q[index] = positions[name]
+                new_q[index] = positions[name]
+
+        velocities = dict(zip(msg.name, msg.velocity))
+        if all(name in velocities for name in HAND_JOINT_NAMES):
+            qdot_raw = np.array(
+                [velocities[name] for name in HAND_JOINT_NAMES],
+                dtype=np.float64,
+            )
+            if not np.all(np.isfinite(qdot_raw)):
+                qdot_raw = None
+        else:
+            qdot_raw = None
+
+        if qdot_raw is not None:
+            alpha = float(np.clip(self.cfg.qdot_alpha, 0.0, 1.0))
+            self.hand_qdot = (
+                (1.0 - alpha) * self.hand_qdot + alpha * qdot_raw
+            )
+        else:
+            self.hand_qdot.fill(0.0)
+
+        self.hand_q = new_q
         self.got_state = True
+        self.last_joint_state_time = time()
 
     def command_cb(self, msg):
         if self.teaching_mode or self.pending_teaching_mode is True:
@@ -139,7 +166,7 @@ class GraspRealRunner:
         pose_type = int(msg.data)
         if pose_type not in POSE_TYPE_TARGETS:
             self.node.get_logger().warn(
-                f"Ignore invalid pose_type command: {pose_type}. Use 1, 2, or 3."
+                f"Ignore invalid pose_type command: {pose_type}. Use 1, 2, 3, or 4."
             )
             return
         self.pending_pose_type = pose_type
@@ -251,6 +278,7 @@ class GraspRealRunner:
 
         rotation_hand_to_world = values.reshape(3, 3)
         self.rotation_hand_to_world = rotation_hand_to_world.copy()
+        self.controller.set_rotation_hand_to_world(rotation_hand_to_world)
         gravity_world = np.array([0.0, 0.0, -9.81], dtype=np.float64)
         self.gravity_in_hand_frame = rotation_hand_to_world.T @ gravity_world
         self.node.get_logger().info(
@@ -277,6 +305,7 @@ class GraspRealRunner:
             self.pending_relative_translation_hand = None
             self.controller.cancel_relative_rotation()
             self.controller.cancel_relative_translation()
+            self.controller.cancel_card_grasp()
             print(
                 "[TEACHING_MODE] ON -> gravity + friction compensation only; "
                 "grasp/pose commands are ignored"
@@ -376,12 +405,13 @@ class GraspRealRunner:
         print(
             "[GRASP_TYPE] -1=normal, 0=selected pre-grasp, "
             "1=thumb+index, 2=thumb+middle, 3=thumb+index+middle, "
-            "4=+ring, 5=+pinky, 6=envelop-grasp, "
-            "7=4-finger grasp + pinky PD hold + rotation/transition"
+            "4=+ring, 5=+pinky, 6=envelop-grasp, 7=card-grasp"
         )
-        print("[POSE_TYPE] 1=normal, 2=default pre-grasp, 3=compact pre-grasp")
+        print(
+            "[POSE_TYPE] 1=normal, 2=default pre-grasp, "
+            "3=compact pre-grasp, 4=card pre-grasp"
+        )
         print(f"[ALPHA1] {self.cfg.alpha1}")
-        print(f"[TYPE7_THUMB_CENTROID_BIAS] {self.cfg.thumb_centroid_bias}")
         print(
             "[POSE_KP/KD/LIMIT] "
             f"{self.cfg.pose_kp}, {self.cfg.pose_kd}, {self.cfg.pose_pd_limit}"
@@ -484,8 +514,6 @@ class GraspRealRunner:
                 f"cg={np.round(output.cg, 4)} | "
                 f"cv={np.round(output.cv, 4)} | "
                 f"grasp_tau_max={np.max(np.abs(output.grasp_tau)):.4f} | "
-                f"rot={'on' if output.rotation_enabled else 'off'} | "
-                f"g7_phase={output.g7_phase} | "
                 f"relative_rotation_phase={output.relative_rotation_phase} | "
                 f"relative_target_deg="
                 f"{np.degrees(output.relative_rotation_target_rad):.3f} | "
@@ -516,6 +544,67 @@ class GraspRealRunner:
                 f"use_fingers={output.use_fingers} | "
                 f"effort_max={np.max(np.abs(effort)):.3f}"
             )
+        elif output.state == "CARD_GRASP":
+            now = time()
+            phase = self.controller.card_phase
+            phase_elapsed = (
+                0.0
+                if self.controller.card_phase_started_at is None
+                else max(
+                    0.0,
+                    now - float(self.controller.card_phase_started_at),
+                )
+            )
+            timeout = {
+                "card_floor_contact": self.cfg.card_floor_timeout_sec,
+                "card_pinch": self.cfg.card_pinch_timeout_sec,
+            }.get(phase)
+            required_stable = {
+                "card_floor_contact": self.cfg.card_floor_stall_sec,
+                "card_pinch": self.cfg.card_pinch_stall_sec,
+            }.get(phase)
+            force_norms = {
+                finger: float(
+                    np.linalg.norm(
+                        output.total_forces.get(
+                            finger,
+                            np.zeros(3, dtype=np.float64),
+                        )
+                    )
+                )
+                for finger in (CARD_THUMB_ID, CARD_INDEX_ID)
+            }
+            floor_contact = self.controller.card_floor_contact_detected
+            floor_stable = {
+                finger: round(value, 3)
+                for finger, value in self.controller.card_floor_stable_elapsed_sec.items()
+            }
+            floor_motion_mm = {
+                finger: round(1000.0 * value, 3)
+                for finger, value in self.controller.card_floor_motion_m.items()
+            }
+            print(
+                "[CARD_GRASP] "
+                f"phase={phase} | "
+                f"phase_t={phase_elapsed:.3f}/"
+                f"{'hold' if timeout is None else f'{float(timeout):.3f}'}s | "
+                f"stable={self.controller.card_stable_elapsed_sec:.3f}/"
+                f"{'-' if required_stable is None else f'{float(required_stable):.3f}'}s | "
+                "stall_motion_mm="
+                f"{1000.0 * self.controller.card_stall_max_motion_m:.3f}/"
+                f"{1000.0 * float(self.cfg.card_tip_stall_threshold_m):.3f} | "
+                f"floor_contact={floor_contact} | "
+                f"floor_stable={floor_stable} | "
+                f"floor_motion_mm={floor_motion_mm} | "
+                "thumb_j1_hold="
+                f"{self.controller.card_thumb_j1_hold_target}/"
+                f"{self.controller.card_thumb_j1_hold_error_rad:.4f}rad/"
+                f"{self.controller.card_thumb_j1_hold_tau:.4f} | "
+                f"F_thumb={force_norms[CARD_THUMB_ID]:.3f}N | "
+                f"F_index={force_norms[CARD_INDEX_ID]:.3f}N | "
+                f"tau_max={np.max(np.abs(output.tau)):.4f} | "
+                f"effort_max={np.max(np.abs(effort)):.4f}"
+            )
         elif output.state == "ENVELOP_GRASP":
             info = output.envelop_info
             print(
@@ -537,8 +626,6 @@ class GraspRealRunner:
             )
 
     def run(self):
-        previous_q = None
-        previous_time = None
         qdot = np.zeros(JOINT_COUNT, dtype=np.float64)
         last_log = 0.0
 
@@ -555,18 +642,21 @@ class GraspRealRunner:
                     continue
 
                 now = time()
-                if previous_q is not None and previous_time is not None:
-                    dt = now - previous_time
-                    if dt > 1e-6:
-                        qdot_raw = (self.hand_q - previous_q) / dt
-                        qdot = (
-                            (1.0 - self.cfg.qdot_alpha) * qdot
-                            + self.cfg.qdot_alpha * qdot_raw
-                        )
-                previous_q = self.hand_q.copy()
-                previous_time = now
+                qdot = self.hand_qdot.copy()
 
                 self.controller.sync_joint_state(self.hand_q)
+                if (
+                    self.controller.state == "CARD_GRASP"
+                    and (
+                        self.last_joint_state_time is None
+                        or now - float(self.last_joint_state_time)
+                        > float(self.cfg.card_joint_state_timeout_sec)
+                    )
+                ):
+                    self.node.get_logger().error(
+                        "CARD grasp stopped: JointState is stale."
+                    )
+                    self.controller.apply_grasp_type(0, now)
                 self._apply_pending_teaching_mode()
                 if not self.teaching_mode:
                     self._apply_pending_commands(now)

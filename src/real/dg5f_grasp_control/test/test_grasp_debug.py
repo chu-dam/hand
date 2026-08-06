@@ -17,36 +17,8 @@ class GraspDebugTest(unittest.TestCase):
         q = np.linspace(-0.15, 0.2, 20)
         policy = GraspPolicy([1, 2, 3, 4], RuntimeConfig())
 
-        result = policy.calc_grasp_tau(
-            q,
-            rotation_enabled=True,
-            rotation_center=np.array([0.02, 0.0, 0.1]),
-            center_hold_target=np.array([0.01, 0.0, 0.1]),
-            center_hold_enabled=True,
-        )
-
-        expected_tau = np.array([
-            -0.305856319700,
-            -0.003875673590,
-            -0.197250620090,
-            -0.096891325694,
-            0.060455305690,
-            0.000521910037,
-            -0.001192314423,
-            -0.000851189786,
-            0.068698550241,
-            0.003388712662,
-            0.003653810188,
-            0.002339934277,
-            0.005788819987,
-            0.005137482073,
-            0.004827550571,
-            0.002675409584,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-        ])
+        result = policy.calc_grasp_tau(q)
+        expected_tau = policy.calc_tau_from_total_forces(q, result.total_forces)
         np.testing.assert_allclose(
             result.tau,
             expected_tau,

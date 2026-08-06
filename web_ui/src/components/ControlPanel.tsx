@@ -16,6 +16,7 @@ const POSE_OPTIONS = [
   { value: 1, label: "Normal" },
   { value: 2, label: "Pre-grasp" },
   { value: 3, label: "Compact" },
+  { value: 4, label: "Card" },
 ];
 
 const MANIPULATION_GRASP_TYPES = new Set([1, 2, 3, 4, 5]);
@@ -137,6 +138,12 @@ export function ControlPanel({
   const [matrix, setMatrix] = useState([...IDENTITY_MATRIX]);
   const teaching = Boolean(debug?.teaching_mode);
   const commandDisabled = !ready || teaching;
+  const cardGraspAvailable = (
+    ready
+    && !teaching
+    && debug?.controller_state === "PRE_GRASP_POSE"
+    && debug?.pose_type === 4
+  );
   const manipulationSectionActive = (
     ready
     && !teaching
@@ -308,7 +315,7 @@ export function ControlPanel({
             <div><span>02</span><strong>Pose</strong></div>
             <small>current {debug?.pose_type ?? "—"}</small>
           </div>
-          <div className="segmented three-column">
+          <div className="segmented four-column">
             {POSE_OPTIONS.map((option) => (
               <button
                 key={option.value}
@@ -347,6 +354,17 @@ export function ControlPanel({
                 <span>{option.label}</span>
               </button>
             ))}
+            <button
+              className={debug?.grasp_type === 7 ? "active" : ""}
+              disabled={!cardGraspAvailable}
+              title={cardGraspAvailable
+                ? "Start Card grasp"
+                : "Card grasp is available only in CARD pre-grasp"}
+              onClick={() => report(onGrasp(7), "CARD grasp 요청을 전송했습니다.")}
+            >
+              <strong>CARD</strong>
+              <span>Pre-grasp only</span>
+            </button>
           </div>
         </div>
 

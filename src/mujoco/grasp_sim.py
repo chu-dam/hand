@@ -332,6 +332,7 @@ class GraspSim:
 
     def apply_rotation_matrix(self, rotation_matrix):
         self.rotation_matrix = np.asarray(rotation_matrix, dtype=np.float64).copy()
+        self.controller.set_rotation_hand_to_world(self.rotation_matrix)
         self.gravity_in_hand = self.rotation_matrix.T @ GRAVITY_WORLD
         self.model.opt.gravity[:] = self.gravity_in_hand
         print(
@@ -453,7 +454,7 @@ class GraspSim:
         print(
             "[COMMAND] -1=normal, 0=pre-grasp, 1=thumb+index, "
             "2=thumb+middle, 3=three fingers, 4=four fingers, "
-            "5=five fingers, 6=envelop, 7=rotation/transition"
+            "5=five fingers, 6=envelop"
         )
         print("=" * 80)
 
@@ -476,7 +477,6 @@ class GraspSim:
             f"tau_max={np.max(np.abs(torque)):.4f} | "
             f"Cg={np.round(output.cg, 4)} | "
             f"Cv={np.round(output.cv, 4)} | "
-            f"g7_phase={output.g7_phase} | "
             f"relative_rotation_phase={output.relative_rotation_phase} | "
             f"relative_target_deg="
             f"{np.degrees(output.relative_rotation_target_rad):.3f} | "

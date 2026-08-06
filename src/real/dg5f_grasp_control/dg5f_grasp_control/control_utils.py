@@ -16,7 +16,7 @@ def publish_effort(pub, effort):
     pub.publish(msg)
 
 
-def pose_pd(q_target, q, qdot, kp=0.4, kd=0.05, limit=0.25):
+def pose_pd(q_target, q, qdot, kp=0.285, kd=0.05, limit=0.25):
     err = np.asarray(q_target) - np.asarray(q)
     pd = kp * err - kd * np.asarray(qdot)
     return np.clip(pd, -limit, limit), err

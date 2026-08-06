@@ -1186,6 +1186,7 @@ input[type="range"] { accent-color: var(--teal); }
 
 .two-column { grid-template-columns: repeat(2, 1fr); }
 .three-column { grid-template-columns: repeat(3, 1fr); }
+.four-column { grid-template-columns: repeat(4, 1fr); }
 
 .segmented button,
 .secondary-wide,

@@ -2,7 +2,7 @@
 
 DG5F-S 5-finger hand를 ROS 2에서 실행하고, 토픽 명령으로 grasp mode, pre-grasp pose, grasp force 계수, 상대 회전 목표, hand rotation matrix를 제어하기 위한 workspace입니다.
 
-현재 구조에서는 실제 DG5F-S 제어와 MuJoCo simulation이 동일한 `GraspController`를 사용합니다. 따라서 centroid 계산, 손가락 선택, force distribution, 손가락 전환, enveloping grasp, rotation/transition 제어를 수정하면 real과 MuJoCo에 동일하게 반영됩니다.
+현재 구조에서는 실제 DG5F-S 제어와 MuJoCo simulation이 동일한 `GraspController`를 사용합니다. 따라서 centroid 계산, 손가락 선택, force distribution, 손가락 전환, enveloping grasp, 상대 회전 제어를 수정하면 real과 MuJoCo에 동일하게 반영됩니다.
 
 주요 기능은 다음과 같습니다.
 
@@ -12,7 +12,7 @@ DG5F-S 5-finger hand를 ROS 2에서 실행하고, 토픽 명령으로 grasp mode
 - grasp 중 손가락 추가·제거 및 안정적인 조합 전환
 - 비사용 손가락 PD 자세 유지
 - `grasp_type=6`: Sequential Torque-Based Enveloping Grasp
-- `grasp_type=7`: 4손가락 파지 기반 rotation 및 순차 finger transition
+- `grasp_type=7`: Pre-grasp 전용 바닥 카드 파지
 - `grasp_type=1~5`: `Cv = Cg` 기반 force distribution과 현재 자세 기준 상대 회전 명령
 - 실제 hand와 MuJoCo가 동일한 공통 제어 코어 사용
 
@@ -123,7 +123,7 @@ real과 MuJoCo는 각각 별도의 grasp 알고리즘을 구현하지 않습니�
 - pre-grasp 대기 손가락의 즉시 grasp torque 전환
 - `1 ↔ 2` 전환 시 3손가락 경유
 - `grasp_type=6` enveloping grasp
-- `grasp_type=7` rotation 및 finger transition
+- `grasp_type=7` floor-card pickup state machine
 
 단, 물리 환경은 서로 다릅니다.
 
@@ -283,7 +283,7 @@ controller 상태를 다음 topic으로 발행합니다.
 - 상대 병진 시작/목표 centroid, 명령 변위, 남은 오차와 phase
 - 상대 병진 DLS 최소 특이값/조건수, 관절 보정량, 위치제어 토크,
   null-space 파지 토크
-- 비사용 손가락 capsule 최소 여유거리, 회피 활성 상태와 joint-1 목표 offset
+- 비사용 손가락 회피 활성 상태와 추종 관절 목표 offset
 - 손가락별 `alpha`
 - grasp, rotation, center-hold, collision, total force
 - 일반 파지 토크 대비 최종 계층 제어의 20관절 차이 `translation_torques`
@@ -410,7 +410,7 @@ npm run dev
 | `4` | Four-finger groped grasp | 엄지 + 검지 + 중지 + 약지 |
 | `5` | Five-finger groped grasp | 엄지 + 검지 + 중지 + 약지 + 새끼 |
 | `6` | Sequential Torque-Based Enveloping Grasp | 5손가락 특수 시퀀스 |
-| `7` | Four-finger rotation 및 sequential transition | 엄지 + 검지 + 중지 + 약지, 새끼 PD hold |
+| `7` | Floor-card pinch | 엄지·검지 핀칭 후 검지 끝 관절 80° PD |
 
 예시:
 
@@ -441,53 +441,41 @@ ros2 topic pub --once /grasp_type std_msgs/msg/Int32 "{data: 7}"
 - 선택된 `HAND_PRE_GRASP_POSE` 또는 `HAND_COMPACT_PRE_GRASP_POSE`에서 해당
   손가락의 관절 4개 목표를 모두 사용합니다.
 - 따라서 비사용 손가락은 펴지지 않고, 물체를 잡기 직전 자세로 대기합니다.
-- `grasp_type=7`의 새끼 hold와 손가락 전환은 전용 목표 자세를 그대로 사용합니다.
 
-### 비사용 손가락 링크 충돌 회피
+### 비사용 손가락 충돌 회피
 
-일반 `grasp_type=1~5`에서는 활성 손가락이 외력에 따라 움직여 인접한 비사용
-손가락에 접근할 수 있습니다. 제어기는 XML의 링크 체인 치수와 실시간 관절
-피드백 FK를 이용해 각 손가락의 움직이는 마디를 3개의 capsule 중심선으로
-단순화하고, 활성/비사용 인접 손가락 사이의 최소 표면 여유거리를 계산합니다.
-활성 손가락을 피하느라 움직이는 비사용 손가락도 다음 비사용 인접 손가락의
-회피 기준이 됩니다. 따라서 `활성 중지 → 비사용 약지 → 비사용 새끼`처럼
-회피가 연쇄적으로 전달되며, 아무 손가락도 피하고 있지 않은 평상시 대기
-자세에서는 비사용 손가락끼리 불필요하게 벌어지지 않습니다.
-손바닥에 고정된 뿌리 쪽 첫 segment는 원래부터 서로 가까우므로 기본 설정에서
-거리 검사에서 제외합니다.
+일반 `grasp_type=1~5`에서는 `검지 J1 → 중지 J1 → 약지 J1 → 새끼 J2`의
+인접 관절값만 비교합니다. 사용 손가락과 비사용 손가락의 값이 가까워지다가
+`2°` 이내에서 가까워지거나 서로 교차하면 그 순간의 관절 간격을 저장합니다. 이후
+비사용 손가락은 인접 손가락과 같은 관절 변화량 및 속도를 PD로 추종합니다.
+이미 추종 중인 비사용 손가락도 다음 비사용 손가락의 기준이 되므로
+`중지 → 약지 → 새끼`처럼 회피가 연쇄됩니다. 이때 하위 손가락은 앞 손가락의
+실제 응답을 기다리지 않고 전파된 명령 목표를 사용하므로 같은 제어 주기에
+회피를 시작합니다.
 
-- 현재 자세, 관절 속도로 예측한 `0.25 s` 뒤 자세, 회피 명령이 같은 시간 동안
-  이동시킬 자세 중 가장 위험한 거리를 사용합니다.
-- capsule 반지름은 보수적으로 `9 mm`이며 두 반지름을 뺀 표면 여유거리로
-  판정합니다.
-- 여유거리가 `9 mm` 미만이면 회피를 시작하고 `10 mm` 이상이면 해제합니다.
-- 가까워질수록 회피량을 smoothstep으로 증가시킵니다.
-- 검지·중지·약지는 첫 번째 관절, 새끼는 두 번째 관절을 `±1°` 시험 FK로
-  평가해 실제 거리가 증가하는 방향을 매 주기 선택합니다.
-- 선택된 회피 관절 목표만 최대 `0.40 rad`, `1.5 rad/s`로 이동하고, 회피 중에는
-  진동을 줄인 전용 PD `Kp=0.5`, `Kd=0.10`, torque limit `0.25 N·m`를
-  사용합니다. `±1°` 시험 결과의 거리 차이가 `0.1 mm`보다 작으면 이전 회피
-  방향을 유지합니다. 나머지
-  세 관절은 선택된 pre-grasp 목표와 기존 PD 설정을 그대로 유지합니다.
-- `ENV`와 `grasp_type=7`에는 이 일반 회피기를 적용하지 않습니다.
+기준 손가락이 원래 접근 방향의 반대로 대기각에서 `2°` 이상 멀어지면 추종을
+즉시 해제하며, 회피 손가락의 남은 pre-grasp 복귀는 일반 자세유지 PD가
+완료합니다. 관절 한계에는
+`0.03 rad` 여유를 두며, 전용 PD 기본값은 `Kp=0.5`, `Kd=0.10`, torque limit
+`0.25 N·m`입니다. `ENV`에는 적용하지 않습니다. 허용오차와 해제 여유각은
+`inactive_collision_joint_match_tolerance_rad` 및
+`inactive_collision_joint_release_margin_rad`에서 조정할 수 있습니다.
 
-`GraspDebug`의 `inactive_collision_min_clearance_m`,
-`inactive_collision_avoidance_offsets_rad`,
-`inactive_collision_avoidance_active`로 동작을 확인할 수 있습니다. 주요 설정은
-`inactive_collision_*` YAML 항목이며, 실제 손에서는 capsule 반지름과 활성화
-여유거리부터 보수적으로 조정하십시오.
+`GraspDebug`의 `inactive_collision_avoidance_offsets_rad`와
+`inactive_collision_avoidance_active`로 추종 상태를 확인할 수 있습니다.
 
 ---
 
 ## 2. Pose Type Command
 
-normal pose와 두 종류의 pre-grasp pose를 선택합니다.
+normal pose와 세 종류의 pre-grasp pose를 선택합니다.
 
 | Value | Meaning |
 | ---: | --- |
 | `1` | `HAND_NORMAL_POSE` (평소 자세)|
 | `2` | 기본 `HAND_PRE_GRASP_POSE` (큰 물체 잡기 전)|
 | `3` | `HAND_COMPACT_PRE_GRASP_POSE` (작은 물체 잡기 전)|
+| `4` | `HAND_CARD_PRE_GRASP_POSE` (카드 잡기 전)|
 
 예시:
 
@@ -495,9 +483,10 @@ normal pose와 두 종류의 pre-grasp pose를 선택합니다.
 ros2 topic pub --once /pose_type std_msgs/msg/Int32 "{data: 1}"
 ros2 topic pub --once /pose_type std_msgs/msg/Int32 "{data: 2}"
 ros2 topic pub --once /pose_type std_msgs/msg/Int32 "{data: 3}"
+ros2 topic pub --once /pose_type std_msgs/msg/Int32 "{data: 4}"
 ```
 
-`pose_type=2` 또는 `3`을 보내면 즉시 해당 pre-grasp 자세로 이동하며, 이후
+`pose_type=2`, `3`, 또는 `4`를 보내면 즉시 해당 pre-grasp 자세로 이동하며, 이후
 `grasp_type=0`을 보내도 마지막으로 선택된 pre-grasp 자세를 사용합니다. 일반
 파지 중인 비사용 손가락도 마지막으로 선택된 pre-grasp pose를 계속 유지합니다.
 
@@ -516,20 +505,7 @@ ros2 topic pub --once /pose_type std_msgs/msg/Int32 "{data: 3}"
 
 ### Virtual centroid policy
 
-- 일반 `grasp_type=1~5`: 손가락 수와 관계없이 항상 `Cv = Cg`
-- `grasp_type=7`: 기존 thumb-biased virtual centroid와 legacy force heuristic 유지
-
-`thumb_centroid_bias`는 이제 `grasp_type=7`에만 적용됩니다.
-
-```text
-Cv = Cg + thumb_centroid_bias × (P_thumb - Cg)   # grasp_type=7 only
-```
-
-기본값:
-
-```yaml
-thumb_centroid_bias: 0.5
-```
+일반 `grasp_type=1~5`는 손가락 수와 관계없이 항상 `Cv = Cg`를 사용합니다.
 
 ### Force distribution
 
@@ -564,10 +540,6 @@ fhat_i      = (Cg - P_i) / d_i
 `force_balance_error_ramp_sec` 동안 0까지 낮춘 뒤 0을 유지하고, Debug phase를
 `force_balance_error`로 고정합니다. 손 형상을 확인한 후 grasp type을 다시
 선택해야 새 평형 계산을 시작합니다.
-
-`grasp_type=7`은 이 일반 정책의 적용 대상이 아닙니다. 기존 thumb bias,
-거리 반비례 분포, 마지막 active finger를 pivot으로 사용하는 legacy
-heuristic을 그대로 유지합니다.
 
 위 합력 0 조건은 일반 grasp의 계산값 기준입니다. 새 손가락은 비사용 상태에서
 이미 pre-grasp 자세를 유지하고 있으므로 별도의 PD 준비나 force blend 없이 즉시
@@ -722,85 +694,7 @@ torque = min(3.0 × 0.025, 3.0) = 0.075
 
 ---
 
-## 5. Grasp Type 7: Rotation and Finger Transition (미완성)
-
-`grasp_type=7`은 엄지·검지·중지·약지로 물체를 잡고, 회전 보조력과 순차적인 finger relocation을 수행하는 mode입니다.
-
-```bash
-ros2 topic pub --once /grasp_type std_msgs/msg/Int32 "{data: 7}"
-```
-
-### Initial grasp
-
-- Active grasp fingers: 엄지, 검지, 중지, 약지
-- 새끼손가락: grasp force에 참여하지 않고 PD hold
-- 새끼손가락 1·2번 관절 목표:
-
-```text
-[0.0, -π/4] rad
-```
-
-새끼 3·4번 관절은 `grasp_type=7` 명령을 받은 순간의 위치를 유지합니다.
-
-### Rotation sequence
-
-1. 4손가락 grasp가 안정될 때까지 기다립니다.
-2. active joint velocity가 threshold 이하로 일정 시간 유지되면 rotation을 시작합니다.
-3. geometric centroid를 rotation center reference로 저장합니다.
-4. net force가 거의 0이면서 palm normal 방향 moment를 만드는 `pure_moment` force distribution을 적용합니다.
-5. 회전 중 centroid 이동을 줄이기 위해 center-hold force를 추가할 수 있습니다.
-6. 회전 종료 조건이 만족되면 finger transition으로 넘어갑니다.
-
-> `rotation_theta_rad`는 실제 물체의 폐루프 목표 각도가 아닙니다. 회전 추가 force 또는 moment의 크기와 방향을 결정하는 command scale입니다.
-
-회전 방향을 반대로 바꾸려면 `rotation_theta_rad`의 부호를 바꿉니다.
-
-```yaml
-rotation_theta_rad: 0.174533
-```
-
-### Finger transition sequence
-
-회전 종료 후 다음 순서로 손가락을 분리하고 다시 centroid 방향으로 접촉시킵니다.
-
-```text
-검지 → 중지 → 엄지 → 약지
-```
-
-기본 transition 목표:
-
-| Finger | Detach/relocation target |
-| --- | --- |
-| 검지 | 첫 번째 관절 `45°` |
-| 중지 | 첫 번째 관절 `30°` |
-| 엄지 | `[0°, 140°, 0°, -0.234 rad]` |
-| 약지 | 첫 번째 관절 `9°` |
-
-각 손가락은 active grasp set에서 먼저 제거된 뒤 PD로 relocation target까지 이동하고, Jacobian transpose torque로 현재 centroid 방향에 재접촉합니다.
-
-`grasp_type7_repeat_transition_cycle=true`이면 transition cycle이 끝난 뒤 다시 rotation stabilization 단계로 돌아가 반복합니다. 다른 grasp 또는 pose 명령을 보내면 cycle이 종료됩니다.
-
-주요 설정:
-
-```yaml
-grasp_type7_rotation_mode: pure_moment
-grasp_type7_rotation_zero_net_force: true
-grasp_type7_rotation_use_radius_compensation: false
-rotation_enable_for_grasp_type7: true
-rotation_theta_rad: 0.174533
-rotation_gain: 0.25
-rotation_force_limit: 0.75
-
-grasp_type7_center_hold_enable: true
-grasp_type7_center_hold_gain: 1.0
-grasp_type7_center_hold_force_limit: 0.10
-
-grasp_type7_repeat_transition_cycle: true
-```
-
----
-
-## 6. Grip Force Command
+## 5. Grip Force Command
 
 일반 grasp와 특수 grasp mode의 force 또는 torque 크기를 조절합니다.
 
@@ -819,13 +713,12 @@ ros2 topic pub --once /dg5f_grasp_control/alpha1_cmd std_msgs/msg/Float64 "{data
 - `grasp_type=1~5`: 엄지(Finger ID 1) magnitude이며 거리 비례
   nominal distribution과 4F·5F 평형 보정의 기준값
 - `grasp_type=6`: `alpha1 × envelop_tau_scale`로 active joint torque 결정
-- `grasp_type=7`: legacy 4손가락 grasp force heuristic에 반영
 
 값이 클수록 grasp force가 커지고, 작을수록 작아집니다.
 
 ---
 
-## 7. Rotation Matrix Command
+## 6. Rotation Matrix Command
 
 로봇팔 끝에 hand가 장착된 경우 hand frame 기준 중력 방향과 world 기준 명령을
 계산하기 위한 rotation matrix를 전달합니다. Hand controller는 특정 로봇팔의
@@ -981,9 +874,5 @@ src/real/dg5f_grasp_control/config/grasp_real.yaml
 | Collision repel | `min_tip_distance`, `collision_repel_gain`, `collision_repel_limit` |
 | Type 6 | `envelop_tau_scale`, `envelop_joint_delay`, torque signs |
 | Relative rotation (type 1~5) | `relative_rotation_position_*`, `relative_rotation_force_limit`, `relative_rotation_radius_min`, `relative_rotation_reference_ramp_sec` |
-| Type 7 legacy grasp | `thumb_centroid_bias`, `alpha1` |
-| Type 7 rotation | `rotation_theta_rad`, `rotation_gain`, `rotation_force_limit` |
-| Type 7 center hold | `grasp_type7_center_hold_*` |
-| Type 7 transition | `grasp_type7_*_transition_*`, attach force 및 torque limit |
 
 MuJoCo도 같은 YAML 파일을 읽으므로 parameter를 한 곳에서 관리할 수 있습니다.

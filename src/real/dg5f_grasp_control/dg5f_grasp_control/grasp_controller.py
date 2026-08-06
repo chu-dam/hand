@@ -6,7 +6,6 @@ import numpy as np
 from dg5f_grasp_control.config import RuntimeConfig
 from dg5f_grasp_control.control_utils import pose_pd
 from dg5f_grasp_control.grasp_policy import (
-    ALPHA_DISTRIBUTION_LEGACY,
     ALPHA_DISTRIBUTION_THUMB_DISTANCE_PROPORTIONAL,
     BASE_JOINT_TAU_LIMIT,
     GraspPolicy,
@@ -21,12 +20,11 @@ from dg5f_grasp_control.hand_model import (
     selected_fingers,
 )
 from dg5f_grasp_control.kinematics import (
-    capsule_segments_clearance,
-    finger_capsule_segments,
     tip_jacobian,
     tip_position,
 )
 from dg5f_grasp_control.poses import (
+    HAND_CARD_PRE_GRASP_POSE,
     HAND_NORMAL_POSE,
     HAND_PRE_GRASP_POSE,
     POSE_TYPE_TARGETS,
@@ -39,22 +37,10 @@ ENVELOP_FINGER_TORQUE_LOCAL_JOINTS = [1, 2, 3]
 ENVELOP_PINKY_TORQUE_LOCAL_JOINTS = [2, 3]
 ENVELOP_THUMB_TORQUE_LOCAL_JOINTS = [2, 3]
 
-PINKY_SPECIAL_COMMAND = 7
-PINKY_SPECIAL_GRASP_COUNT = 4
 PINKY_FINGER_ID = 5
-PINKY_SPECIAL_FIXED_LOCAL_TARGETS = np.array([0.0, -np.pi / 4.0], dtype=np.float64)
-G7_THUMB_TRANSITION_FINGER_ID = 1
-G7_INDEX_TRANSITION_FINGER_ID = 2
-G7_MIDDLE_TRANSITION_FINGER_ID = 3
-G7_RING_TRANSITION_FINGER_ID = 4
-G7_TRANSITION_FINGER_ID = G7_INDEX_TRANSITION_FINGER_ID
-G7_BASE_GRASP_FINGERS = [1, 2, 3, 4]
-G7_TRANSITION_FINGER_NAMES = {
-    G7_THUMB_TRANSITION_FINGER_ID: "thumb",
-    G7_INDEX_TRANSITION_FINGER_ID: "index",
-    G7_MIDDLE_TRANSITION_FINGER_ID: "middle",
-    G7_RING_TRANSITION_FINGER_ID: "ring",
-}
+INACTIVE_COLLISION_CHAIN = (2, 3, 4, 5)
+CARD_THUMB_ID = 1
+CARD_INDEX_ID = 2
 
 
 def _copy_finger_vectors(values: Dict[int, np.ndarray]) -> Dict[int, np.ndarray]:
@@ -85,7 +71,6 @@ class ControlOutput:
     center_hold_forces: Dict[int, np.ndarray] = field(default_factory=dict)
     collision_forces: Dict[int, np.ndarray] = field(default_factory=dict)
     total_forces: Dict[int, np.ndarray] = field(default_factory=dict)
-    rotation_enabled: bool = False
     use_fingers: List[int] = field(default_factory=list)
     active_finger_count: int = 0
     inactive_pd_target: np.ndarray = field(
@@ -99,7 +84,6 @@ class ControlOutput:
         default_factory=lambda: [False] * 5
     )
     envelop_info: Dict[str, object] = field(default_factory=dict)
-    g7_phase: str = "idle"
     relative_rotation_phase: str = "idle"
     relative_rotation_target_rad: float = 0.0
     relative_rotation_current_rad: float = 0.0
@@ -154,7 +138,7 @@ class GraspController:
     """Hardware-independent DG5F grasp state machine and torque controller.
 
     This class owns the grasp/pose state, finger switching, groped-grasp
-    policy, inactive-finger PD, envelop grasp, and grasp_type=7 manipulation.
+    policy, inactive-finger PD, envelop grasp, and Cartesian manipulation.
     It intentionally does not know about ROS, MuJoCo data structures, gravity
     compensation, friction compensation, or effort publishers.
     """
@@ -183,10 +167,19 @@ class GraspController:
             dtype=np.float64,
         )
         self.inactive_collision_avoidance_active = [False] * 5
-        self.inactive_collision_avoidance_direction = np.zeros(
+        self.inactive_collision_follow_source = np.zeros(
+            5,
+            dtype=np.int64,
+        )
+        self.inactive_collision_follow_offset_rad = np.zeros(
             5,
             dtype=np.float64,
         )
+        self.inactive_collision_approach_direction = np.zeros(
+            5,
+            dtype=np.float64,
+        )
+        self.inactive_collision_previous_joint_positions = None
         self.inactive_collision_min_clearance_m = -1.0
 
         self.envelop_hold_pose = None
@@ -195,31 +188,6 @@ class GraspController:
         self.envelop_thumb_start_at = None
         self.envelop_last_joint_stall_since = None
         self.envelop_last_info = {}
-
-        self.pinky_special_hold_pose = None
-        self.grasp_type7_phase = "idle"
-        self.grasp_type7_stable_since = None
-        self.grasp_type7_rotation_started_at = None
-        self.grasp_type7_done_since = None
-        self.grasp_type7_rotation_done = False
-        self.grasp_type7_last_qdot_max = 0.0
-        self.grasp_type7_transition_finger_id = None
-        self.grasp_type7_transition_pd_target = None
-        self.grasp_type7_transition_pd_err_max = 0.0
-        self.grasp_type7_transition_attach_tau_max = 0.0
-        self.grasp_type7_transition_attach_started_at = None
-        self.grasp_type7_transition_attach_done_since = None
-        self.grasp_type7_index_pd_target = None
-        self.grasp_type7_index_pd_err_max = 0.0
-        self.grasp_type7_index_attach_tau_max = 0.0
-        self.grasp_type7_middle_pd_err_max = 0.0
-        self.grasp_type7_middle_attach_tau_max = 0.0
-        self.grasp_type7_thumb_pd_err_max = 0.0
-        self.grasp_type7_thumb_attach_tau_max = 0.0
-        self.grasp_type7_ring_pd_err_max = 0.0
-        self.grasp_type7_ring_attach_tau_max = 0.0
-        self.grasp_type7_cycle_count = 0
-        self.grasp_type7_rotation_cg_ref = None
 
         # Generic grasp types (1..5) already use Cv == Cg and balanced grasp
         # forces. Relative rotation stores the command-time contact geometry
@@ -235,7 +203,6 @@ class GraspController:
         self.relative_rotation_command_moment = 0.0
         self.relative_rotation_axis = np.zeros(3, dtype=np.float64)
         self.relative_rotation_last_wrapped_angle = None
-        self.relative_rotation_last_time = None
         self.relative_rotation_reference_progress = 0.0
         # Relative task-space motion state. The grasp policy keeps the normal
         # holding force active in the null space while a centroid DLS
@@ -250,7 +217,6 @@ class GraspController:
         self.relative_translation_shape_forces = {}
         self.relative_translation_start_fingertips = {}
         self.relative_translation_target_fingertips = {}
-        self.relative_translation_last_fingertips = {}
         self.relative_translation_fingertip_velocities = {}
         self.relative_translation_contact_weights = {}
         self.relative_translation_max_axis_fingertip_error = 0.0
@@ -258,12 +224,27 @@ class GraspController:
         self.relative_translation_control_axis_error = 0.0
         self.relative_translation_control_axis_drive_force = 0.0
         self.relative_translation_started_at = None
-        self.relative_translation_last_time = None
-        self.relative_translation_last_centroid = None
         self.relative_translation_reached_since = None
         self.regular_force_balance_error_started_at = None
         self.last_regular_policy_result = None
         self.last_regular_policy_fingers = ()
+
+        self.rotation_hand_to_world = np.eye(3, dtype=np.float64)
+        self.card_phase = "idle"
+        self.card_phase_started_at = None
+        self.card_stall_reference_positions = {}
+        self.card_stall_since = None
+        self.card_stall_max_motion_m = 0.0
+        self.card_stable_elapsed_sec = 0.0
+        self.card_floor_stall_since = {}
+        self.card_floor_stable_elapsed_sec = {}
+        self.card_floor_motion_m = {}
+        self.card_floor_contact_detected = {}
+        self.card_floor_contact_positions = {}
+        self.card_thumb_j1_hold_target = None
+        self.card_thumb_j1_hold_error_rad = 0.0
+        self.card_thumb_j1_hold_tau = 0.0
+        self.card_index_flex_hold_target = None
 
         initial_count = cfg.use_finger_count if 1 <= cfg.use_finger_count <= 5 else 1
         self.use_fingers = selected_fingers(initial_count)
@@ -296,7 +277,6 @@ class GraspController:
         self.relative_rotation_command_moment = 0.0
         self.relative_rotation_axis[:] = 0.0
         self.relative_rotation_last_wrapped_angle = None
-        self.relative_rotation_last_time = None
         self.relative_rotation_reference_progress = 0.0
 
     def cancel_relative_translation(self) -> None:
@@ -312,7 +292,6 @@ class GraspController:
         self.relative_translation_shape_forces = {}
         self.relative_translation_start_fingertips = {}
         self.relative_translation_target_fingertips = {}
-        self.relative_translation_last_fingertips = {}
         self.relative_translation_fingertip_velocities = {}
         self.relative_translation_contact_weights = {}
         self.relative_translation_max_axis_fingertip_error = 0.0
@@ -320,9 +299,30 @@ class GraspController:
         self.relative_translation_control_axis_error = 0.0
         self.relative_translation_control_axis_drive_force = 0.0
         self.relative_translation_started_at = None
-        self.relative_translation_last_time = None
-        self.relative_translation_last_centroid = None
         self.relative_translation_reached_since = None
+
+    def set_rotation_hand_to_world(self, rotation: np.ndarray) -> None:
+        rotation = np.asarray(rotation, dtype=np.float64)
+        if rotation.shape != (3, 3) or not np.all(np.isfinite(rotation)):
+            raise ValueError("hand-to-world rotation must be a finite 3x3 matrix")
+        self.rotation_hand_to_world = rotation.copy()
+
+    def cancel_card_grasp(self) -> None:
+        self.card_phase = "idle"
+        self.card_phase_started_at = None
+        self.card_stall_reference_positions = {}
+        self.card_stall_since = None
+        self.card_stall_max_motion_m = 0.0
+        self.card_stable_elapsed_sec = 0.0
+        self.card_floor_stall_since = {}
+        self.card_floor_stable_elapsed_sec = {}
+        self.card_floor_motion_m = {}
+        self.card_floor_contact_detected = {}
+        self.card_floor_contact_positions = {}
+        self.card_thumb_j1_hold_target = None
+        self.card_thumb_j1_hold_error_rad = 0.0
+        self.card_thumb_j1_hold_tau = 0.0
+        self.card_index_flex_hold_target = None
 
     def _reset_regular_force_balance_state(self) -> None:
         self.regular_force_balance_error_started_at = None
@@ -488,7 +488,6 @@ class GraspController:
         self.relative_rotation_command_moment = 0.0
         self.relative_rotation_axis = axis
         self.relative_rotation_last_wrapped_angle = 0.0
-        self.relative_rotation_last_time = now
         self.relative_rotation_reference_progress = 0.0
         self.relative_rotation_phase = "rotating"
         self.relative_rotation_started_at = now
@@ -592,10 +591,6 @@ class GraspController:
             finger: position + delta_hand
             for finger, position in start_fingertips.items()
         }
-        self.relative_translation_last_fingertips = {
-            finger: position.copy()
-            for finger, position in start_fingertips.items()
-        }
         self.relative_translation_fingertip_velocities = {
             finger: np.zeros(3, dtype=np.float64)
             for finger in start_fingertips
@@ -606,8 +601,6 @@ class GraspController:
         self.relative_translation_control_axis_error = 0.0
         self.relative_translation_control_axis_drive_force = 0.0
         self.relative_translation_started_at = now
-        self.relative_translation_last_time = now
-        self.relative_translation_last_centroid = start.copy()
         self.relative_translation_reached_since = None
         self.relative_translation_phase = "translating"
         self._log(
@@ -812,31 +805,14 @@ class GraspController:
             self._log(f"[RELATIVE_ROTATION] stopped: {exc}")
             return rotation_forces
 
-        dt = None
-        if self.relative_rotation_last_time is not None:
-            dt = now - float(self.relative_rotation_last_time)
-        if dt is not None and dt > 1e-6:
-            previous_wrapped = (
-                wrapped_angle
-                if self.relative_rotation_last_wrapped_angle is None
-                else float(self.relative_rotation_last_wrapped_angle)
-            )
+        if self.relative_rotation_last_wrapped_angle is not None:
+            previous_wrapped = float(self.relative_rotation_last_wrapped_angle)
             angle_step = self._wrap_angle(wrapped_angle - previous_wrapped)
             self.relative_rotation_current_rad += angle_step
-            raw_angular_velocity = angle_step / dt
-            velocity_alpha = float(
-                np.clip(self.cfg.relative_rotation_velocity_alpha, 0.0, 1.0)
-            )
-            self.relative_rotation_angular_velocity = (
-                (1.0 - velocity_alpha)
-                * self.relative_rotation_angular_velocity
-                + velocity_alpha * raw_angular_velocity
-            )
         else:
             self.relative_rotation_current_rad = wrapped_angle
 
         self.relative_rotation_last_wrapped_angle = wrapped_angle
-        self.relative_rotation_last_time = now
         self.relative_rotation_error_rad = (
             self.relative_rotation_target_rad
             - self.relative_rotation_current_rad
@@ -921,15 +897,18 @@ class GraspController:
         axis = np.asarray(self.relative_rotation_axis, dtype=np.float64)
         start_pivot = self.relative_rotation_pivot
         current_pivot = tip_positions[1]
-        thumb_indices = np.asarray(FINGER_JOINT_INDEX[1], dtype=int)
-        thumb_velocity = (
-            tip_jacobian(
-                self.hand_q,
-                1,
-                eps=self.cfg.jacobian_eps,
+        fingertip_velocities = {}
+        for finger in expected_fingers:
+            indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
+            fingertip_velocities[finger] = (
+                tip_jacobian(
+                    self.hand_q,
+                    finger,
+                    eps=self.cfg.jacobian_eps,
+                )
+                @ qdot[indices]
             )
-            @ qdot[thumb_indices]
-        )
+        thumb_velocity = fingertip_velocities[1]
         driven_fingers = [
             finger
             for finger in self.relative_rotation_start_fingertips
@@ -939,6 +918,28 @@ class GraspController:
             self.relative_rotation_phase = "rotation_error"
             self._log("[RELATIVE_ROTATION] stopped: no non-thumb driven finger")
             return rotation_forces
+        angular_numerator = 0.0
+        angular_denominator = 0.0
+        for finger in driven_fingers:
+            radius = tip_positions[finger] - current_pivot
+            planar_radius = radius - np.dot(radius, axis) * axis
+            relative_velocity = fingertip_velocities[finger] - thumb_velocity
+            angular_numerator += float(
+                np.dot(axis, np.cross(planar_radius, relative_velocity))
+            )
+            angular_denominator += float(np.dot(planar_radius, planar_radius))
+        measured_angular_velocity = (
+            angular_numerator / angular_denominator
+            if angular_denominator > 1e-12
+            else 0.0
+        )
+        velocity_alpha = float(
+            np.clip(self.cfg.relative_rotation_velocity_alpha, 0.0, 1.0)
+        )
+        self.relative_rotation_angular_velocity = (
+            (1.0 - velocity_alpha) * self.relative_rotation_angular_velocity
+            + velocity_alpha * measured_angular_velocity
+        )
         axis_cross = np.array(
             [
                 [0.0, -axis[2], axis[1]],
@@ -1001,15 +1002,7 @@ class GraspController:
             if error_norm > position_error_limit:
                 position_error *= position_error_limit / error_norm
 
-            indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
-            fingertip_velocity = (
-                tip_jacobian(
-                    self.hand_q,
-                    finger,
-                    eps=self.cfg.jacobian_eps,
-                )
-                @ qdot[indices]
-            )
+            fingertip_velocity = fingertip_velocities[finger]
             velocity_error = target_velocity - fingertip_velocity
             force = (
                 position_kp * position_error
@@ -1043,6 +1036,7 @@ class GraspController:
         cg: np.ndarray,
         tip_positions: Dict[int, np.ndarray],
         now: float,
+        qdot: np.ndarray | None = None,
     ) -> Dict[int, np.ndarray]:
         """Update target state, virtual-force diagnostics, and shape forces."""
 
@@ -1059,11 +1053,18 @@ class GraspController:
             int(finger): np.asarray(position, dtype=np.float64)
             for finger, position in tip_positions.items()
         }
+        qdot = (
+            np.zeros(JOINT_COUNT, dtype=np.float64)
+            if qdot is None
+            else np.asarray(qdot, dtype=np.float64)
+        )
         now = float(now)
         expected_fingers = set(self.relative_translation_target_fingertips)
         if (
             cg.shape != (3,)
             or not np.all(np.isfinite(cg))
+            or qdot.shape != (JOINT_COUNT,)
+            or not np.all(np.isfinite(qdot))
             or not np.isfinite(now)
             or set(tip_positions) != expected_fingers
             or set(self.relative_translation_contact_weights) != expected_fingers
@@ -1078,45 +1079,41 @@ class GraspController:
             )
             return zero
 
-        dt = None
-        if (
-            self.relative_translation_last_centroid is not None
-            and self.relative_translation_last_time is not None
-        ):
-            dt = now - float(self.relative_translation_last_time)
-            if dt > 1e-6:
-                raw_centroid_velocity = (
-                    cg - self.relative_translation_last_centroid
-                ) / dt
-                velocity_alpha = float(
-                    np.clip(self.cfg.relative_translation_velocity_alpha, 0.0, 1.0)
+        velocity_alpha = float(
+            np.clip(self.cfg.relative_translation_velocity_alpha, 0.0, 1.0)
+        )
+        measured_fingertip_velocities = {}
+        for finger in tip_positions:
+            indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
+            measured_velocity = (
+                tip_jacobian(
+                    self.hand_q,
+                    finger,
+                    eps=self.cfg.jacobian_eps,
                 )
-                self.relative_translation_centroid_velocity = (
-                    (1.0 - velocity_alpha)
-                    * self.relative_translation_centroid_velocity
-                    + velocity_alpha * raw_centroid_velocity
-                )
-                for finger, position in tip_positions.items():
-                    previous = self.relative_translation_last_fingertips.get(finger)
-                    if previous is None:
-                        continue
-                    raw_fingertip_velocity = (position - previous) / dt
-                    previous_velocity = (
-                        self.relative_translation_fingertip_velocities.get(
-                            finger,
-                            np.zeros(3, dtype=np.float64),
-                        )
-                    )
-                    self.relative_translation_fingertip_velocities[finger] = (
-                        (1.0 - velocity_alpha) * previous_velocity
-                        + velocity_alpha * raw_fingertip_velocity
-                    )
-        self.relative_translation_last_centroid = cg.copy()
-        self.relative_translation_last_fingertips = {
-            finger: position.copy()
-            for finger, position in tip_positions.items()
-        }
-        self.relative_translation_last_time = now
+                @ qdot[indices]
+            )
+            measured_fingertip_velocities[finger] = measured_velocity
+            previous_velocity = self.relative_translation_fingertip_velocities.get(
+                finger,
+                np.zeros(3, dtype=np.float64),
+            )
+            self.relative_translation_fingertip_velocities[finger] = (
+                (1.0 - velocity_alpha) * previous_velocity
+                + velocity_alpha * measured_velocity
+            )
+        measured_centroid_velocity = sum(
+            (
+                float(self.relative_translation_contact_weights[finger])
+                * velocity
+                for finger, velocity in measured_fingertip_velocities.items()
+            ),
+            np.zeros(3, dtype=np.float64),
+        )
+        self.relative_translation_centroid_velocity = (
+            (1.0 - velocity_alpha) * self.relative_translation_centroid_velocity
+            + velocity_alpha * measured_centroid_velocity
+        )
         elapsed = (
             0.0
             if self.relative_translation_started_at is None
@@ -1594,6 +1591,515 @@ class GraspController:
             condition,
         )
 
+    def _set_card_phase(
+        self,
+        phase: str,
+        now: float,
+        tip_positions: Dict[int, np.ndarray] | None = None,
+    ) -> None:
+        self.card_phase = str(phase)
+        self.card_phase_started_at = float(now)
+        self.card_stall_reference_positions = {
+            int(finger): np.asarray(position, dtype=np.float64).copy()
+            for finger, position in (tip_positions or {}).items()
+        }
+        self.card_stall_since = float(now)
+        self.card_stall_max_motion_m = 0.0
+        self.card_stable_elapsed_sec = 0.0
+        self.card_floor_stall_since = {
+            finger: float(now)
+            for finger in self.card_stall_reference_positions
+        }
+        self.card_floor_stable_elapsed_sec = {
+            finger: 0.0
+            for finger in self.card_stall_reference_positions
+        }
+        self.card_floor_motion_m = {
+            finger: 0.0
+            for finger in self.card_stall_reference_positions
+        }
+        self.card_floor_contact_detected = {
+            finger: False
+            for finger in self.card_stall_reference_positions
+        }
+        self.card_thumb_j1_hold_error_rad = 0.0
+        self.card_thumb_j1_hold_tau = 0.0
+
+    def _card_floor_contacts_ready(
+        self,
+        tip_positions: Dict[int, np.ndarray],
+        now: float,
+    ) -> bool:
+        threshold = float(self.cfg.card_tip_stall_threshold_m)
+        duration = float(self.cfg.card_floor_stall_sec)
+        for finger, position in tip_positions.items():
+            if self.card_floor_contact_detected.get(finger, False):
+                start = self.card_floor_stall_since[finger]
+                self.card_floor_stable_elapsed_sec[finger] = max(
+                    0.0,
+                    float(now) - float(start),
+                )
+                continue
+
+            reference = self.card_stall_reference_positions.get(finger)
+            if reference is None:
+                self.card_stall_reference_positions[finger] = np.asarray(
+                    position,
+                    dtype=np.float64,
+                ).copy()
+                self.card_floor_stall_since[finger] = float(now)
+                self.card_floor_stable_elapsed_sec[finger] = 0.0
+                self.card_floor_motion_m[finger] = 0.0
+                self.card_floor_contact_detected[finger] = False
+                continue
+
+            motion = float(
+                np.linalg.norm(
+                    np.asarray(position, dtype=np.float64) - reference
+                )
+            )
+            self.card_floor_motion_m[finger] = motion
+            if motion > threshold:
+                self.card_stall_reference_positions[finger] = np.asarray(
+                    position,
+                    dtype=np.float64,
+                ).copy()
+                self.card_floor_stall_since[finger] = float(now)
+                self.card_floor_stable_elapsed_sec[finger] = 0.0
+                continue
+
+            stable_elapsed = max(
+                0.0,
+                float(now) - float(self.card_floor_stall_since[finger]),
+            )
+            self.card_floor_stable_elapsed_sec[finger] = stable_elapsed
+            if stable_elapsed >= duration:
+                self.card_floor_contact_detected[finger] = True
+                self.card_floor_contact_positions[finger] = np.asarray(
+                    position,
+                    dtype=np.float64,
+                ).copy()
+                name = "thumb" if finger == CARD_THUMB_ID else "index"
+                if finger == CARD_THUMB_ID:
+                    thumb_j1 = FINGER_JOINT_INDEX[CARD_THUMB_ID][0]
+                    self.card_thumb_j1_hold_target = float(
+                        self.hand_q[thumb_j1]
+                    )
+                self._log(
+                    f"[CARD] {name} floor contact detected; "
+                    f"stable_for_sec={stable_elapsed:.3f}, "
+                    f"stall_motion_mm={1000.0 * motion:.3f}"
+                    + (
+                        ", thumb_j1_hold_target_rad="
+                        f"{self.card_thumb_j1_hold_target:.4f}"
+                        if finger == CARD_THUMB_ID
+                        else ""
+                    )
+                )
+
+        self.card_stall_max_motion_m = max(
+            self.card_floor_motion_m.values(),
+            default=0.0,
+        )
+        self.card_stable_elapsed_sec = min(
+            self.card_floor_stable_elapsed_sec.values(),
+            default=0.0,
+        )
+        return bool(self.card_floor_contact_detected) and all(
+            self.card_floor_contact_detected.get(finger, False)
+            for finger in tip_positions
+        )
+
+    def _card_tips_stalled(
+        self,
+        tip_positions: Dict[int, np.ndarray],
+        now: float,
+        duration: float,
+    ) -> bool:
+        threshold = float(self.cfg.card_tip_stall_threshold_m)
+        if set(self.card_stall_reference_positions) != set(tip_positions):
+            self._set_card_phase(self.card_phase, now, tip_positions)
+            return False
+
+        motions = [
+            float(
+                np.linalg.norm(
+                    np.asarray(position, dtype=np.float64)
+                    - self.card_stall_reference_positions[finger]
+                )
+            )
+            for finger, position in tip_positions.items()
+        ]
+        self.card_stall_max_motion_m = max(motions, default=0.0)
+        moved = self.card_stall_max_motion_m > threshold
+        if moved:
+            self.card_stall_reference_positions = _copy_finger_vectors(
+                tip_positions
+            )
+            self.card_stall_since = float(now)
+            self.card_stable_elapsed_sec = 0.0
+            return False
+        self.card_stable_elapsed_sec = (
+            0.0
+            if self.card_stall_since is None
+            else max(0.0, float(now) - float(self.card_stall_since))
+        )
+        return self.card_stable_elapsed_sec >= float(duration)
+
+    def _card_force_result(
+        self,
+        tip_positions: Dict[int, np.ndarray],
+        forces: Dict[int, np.ndarray],
+    ) -> GraspPolicyResult:
+        forces = _copy_finger_vectors(forces)
+        tip_positions = _copy_finger_vectors(tip_positions)
+        zero_forces = {
+            finger: np.zeros(3, dtype=np.float64)
+            for finger in forces
+        }
+        points = np.stack(list(tip_positions.values()))
+        cg = np.mean(points, axis=0)
+        return GraspPolicyResult(
+            tau=self.policy.calc_tau_from_total_forces(self.hand_q, forces),
+            alpha={
+                finger: float(np.linalg.norm(force))
+                for finger, force in forces.items()
+            },
+            cg=cg.copy(),
+            cv=cg.copy(),
+            fingertip_positions=tip_positions,
+            grasp_forces=_copy_finger_vectors(forces),
+            rotation_forces=_copy_finger_vectors(zero_forces),
+            center_hold_forces=_copy_finger_vectors(zero_forces),
+            collision_forces=_copy_finger_vectors(zero_forces),
+            total_forces=_copy_finger_vectors(forces),
+        )
+
+    def _abort_card_grasp(self, now: float, reason: str) -> None:
+        self._log(f"[CARD] stopped: {reason}")
+        self.cancel_card_grasp()
+        self.active_finger_count = 0
+        self.state = "PRE_GRASP_POSE"
+        self.state_start = float(now)
+        self._reset_inactive_collision_avoidance()
+
+    def _start_card_grasp(self, now: float) -> bool:
+        if self.state != "PRE_GRASP_POSE" or self.pose_type != 4:
+            self._log(
+                "[CARD] ignored: grasp_type=7 requires CARD_PRE_GRASP_POSE "
+                f"(state={self.state}, pose_type={self.pose_type})"
+            )
+            return False
+
+        values = (
+            self.cfg.card_floor_force_n,
+            self.cfg.card_floor_hold_force_n,
+            self.cfg.card_pinch_force_n,
+            self.cfg.card_pinch_z_kp,
+            self.cfg.card_pinch_z_force_limit_n,
+            self.cfg.card_index_tip_target_deg,
+            self.cfg.card_index_tip_kp,
+            self.cfg.card_index_tip_kd,
+            self.cfg.card_index_tip_tau_limit,
+            self.cfg.card_tip_stall_threshold_m,
+            self.cfg.card_floor_stall_sec,
+            self.cfg.card_pinch_stall_sec,
+            self.cfg.card_thumb_j1_hold_kp,
+            self.cfg.card_thumb_j1_hold_kd,
+            self.cfg.card_thumb_j1_hold_tau_limit,
+            self.cfg.card_floor_timeout_sec,
+            self.cfg.card_pinch_timeout_sec,
+            self.cfg.card_joint_state_timeout_sec,
+        )
+        if not all(np.isfinite(value) and value > 0.0 for value in values):
+            self._log("[CARD] ignored: every CARD gain/limit must be finite and > 0")
+            return False
+        if self.cfg.card_index_tip_target_deg >= 180.0:
+            self._log("[CARD] ignored: index tip target must be < 180 deg")
+            return False
+        self.cancel_relative_rotation()
+        self.cancel_relative_translation()
+        self.cancel_card_grasp()
+        self._reset_regular_force_balance_state()
+        self._reset_envelop_grasp()
+        self._reset_inactive_collision_avoidance()
+        self._clear_transition_state()
+
+        self.use_fingers = [CARD_THUMB_ID, CARD_INDEX_ID]
+        self.policy = GraspPolicy(self.use_fingers, self.cfg)
+        self.active_finger_count = 7
+        self.state = "CARD_GRASP"
+        self.state_start = float(now)
+        tips = {
+            finger: tip_position(self.hand_q, finger)
+            for finger in self.use_fingers
+        }
+        self._set_card_phase("card_floor_contact", now, tips)
+        self._log(
+            "[COMMAND] grasp_type=7 -> CARD_GRASP, phase=card_floor_contact"
+        )
+        return True
+
+    def _card_thumb_j1_hold_pd(self, qdot: np.ndarray) -> tuple[float, float]:
+        if self.card_thumb_j1_hold_target is None:
+            return 0.0, 0.0
+        thumb_j1 = FINGER_JOINT_INDEX[CARD_THUMB_ID][0]
+        tau, error = pose_pd(
+            [self.card_thumb_j1_hold_target],
+            [self.hand_q[thumb_j1]],
+            [qdot[thumb_j1]],
+            kp=self.cfg.card_thumb_j1_hold_kp,
+            kd=self.cfg.card_thumb_j1_hold_kd,
+            limit=self.cfg.card_thumb_j1_hold_tau_limit,
+        )
+        self.card_thumb_j1_hold_error_rad = float(error[0])
+        self.card_thumb_j1_hold_tau = float(tau[0])
+        return float(tau[0]), float(error[0])
+
+    def _calc_card_grasp(
+        self,
+        qdot: np.ndarray,
+        now: float,
+    ):
+        qdot = np.asarray(qdot, dtype=np.float64)
+        tip_fingers = [CARD_THUMB_ID, CARD_INDEX_ID]
+        tip_positions = {
+            finger: tip_position(self.hand_q, finger)
+            for finger in tip_fingers
+        }
+        phase_started_at = self.card_phase_started_at
+        if phase_started_at is None:
+            self._abort_card_grasp(now, "missing phase start time")
+            zero = {finger: np.zeros(3) for finger in self.use_fingers}
+            return self._card_force_result(tip_positions, zero), np.zeros(
+                JOINT_COUNT
+            ), np.zeros(JOINT_COUNT)
+
+        if self.card_phase not in {
+            "card_floor_contact",
+            "card_pinch",
+            "card_index_tip_flex",
+        }:
+            self._abort_card_grasp(now, f"unknown phase {self.card_phase}")
+            zero = {finger: np.zeros(3) for finger in self.use_fingers}
+            return self._card_force_result(tip_positions, zero), np.zeros(
+                JOINT_COUNT
+            ), np.zeros(JOINT_COUNT)
+
+        timeout = {
+            "card_floor_contact": float(self.cfg.card_floor_timeout_sec),
+            "card_pinch": float(self.cfg.card_pinch_timeout_sec),
+        }.get(self.card_phase)
+        if (
+            timeout is not None
+            and float(now) - float(phase_started_at) >= timeout
+        ):
+            phase = self.card_phase
+            if phase == "card_floor_contact":
+                motion_mm = {
+                    finger: round(1000.0 * value, 3)
+                    for finger, value in self.card_floor_motion_m.items()
+                }
+                detail = (
+                    "contact="
+                    f"{self.card_floor_contact_detected}, "
+                    "stable_for_sec="
+                    f"{self.card_floor_stable_elapsed_sec}, "
+                    "stall_motion_mm="
+                    f"{motion_mm}, "
+                    "threshold_mm="
+                    f"{1000.0 * float(self.cfg.card_tip_stall_threshold_m):.3f}"
+                )
+            else:
+                detail = (
+                    f"stable_for_sec={self.card_stable_elapsed_sec:.3f}, "
+                    f"stall_motion_mm={1000.0 * self.card_stall_max_motion_m:.3f}, "
+                    "threshold_mm="
+                    f"{1000.0 * float(self.cfg.card_tip_stall_threshold_m):.3f}"
+                )
+            self._abort_card_grasp(now, f"{phase} timeout; {detail}")
+            zero = {finger: np.zeros(3) for finger in self.use_fingers}
+            return self._card_force_result(tip_positions, zero), np.zeros(
+                JOINT_COUNT
+            ), np.zeros(JOINT_COUNT)
+
+        world_down_in_hand = self.rotation_hand_to_world.T @ np.array(
+            [0.0, 0.0, -1.0],
+            dtype=np.float64,
+        )
+        if self.card_phase == "card_floor_contact":
+            forces = {
+                finger: float(self.cfg.card_floor_force_n) * world_down_in_hand
+                for finger in (CARD_THUMB_ID, CARD_INDEX_ID)
+            }
+            if self._card_floor_contacts_ready(tip_positions, now):
+                stable_for = dict(self.card_floor_stable_elapsed_sec)
+                motion_mm = {
+                    finger: round(1000.0 * motion, 3)
+                    for finger, motion in self.card_floor_motion_m.items()
+                }
+                self._set_card_phase(
+                    "card_pinch",
+                    now,
+                    {CARD_INDEX_ID: tip_positions[CARD_INDEX_ID]},
+                )
+                self._log(
+                    "[CARD] both floor contacts ready; "
+                    f"stable_for_sec={stable_for}, "
+                    f"stall_motion_mm={motion_mm}; phase=card_pinch"
+                )
+
+        else:  # card_pinch or card_index_tip_flex
+            if set(self.card_floor_contact_positions) != {
+                CARD_THUMB_ID,
+                CARD_INDEX_ID,
+            }:
+                self._abort_card_grasp(now, "missing floor contact positions")
+                zero = {finger: np.zeros(3) for finger in self.use_fingers}
+                return self._card_force_result(tip_positions, zero), np.zeros(
+                    JOINT_COUNT
+                ), np.zeros(JOINT_COUNT)
+            toward_thumb = (
+                tip_positions[CARD_THUMB_ID]
+                - tip_positions[CARD_INDEX_ID]
+            )
+            distance = float(np.linalg.norm(toward_thumb))
+            if distance <= 1e-9:
+                self._abort_card_grasp(now, "thumb/index direction is degenerate")
+                zero = {finger: np.zeros(3) for finger in self.use_fingers}
+                return self._card_force_result(tip_positions, zero), np.zeros(
+                    JOINT_COUNT
+                ), np.zeros(JOINT_COUNT)
+            toward_thumb /= distance
+            toward_thumb_world = self.rotation_hand_to_world @ toward_thumb
+            toward_thumb_world[2] = 0.0
+            horizontal_distance = float(np.linalg.norm(toward_thumb_world))
+            if horizontal_distance <= 1e-9:
+                self._abort_card_grasp(
+                    now,
+                    "thumb/index horizontal direction is degenerate",
+                )
+                zero = {finger: np.zeros(3) for finger in self.use_fingers}
+                return self._card_force_result(tip_positions, zero), np.zeros(
+                    JOINT_COUNT
+                ), np.zeros(JOINT_COUNT)
+            toward_thumb = (
+                self.rotation_hand_to_world.T
+                @ (toward_thumb_world / horizontal_distance)
+            )
+            vertical_forces = {}
+            for finger in (CARD_THUMB_ID, CARD_INDEX_ID):
+                contact_world_z = float(
+                    (
+                        self.rotation_hand_to_world
+                        @ self.card_floor_contact_positions[finger]
+                    )[2]
+                )
+                current_world_z = float(
+                    (self.rotation_hand_to_world @ tip_positions[finger])[2]
+                )
+                force_world_z = np.clip(
+                    -float(self.cfg.card_floor_hold_force_n)
+                    + float(self.cfg.card_pinch_z_kp)
+                    * (contact_world_z - current_world_z),
+                    -float(self.cfg.card_pinch_z_force_limit_n),
+                    0.0,
+                )
+                vertical_forces[finger] = (
+                    self.rotation_hand_to_world.T
+                    @ np.array([0.0, 0.0, force_world_z])
+                )
+            forces = {
+                CARD_THUMB_ID: vertical_forces[CARD_THUMB_ID],
+                CARD_INDEX_ID: (
+                    vertical_forces[CARD_INDEX_ID]
+                    + float(self.cfg.card_pinch_force_n) * toward_thumb
+                ),
+            }
+            if (
+                self.card_phase == "card_pinch"
+                and self._card_tips_stalled(
+                    {CARD_INDEX_ID: tip_positions[CARD_INDEX_ID]},
+                    now,
+                    self.cfg.card_pinch_stall_sec,
+                )
+            ):
+                self._log(
+                    "[CARD] pinch contact detected; "
+                    f"stable_for_sec={self.card_stable_elapsed_sec:.3f}, "
+                    "stall_motion_mm="
+                    f"{1000.0 * self.card_stall_max_motion_m:.3f}; "
+                    "phase=card_index_tip_flex"
+                )
+                index_hold_joints = np.asarray(
+                    FINGER_JOINT_INDEX[CARD_INDEX_ID][:-1],
+                    dtype=int,
+                )
+                self.card_index_flex_hold_target = self.hand_q[
+                    index_hold_joints
+                ].copy()
+                self._set_card_phase("card_index_tip_flex", now)
+
+        result = self._card_force_result(tip_positions, forces)
+        inactive_pd = self._inactive_pre_grasp_pd(
+            [CARD_THUMB_ID, CARD_INDEX_ID],
+            qdot,
+            collision_avoidance_enabled=False,
+        )
+        err = np.zeros(JOINT_COUNT, dtype=np.float64)
+        if self.card_phase == "card_pinch":
+            index_flex_joints = np.asarray(
+                FINGER_JOINT_INDEX[CARD_INDEX_ID][1:],
+                dtype=int,
+            )
+            index_tip_joint = index_flex_joints[-1]
+            tip_tau, tip_error = pose_pd(
+                [float(np.sum(HAND_CARD_PRE_GRASP_POSE[index_flex_joints]))],
+                [float(np.sum(self.hand_q[index_flex_joints]))],
+                [float(np.sum(qdot[index_flex_joints]))],
+                kp=self.cfg.pose_kp,
+                kd=self.cfg.pose_kd,
+                limit=self.cfg.pose_pd_limit,
+            )
+            inactive_pd[index_tip_joint] += tip_tau[0]
+            err[index_tip_joint] = tip_error[0]
+        if self.card_phase == "card_index_tip_flex":
+            if self.card_index_flex_hold_target is None:
+                self._abort_card_grasp(now, "missing index flex hold target")
+                return result, np.zeros(JOINT_COUNT), err
+            index_joints = np.asarray(
+                FINGER_JOINT_INDEX[CARD_INDEX_ID],
+                dtype=int,
+            )
+            index_hold_joints = index_joints[:-1]
+            hold_tau, hold_error = pose_pd(
+                self.card_index_flex_hold_target,
+                self.hand_q[index_hold_joints],
+                qdot[index_hold_joints],
+                kp=self.cfg.pose_kp,
+                kd=self.cfg.pose_kd,
+                limit=self.cfg.pose_pd_limit,
+            )
+            index_tip_joint = index_joints[-1]
+            tip_tau, tip_error = pose_pd(
+                [np.deg2rad(float(self.cfg.card_index_tip_target_deg))],
+                [self.hand_q[index_tip_joint]],
+                [qdot[index_tip_joint]],
+                kp=self.cfg.card_index_tip_kp,
+                kd=self.cfg.card_index_tip_kd,
+                limit=self.cfg.card_index_tip_tau_limit,
+            )
+            result.tau[index_hold_joints] += hold_tau
+            result.tau[index_tip_joint] += tip_tau[0]
+            result.tau = self._clip_regular_grasp_tau(result.tau)
+            err[index_hold_joints] = hold_error
+            err[index_tip_joint] = tip_error[0]
+        thumb_j1 = FINGER_JOINT_INDEX[CARD_THUMB_ID][0]
+        hold_tau, hold_error = self._card_thumb_j1_hold_pd(qdot)
+        inactive_pd[thumb_j1] += hold_tau
+        err[thumb_j1] = hold_error
+        return result, inactive_pd, err
+
     def sync_joint_state(self, q: np.ndarray) -> None:
         q = np.asarray(q, dtype=np.float64)
         if q.shape != (JOINT_COUNT,):
@@ -1609,11 +2115,11 @@ class GraspController:
     def _apply_pose_type_command(self, pose_type, now):
         self.cancel_relative_rotation()
         self.cancel_relative_translation()
+        self.cancel_card_grasp()
         self._reset_regular_force_balance_state()
         self.active_finger_count = 0
         self._clear_transition_state()
         self._reset_envelop_grasp()
-        self._reset_pinky_special_grasp()
 
         self.pose_type = pose_type
         if pose_type == 1:
@@ -1623,7 +2129,11 @@ class GraspController:
         else:
             self.pre_grasp_pose_type = pose_type
             state = "PRE_GRASP_POSE"
-            label = "default pre-grasp" if pose_type == 2 else "compact pre-grasp"
+            label = {
+                2: "default pre-grasp",
+                3: "compact pre-grasp",
+                4: "card pre-grasp",
+            }[pose_type]
 
         self._log(f"[POSE_TYPE] pose_type={pose_type} -> {label}")
         return state, now, 0.0
@@ -1631,302 +2141,197 @@ class GraspController:
     def _reset_inactive_collision_avoidance(self):
         self.inactive_collision_avoidance_offsets_rad[:] = 0.0
         self.inactive_collision_avoidance_active = [False] * 5
-        self.inactive_collision_avoidance_direction[:] = 0.0
+        self.inactive_collision_follow_source[:] = 0
+        self.inactive_collision_follow_offset_rad[:] = 0.0
+        self.inactive_collision_approach_direction[:] = 0.0
+        self.inactive_collision_previous_joint_positions = None
         self.inactive_collision_min_clearance_m = -1.0
 
-    @staticmethod
-    def _inactive_clearance_to_avoidance_sources(
-        inactive_segments,
-        inactive_finger,
-        source_fingers,
-        segment_cache,
-        capsule_radius,
-    ):
-        neighbors = [
-            int(finger)
-            for finger in source_fingers
-            if abs(int(finger) - int(inactive_finger)) == 1
-        ]
-        if not neighbors:
-            return float("inf")
-
-        return min(
-            capsule_segments_clearance(
-                inactive_segments,
-                segment_cache[active_finger],
-                capsule_radius,
-            )
-            for active_finger in neighbors
-        )
-
     def _update_inactive_collision_avoidance(self, active_fingers, qdot):
-        """Update rate-limited joint-1 offsets with chained avoidance."""
+        """Make an inactive finger follow a colliding adjacent joint."""
 
-        active_set = {int(finger) for finger in active_fingers}
-        # An inactive finger that is moving away from an active finger becomes
-        # an avoidance source for the next inactive neighbor. This propagates
-        # middle -> ring -> pinky clearance without making fingers spread in
-        # their undisturbed pre-grasp pose.
-        avoidance_sources = set(active_set)
+        # ponytail: joint-only heuristic; restore geometry checks if
+        # unmonitored links or grasped-object collisions become relevant.
         if not bool(self.cfg.inactive_collision_avoidance_enable):
             self._reset_inactive_collision_avoidance()
             return self.inactive_collision_avoidance_offsets_rad.copy()
 
-        prediction_sec = max(
+        active_set = {int(finger) for finger in active_fingers}
+        qdot = np.asarray(qdot, dtype=np.float64)
+        tolerance = max(
             0.0,
-            float(self.cfg.inactive_collision_prediction_sec),
+            float(self.cfg.inactive_collision_joint_match_tolerance_rad),
         )
-        predicted_q = self.hand_q + prediction_sec * np.asarray(
-            qdot,
-            dtype=np.float64,
-        )
-        radius = max(
+        release_margin = max(
             0.0,
-            float(self.cfg.inactive_collision_capsule_radius_m),
+            float(self.cfg.inactive_collision_joint_release_margin_rad),
         )
-        first_segment = int(
-            np.clip(self.cfg.inactive_collision_first_segment, 0, 3)
-        )
-        current_segment_cache = {
-            finger: finger_capsule_segments(self.hand_q, finger)[
-                first_segment:
-            ]
-            for finger in FINGER_JOINT_INDEX
+        pre_grasp_pose = self._current_pre_grasp_pose()
+        joint_indices = {
+            finger: int(
+                FINGER_JOINT_INDEX[finger][
+                    FINGER_AVOIDANCE_JOINT_LOCAL_INDEX[finger]
+                ]
+            )
+            for finger in INACTIVE_COLLISION_CHAIN
         }
-        predicted_segment_cache = {
-            finger: finger_capsule_segments(predicted_q, finger)[
-                first_segment:
-            ]
-            for finger in FINGER_JOINT_INDEX
+        current = {
+            finger: float(self.hand_q[joint_indices[finger]])
+            for finger in INACTIVE_COLLISION_CHAIN
         }
-        activation = max(
-            0.0,
-            float(self.cfg.inactive_collision_activation_clearance_m),
-        )
-        critical = min(
-            float(self.cfg.inactive_collision_critical_clearance_m),
-            activation - 1e-6,
-        )
-        release = activation + max(
-            0.0,
-            float(self.cfg.inactive_collision_release_hysteresis_m),
-        )
-        maximum_offset = max(
-            0.0,
-            float(self.cfg.inactive_collision_max_joint1_offset_rad),
-        )
-        gradient_eps = max(
-            1e-6,
-            float(self.cfg.inactive_collision_gradient_eps_rad),
-        )
-        minimum_delta = max(
-            0.0,
-            float(self.cfg.inactive_collision_direction_min_delta_m),
-        )
-        rate = max(
-            0.0,
-            float(self.cfg.inactive_collision_joint1_target_rate_radps),
-        )
-        maximum_step = rate * max(float(self.cfg.dt), 1e-6)
+        previous = self.inactive_collision_previous_joint_positions
+
+        for finger in INACTIVE_COLLISION_CHAIN:
+            state_index = finger - 1
+            if finger in active_set:
+                self.inactive_collision_follow_source[state_index] = 0
+                self.inactive_collision_follow_offset_rad[state_index] = 0.0
+                self.inactive_collision_approach_direction[state_index] = 0.0
+
+        # Release as soon as the source is safely away. The ordinary inactive-
+        # finger PD completes any remaining return to the waiting pose.
+        for finger in INACTIVE_COLLISION_CHAIN:
+            state_index = finger - 1
+            source = int(self.inactive_collision_follow_source[state_index])
+            if source == 0:
+                continue
+            waiting = float(pre_grasp_pose[joint_indices[finger]])
+            direction = float(
+                self.inactive_collision_approach_direction[state_index]
+            )
+            source_target = (
+                current[source]
+                + self.inactive_collision_follow_offset_rad[state_index]
+            )
+            source_idle = (
+                source not in active_set
+                and self.inactive_collision_follow_source[source - 1] == 0
+            )
+            if (
+                direction * (source_target - waiting) <= -release_margin
+                or source_idle
+            ):
+                self.inactive_collision_follow_source[state_index] = 0
+                self.inactive_collision_follow_offset_rad[state_index] = 0.0
+                self.inactive_collision_approach_direction[state_index] = 0.0
+
+        if previous is not None:
+            for left, right in zip(
+                INACTIVE_COLLISION_CHAIN[:-1],
+                INACTIVE_COLLISION_CHAIN[1:],
+            ):
+                propagated = False
+                left_source = int(
+                    self.inactive_collision_follow_source[left - 1]
+                )
+                right_source = int(
+                    self.inactive_collision_follow_source[right - 1]
+                )
+                if (
+                    left in active_set
+                    and right not in active_set
+                    and right_source == 0
+                ):
+                    follower, source = right, left
+                elif (
+                    right in active_set
+                    and left not in active_set
+                    and left_source == 0
+                ):
+                    follower, source = left, right
+                elif left not in active_set and right not in active_set:
+                    if left_source != 0 and right_source == 0:
+                        if left_source == right:
+                            continue
+                        follower, source = right, left
+                        propagated = True
+                    elif right_source != 0 and left_source == 0:
+                        if right_source == left:
+                            continue
+                        follower, source = left, right
+                        propagated = True
+                    else:
+                        continue
+                else:
+                    continue
+
+                gap = current[follower] - current[source]
+                if propagated:
+                    direction = float(
+                        self.inactive_collision_approach_direction[source - 1]
+                    )
+                else:
+                    previous_gap = previous[follower] - previous[source]
+                    crossed = gap * previous_gap <= 0.0 and abs(
+                        gap - previous_gap
+                    ) > 1e-9
+                    approaching = abs(gap) < abs(previous_gap) - 1e-9
+                    if not (
+                        abs(gap) <= tolerance
+                        and (approaching or crossed)
+                    ):
+                        continue
+
+                    source_motion = current[source] - previous[source]
+                    if abs(source_motion) <= 1e-9:
+                        source_motion = float(qdot[joint_indices[source]])
+                    direction = float(np.sign(source_motion))
+                if direction == 0.0:
+                    continue
+                self.inactive_collision_follow_source[follower - 1] = source
+                self.inactive_collision_follow_offset_rad[follower - 1] = gap
+                self.inactive_collision_approach_direction[follower - 1] = direction
+
+        self.inactive_collision_avoidance_offsets_rad[:] = 0.0
+        self.inactive_collision_avoidance_active = [False] * 5
         margin = max(
             0.0,
             float(self.cfg.inactive_collision_joint_limit_margin_rad),
         )
-        pre_grasp_pose = self._current_pre_grasp_pose()
-        observed_clearances = []
+        command_targets = {}
 
-        for finger in FINGER_JOINT_INDEX:
-            state_index = int(finger) - 1
-            if finger in active_set or finger == 1:
-                self.inactive_collision_avoidance_offsets_rad[state_index] = 0.0
-                self.inactive_collision_avoidance_active[state_index] = False
-                self.inactive_collision_avoidance_direction[state_index] = 0.0
-                continue
-
-            current_clearance = self._inactive_clearance_to_avoidance_sources(
-                current_segment_cache[finger],
-                finger,
-                avoidance_sources,
-                current_segment_cache,
-                radius,
+        def command_target(finger):
+            if finger in command_targets:
+                return command_targets[finger]
+            state_index = finger - 1
+            source = int(self.inactive_collision_follow_source[state_index])
+            if source == 0:
+                command_targets[finger] = current[finger]
+                return current[finger]
+            lower, upper = FINGER_AVOIDANCE_JOINT_LIMITS[finger]
+            usable_margin = min(margin, 0.49 * (upper - lower))
+            waiting = float(pre_grasp_pose[joint_indices[finger]])
+            source_target = (
+                command_target(source)
+                + self.inactive_collision_follow_offset_rad[state_index]
             )
-            predicted_clearance = (
-                self._inactive_clearance_to_avoidance_sources(
-                    predicted_segment_cache[finger],
-                    finger,
-                    avoidance_sources,
-                    predicted_segment_cache,
-                    radius,
+            direction = float(
+                self.inactive_collision_approach_direction[state_index]
             )
-            )
-            clearance = min(current_clearance, predicted_clearance)
-            if np.isfinite(clearance):
-                observed_clearances.append(float(clearance))
-            else:
-                self.inactive_collision_avoidance_active[state_index] = False
-
-            if (
-                not self.inactive_collision_avoidance_active[state_index]
-                and clearance < activation
-            ):
-                self.inactive_collision_avoidance_active[state_index] = True
-            elif (
-                self.inactive_collision_avoidance_active[state_index]
-                and clearance >= release
-            ):
-                self.inactive_collision_avoidance_active[state_index] = False
-
-            desired_offset = 0.0
-            if self.inactive_collision_avoidance_active[state_index]:
-                proximity = float(
-                    np.clip(
-                        (release - clearance) / max(release - critical, 1e-6),
-                        0.0,
-                        1.0,
-                    )
-                )
-                proximity = proximity * proximity * (3.0 - 2.0 * proximity)
-                direction_q = (
-                    self.hand_q
-                    if current_clearance <= predicted_clearance
-                    else predicted_q
-                ).copy()
-                direction_segment_cache = (
-                    current_segment_cache
-                    if current_clearance <= predicted_clearance
-                    else predicted_segment_cache
-                )
-                local_joint_index = int(
-                    FINGER_AVOIDANCE_JOINT_LOCAL_INDEX[finger]
-                )
-                joint_index = int(
-                    FINGER_JOINT_INDEX[finger][local_joint_index]
-                )
-                lower, upper = FINGER_AVOIDANCE_JOINT_LIMITS[finger]
-                usable_margin = min(margin, 0.49 * (upper - lower))
-                lower += usable_margin
-                upper -= usable_margin
-
-                plus_q = direction_q.copy()
-                minus_q = direction_q.copy()
-                plus_q[joint_index] = min(
-                    upper,
-                    plus_q[joint_index] + gradient_eps,
-                )
-                minus_q[joint_index] = max(
-                    lower,
-                    minus_q[joint_index] - gradient_eps,
-                )
-                plus_clearance = (
-                    self._inactive_clearance_to_avoidance_sources(
-                        finger_capsule_segments(plus_q, finger)[first_segment:],
-                        finger,
-                        avoidance_sources,
-                        direction_segment_cache,
-                        radius,
-                )
-                )
-                minus_clearance = (
-                    self._inactive_clearance_to_avoidance_sources(
-                        finger_capsule_segments(minus_q, finger)[first_segment:],
-                        finger,
-                        avoidance_sources,
-                        direction_segment_cache,
-                    radius,
-                )
-                )
-                clearance_delta = plus_clearance - minus_clearance
-                if abs(clearance_delta) >= minimum_delta:
-                    self.inactive_collision_avoidance_direction[state_index] = (
-                        1.0 if clearance_delta > 0.0 else -1.0
-                    )
-
-                desired_offset = (
-                    self.inactive_collision_avoidance_direction[state_index]
-                    * maximum_offset
-                    * proximity
-                )
-                pre_grasp_joint = float(pre_grasp_pose[joint_index])
-                desired_target = float(
-                    np.clip(
-                        pre_grasp_joint + desired_offset,
-                        lower,
-                        upper,
-                    )
-                )
-                desired_offset = desired_target - pre_grasp_joint
-
-            previous_offset = float(
-                self.inactive_collision_avoidance_offsets_rad[state_index]
-            )
-            offset_step = float(
+            if direction * (source_target - waiting) < 0.0:
+                source_target = waiting
+            command_targets[finger] = float(
                 np.clip(
-                    desired_offset - previous_offset,
-                    -maximum_step,
-                    maximum_step,
+                    source_target,
+                    lower + usable_margin,
+                    upper - usable_margin,
                 )
             )
+            return command_targets[finger]
+
+        for finger in INACTIVE_COLLISION_CHAIN:
+            state_index = finger - 1
+            if self.inactive_collision_follow_source[state_index] == 0:
+                continue
+            target = command_target(finger)
+            waiting = float(pre_grasp_pose[joint_indices[finger]])
             self.inactive_collision_avoidance_offsets_rad[state_index] = (
-                previous_offset + offset_step
+                target - waiting
             )
-            offset = float(
-                self.inactive_collision_avoidance_offsets_rad[state_index]
-            )
-            if (
-                not self.inactive_collision_avoidance_active[state_index]
-                and abs(offset) <= 1e-12
-            ):
-                self.inactive_collision_avoidance_direction[state_index] = 0.0
+            self.inactive_collision_avoidance_active[state_index] = True
 
-            if (
-                self.inactive_collision_avoidance_active[state_index]
-                or abs(offset) > 1e-12
-            ):
-                # Let the following inactive finger see both the measured
-                # velocity prediction and where this avoidance command can
-                # move the source finger during the same preview horizon.
-                # Keeping both capsule sets makes the check conservative.
-                local_joint_index = int(
-                    FINGER_AVOIDANCE_JOINT_LOCAL_INDEX[finger]
-                )
-                joint_index = int(
-                    FINGER_JOINT_INDEX[finger][local_joint_index]
-                )
-                lower, upper = FINGER_AVOIDANCE_JOINT_LIMITS[finger]
-                usable_margin = min(margin, 0.49 * (upper - lower))
-                lower += usable_margin
-                upper -= usable_margin
-                preview_target = float(
-                    np.clip(
-                        pre_grasp_pose[joint_index] + desired_offset,
-                        lower,
-                        upper,
-                    )
-                )
-                preview_q = predicted_q.copy()
-                preview_step = rate * prediction_sec
-                preview_q[joint_index] = float(
-                    self.hand_q[joint_index]
-                    + np.clip(
-                        preview_target - self.hand_q[joint_index],
-                        -preview_step,
-                        preview_step,
-                    )
-                )
-                predicted_segment_cache[finger] = np.concatenate(
-                    (
-                        predicted_segment_cache[finger],
-                        finger_capsule_segments(preview_q, finger)[
-                            first_segment:
-                        ],
-                    ),
-                    axis=0,
-                )
-                avoidance_sources.add(int(finger))
-
-        self.inactive_collision_min_clearance_m = (
-            min(observed_clearances) if observed_clearances else -1.0
-        )
+        self.inactive_collision_previous_joint_positions = current
+        self.inactive_collision_min_clearance_m = -1.0
         return self.inactive_collision_avoidance_offsets_rad.copy()
 
     def _inactive_pre_grasp_pd(
@@ -1954,22 +2359,13 @@ class GraspController:
                 continue
 
             idxs = np.asarray(idxs, dtype=int)
-            if (
-                finger == PINKY_FINGER_ID
-                and self.pinky_special_hold_pose is not None
-            ):
-                target = self.pinky_special_hold_pose
-            else:
-                # Every unused finger waits at the complete selected
-                # pre-grasp pose. It is therefore ready to join the grasp
-                # without a separate PD preparation stage.
-                target = pre_grasp_pose[idxs].copy()
-                avoidance_joint = int(
-                    FINGER_AVOIDANCE_JOINT_LOCAL_INDEX[finger]
-                )
-                target[avoidance_joint] += avoidance_offsets[
-                    int(finger) - 1
-                ]
+            # Every unused finger waits at the complete selected pre-grasp
+            # pose and can join the grasp without a preparation stage.
+            target = pre_grasp_pose[idxs].copy()
+            avoidance_joint = int(
+                FINGER_AVOIDANCE_JOINT_LOCAL_INDEX[finger]
+            )
+            target[avoidance_joint] += avoidance_offsets[int(finger) - 1]
 
             kp = np.full(len(idxs), self.cfg.pose_kp, dtype=np.float64)
             kd = np.full(len(idxs), self.cfg.pose_kd, dtype=np.float64)
@@ -1981,7 +2377,6 @@ class GraspController:
             avoidance_state_index = int(finger) - 1
             avoidance_moving = (
                 collision_avoidance_enabled
-                and self.pinky_special_hold_pose is None
                 and (
                     self.inactive_collision_avoidance_active[
                         avoidance_state_index
@@ -2015,6 +2410,51 @@ class GraspController:
                 kd=kd,
                 limit=limit,
             )
+            if avoidance_moving:
+                root_source = int(
+                    self.inactive_collision_follow_source[
+                        avoidance_state_index
+                    ]
+                )
+                while self.inactive_collision_follow_source[root_source - 1]:
+                    root_source = int(
+                        self.inactive_collision_follow_source[root_source - 1]
+                    )
+                root_joint = int(
+                    FINGER_JOINT_INDEX[root_source][
+                        FINGER_AVOIDANCE_JOINT_LOCAL_INDEX[root_source]
+                    ]
+                )
+                follower_velocity = qdot[idxs[avoidance_joint]]
+                direction = float(
+                    self.inactive_collision_approach_direction[
+                        avoidance_state_index
+                    ]
+                )
+                lower, upper = FINGER_AVOIDANCE_JOINT_LIMITS[finger]
+                margin = max(
+                    0.0,
+                    float(self.cfg.inactive_collision_joint_limit_margin_rad),
+                )
+                usable_margin = min(margin, 0.49 * (upper - lower))
+                at_limit = (
+                    target[avoidance_joint] <= lower + usable_margin + 1e-9
+                    or target[avoidance_joint] >= upper - usable_margin - 1e-9
+                )
+                if direction * qdot[root_joint] > 0.0 and not at_limit:
+                    relative_velocity = qdot[root_joint] - follower_velocity
+                else:
+                    relative_velocity = -follower_velocity
+                pd[avoidance_joint] = np.clip(
+                    kp[avoidance_joint]
+                    * (
+                        target[avoidance_joint]
+                        - self.hand_q[idxs[avoidance_joint]]
+                    )
+                    + kd[avoidance_joint] * relative_velocity,
+                    -limit[avoidance_joint],
+                    limit[avoidance_joint],
+                )
             inactive_pd[idxs] = pd
 
         return inactive_pd
@@ -2032,535 +2472,8 @@ class GraspController:
         self.envelop_last_joint_stall_since = None
         self.envelop_last_info = {}
 
-    def _reset_grasp_type7_rotation_state(self):
-        self.grasp_type7_phase = "idle"
-        self.grasp_type7_stable_since = None
-        self.grasp_type7_rotation_started_at = None
-        self.grasp_type7_done_since = None
-        self.grasp_type7_rotation_done = False
-        self.grasp_type7_last_qdot_max = 0.0
-        self.grasp_type7_transition_finger_id = None
-        self.grasp_type7_transition_pd_target = None
-        self.grasp_type7_transition_pd_err_max = 0.0
-        self.grasp_type7_transition_attach_tau_max = 0.0
-        self.grasp_type7_transition_attach_started_at = None
-        self.grasp_type7_transition_attach_done_since = None
-        self.grasp_type7_index_pd_target = None
-        self.grasp_type7_index_pd_err_max = 0.0
-        self.grasp_type7_index_attach_tau_max = 0.0
-        self.grasp_type7_middle_pd_err_max = 0.0
-        self.grasp_type7_middle_attach_tau_max = 0.0
-        self.grasp_type7_thumb_pd_err_max = 0.0
-        self.grasp_type7_thumb_attach_tau_max = 0.0
-        self.grasp_type7_ring_pd_err_max = 0.0
-        self.grasp_type7_ring_attach_tau_max = 0.0
-        self.grasp_type7_cycle_count = 0
-        self.grasp_type7_rotation_cg_ref = None
-
-    def _start_grasp_type7_rotation_state(self):
-        self.grasp_type7_phase = "grasp_stabilizing"
-        self.grasp_type7_stable_since = None
-        self.grasp_type7_rotation_started_at = None
-        self.grasp_type7_done_since = None
-        self.grasp_type7_rotation_done = False
-        self.grasp_type7_last_qdot_max = 0.0
-        self.grasp_type7_transition_finger_id = None
-        self.grasp_type7_transition_pd_target = None
-        self.grasp_type7_transition_pd_err_max = 0.0
-        self.grasp_type7_transition_attach_tau_max = 0.0
-        self.grasp_type7_transition_attach_started_at = None
-        self.grasp_type7_transition_attach_done_since = None
-        self.grasp_type7_index_pd_target = None
-        self.grasp_type7_index_pd_err_max = 0.0
-        self.grasp_type7_index_attach_tau_max = 0.0
-        self.grasp_type7_middle_pd_err_max = 0.0
-        self.grasp_type7_middle_attach_tau_max = 0.0
-        self.grasp_type7_thumb_pd_err_max = 0.0
-        self.grasp_type7_thumb_attach_tau_max = 0.0
-        self.grasp_type7_ring_pd_err_max = 0.0
-        self.grasp_type7_ring_attach_tau_max = 0.0
-        self.grasp_type7_cycle_count = 0
-        self.grasp_type7_rotation_cg_ref = None
-
-    def _active_finger_joint_indices(self):
-        idxs = []
-        for finger in self.use_fingers:
-            idxs.extend(FINGER_JOINT_INDEX[finger])
-        return np.asarray(idxs, dtype=int)
-
-    def _active_finger_qdot_max(self, qdot):
-        idxs = self._active_finger_joint_indices()
-        if idxs.size == 0:
-            return 0.0
-        return float(np.max(np.abs(qdot[idxs])))
-
-    def _set_grasp_type7_active_fingers(self, fingers):
-        self.use_fingers = list(fingers)
-        self.policy = GraspPolicy(self.use_fingers, self.cfg)
-
-    def _grasp_type7_transition_name(self, finger):
-        return G7_TRANSITION_FINGER_NAMES.get(int(finger), f"finger{int(finger)}")
-
-    def _grasp_type7_joint1_phase_name(self, finger):
-        if int(finger) == G7_INDEX_TRANSITION_FINGER_ID:
-            return "index_joint1_to_45"
-        if int(finger) == G7_MIDDLE_TRANSITION_FINGER_ID:
-            return "middle_joint1_to_30"
-        if int(finger) == G7_THUMB_TRANSITION_FINGER_ID:
-            return "thumb_pose_0_140_0_0"
-        if int(finger) == G7_RING_TRANSITION_FINGER_ID:
-            return "ring_joint1_to_9"
-        return f"finger{int(finger)}_joint1_to_target"
-
-    def _grasp_type7_attach_phase_name(self, finger):
-        name = self._grasp_type7_transition_name(finger)
-        return f"{name}_attach_to_centroid"
-
-    def _grasp_type7_joint1_target_rad(self, finger):
-        if int(finger) == G7_INDEX_TRANSITION_FINGER_ID:
-            return float(self.cfg.grasp_type7_index_first_joint_target_rad)
-        if int(finger) == G7_MIDDLE_TRANSITION_FINGER_ID:
-            return float(self.cfg.grasp_type7_middle_first_joint_target_rad)
-        if int(finger) == G7_THUMB_TRANSITION_FINGER_ID:
-            return float(self.cfg.grasp_type7_thumb_joint1_target_rad)
-        if int(finger) == G7_RING_TRANSITION_FINGER_ID:
-            return float(self.cfg.grasp_type7_ring_first_joint_target_rad)
-        raise ValueError(f"Unsupported grasp_type7 transition finger: {finger}")
-
-    def _grasp_type7_attach_force(self, finger):
-        if int(finger) == G7_INDEX_TRANSITION_FINGER_ID:
-            return float(self.cfg.grasp_type7_index_attach_force)
-        if int(finger) == G7_MIDDLE_TRANSITION_FINGER_ID:
-            return float(self.cfg.grasp_type7_middle_attach_force)
-        if int(finger) == G7_THUMB_TRANSITION_FINGER_ID:
-            return float(self.cfg.grasp_type7_thumb_attach_force)
-        if int(finger) == G7_RING_TRANSITION_FINGER_ID:
-            return float(self.cfg.grasp_type7_ring_attach_force)
-        return float(self.cfg.grasp_type7_index_attach_force)
-
-    def _grasp_type7_attach_tau_limit(self, finger):
-        if int(finger) == G7_INDEX_TRANSITION_FINGER_ID:
-            return abs(float(self.cfg.grasp_type7_index_attach_tau_limit))
-        if int(finger) == G7_MIDDLE_TRANSITION_FINGER_ID:
-            return abs(float(self.cfg.grasp_type7_middle_attach_tau_limit))
-        if int(finger) == G7_THUMB_TRANSITION_FINGER_ID:
-            return abs(float(self.cfg.grasp_type7_thumb_attach_tau_limit))
-        if int(finger) == G7_RING_TRANSITION_FINGER_ID:
-            return abs(float(self.cfg.grasp_type7_ring_attach_tau_limit))
-        return abs(float(self.cfg.grasp_type7_index_attach_tau_limit))
-
-    def _grasp_type7_transition_target(self, finger):
-        finger = int(finger)
-        idxs = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
-        if finger == G7_THUMB_TRANSITION_FINGER_ID:
-            return np.array([
-                float(self.cfg.grasp_type7_thumb_joint1_target_rad),
-                float(self.cfg.grasp_type7_thumb_joint2_target_rad),
-                float(self.cfg.grasp_type7_thumb_joint3_target_rad),
-                float(self.cfg.grasp_type7_thumb_joint4_target_rad),
-            ], dtype=np.float64)
-
-        target = POSE_TYPE_TARGETS[2][idxs].copy()
-        target[0] = self._grasp_type7_joint1_target_rad(finger)
-        return target
-
-    def _start_grasp_type7_finger_joint1_transition(self, finger):
-        # Detachment scenario, first step: remove the transition finger from the
-        # active grasp set before moving it. The remaining contact spots define
-        # the new centroid and force distribution.
-        finger = int(finger)
-        remaining = [f for f in G7_BASE_GRASP_FINGERS if f != finger]
-        self._set_grasp_type7_active_fingers(remaining)
-
-        target = self._grasp_type7_transition_target(finger)
-        self.grasp_type7_transition_finger_id = finger
-        self.grasp_type7_transition_pd_target = target
-        self.grasp_type7_transition_pd_err_max = float("inf")
-        self.grasp_type7_transition_attach_tau_max = 0.0
-        self.grasp_type7_transition_attach_started_at = None
-        self.grasp_type7_transition_attach_done_since = None
-        self.grasp_type7_phase = self._grasp_type7_joint1_phase_name(finger)
-
-        name = self._grasp_type7_transition_name(finger)
-        self.grasp_type7_index_pd_target = target if finger == G7_INDEX_TRANSITION_FINGER_ID else None
-        if finger == G7_INDEX_TRANSITION_FINGER_ID:
-            self.grasp_type7_index_pd_err_max = float("inf")
-            self.grasp_type7_index_attach_tau_max = 0.0
-        if finger == G7_MIDDLE_TRANSITION_FINGER_ID:
-            self.grasp_type7_middle_pd_err_max = float("inf")
-            self.grasp_type7_middle_attach_tau_max = 0.0
-        if finger == G7_THUMB_TRANSITION_FINGER_ID:
-            self.grasp_type7_thumb_pd_err_max = float("inf")
-            self.grasp_type7_thumb_attach_tau_max = 0.0
-        if finger == G7_RING_TRANSITION_FINGER_ID:
-            self.grasp_type7_ring_pd_err_max = float("inf")
-            self.grasp_type7_ring_attach_tau_max = 0.0
-
-        self._log(
-            f"[GRASP_TYPE7] start {name}_joint1_transition "
-            f"active_fingers={self.use_fingers}, "
-            f"{name}_target_rad={np.round(target, 4).tolist()}, "
-            f"joint1_target_rad={target[0]:.4f}, "
-            f"tol_rad={self.cfg.grasp_type7_index_pd_tolerance_rad:.4f}"
-        )
-
-    def _start_grasp_type7_index_detach_pregrasp(self):
-        self._start_grasp_type7_finger_joint1_transition(G7_INDEX_TRANSITION_FINGER_ID)
-
-    def _start_grasp_type7_middle_detach_pregrasp(self):
-        self._start_grasp_type7_finger_joint1_transition(G7_MIDDLE_TRANSITION_FINGER_ID)
-
-    def _start_grasp_type7_thumb_detach_pregrasp(self):
-        self._start_grasp_type7_finger_joint1_transition(G7_THUMB_TRANSITION_FINGER_ID)
-
-    def _start_grasp_type7_ring_detach_pregrasp(self):
-        self._start_grasp_type7_finger_joint1_transition(G7_RING_TRANSITION_FINGER_ID)
-
-    def _start_grasp_type7_transition_attach_to_centroid(self, finger):
-        finger = int(finger)
-        self.grasp_type7_transition_finger_id = finger
-        self.grasp_type7_transition_pd_target = None
-        self.grasp_type7_transition_pd_err_max = 0.0
-        self.grasp_type7_transition_attach_tau_max = 0.0
-        self.grasp_type7_transition_attach_started_at = None
-        self.grasp_type7_transition_attach_done_since = None
-        self.grasp_type7_phase = self._grasp_type7_attach_phase_name(finger)
-
-        if finger == G7_INDEX_TRANSITION_FINGER_ID:
-            self.grasp_type7_index_pd_target = None
-            self.grasp_type7_index_pd_err_max = 0.0
-            self.grasp_type7_index_attach_tau_max = 0.0
-        if finger == G7_MIDDLE_TRANSITION_FINGER_ID:
-            self.grasp_type7_middle_pd_err_max = 0.0
-            self.grasp_type7_middle_attach_tau_max = 0.0
-        if finger == G7_THUMB_TRANSITION_FINGER_ID:
-            self.grasp_type7_thumb_pd_err_max = 0.0
-            self.grasp_type7_thumb_attach_tau_max = 0.0
-        if finger == G7_RING_TRANSITION_FINGER_ID:
-            self.grasp_type7_ring_pd_err_max = 0.0
-            self.grasp_type7_ring_attach_tau_max = 0.0
-
-        name = self._grasp_type7_transition_name(finger)
-        self._log(
-            f"[GRASP_TYPE7] {name}_joint1_transition done -> {name}_attach_to_centroid "
-            f"active_fingers={self.use_fingers}, "
-            f"attach_force={self._grasp_type7_attach_force(finger):.4f}, "
-            f"attach_tau_limit={self._grasp_type7_attach_tau_limit(finger):.4f}"
-        )
-
-    def _finish_grasp_type7_transition_cycle(self):
-        self._set_grasp_type7_active_fingers(G7_BASE_GRASP_FINGERS)
-        self.grasp_type7_transition_finger_id = None
-        self.grasp_type7_transition_pd_target = None
-        self.grasp_type7_transition_pd_err_max = 0.0
-        self.grasp_type7_transition_attach_tau_max = 0.0
-        self.grasp_type7_transition_attach_started_at = None
-        self.grasp_type7_transition_attach_done_since = None
-        self.grasp_type7_index_pd_target = None
-        self.grasp_type7_index_pd_err_max = 0.0
-        self.grasp_type7_index_attach_tau_max = 0.0
-        self.grasp_type7_middle_pd_err_max = 0.0
-        self.grasp_type7_middle_attach_tau_max = 0.0
-        self.grasp_type7_thumb_pd_err_max = 0.0
-        self.grasp_type7_thumb_attach_tau_max = 0.0
-        self.grasp_type7_ring_pd_err_max = 0.0
-        self.grasp_type7_ring_attach_tau_max = 0.0
-        self.grasp_type7_cycle_count += 1
-
-        if bool(self.cfg.grasp_type7_repeat_transition_cycle):
-            # One full index->middle->thumb->ring relocation cycle is complete.
-            # Re-enter the same rotation pipeline with the same rotation_theta_rad
-            # sign, so the object keeps rotating in the original direction.
-            self.grasp_type7_phase = "grasp_stabilizing"
-            self.grasp_type7_stable_since = None
-            self.grasp_type7_rotation_started_at = None
-            self.grasp_type7_done_since = None
-            self.grasp_type7_rotation_done = False
-            self.grasp_type7_rotation_cg_ref = None
-            self._log(
-                "[GRASP_TYPE7] transition cycle done -> repeat rotation "
-                f"cycle={self.grasp_type7_cycle_count}, "
-                f"active_fingers={self.use_fingers}, "
-                f"theta_rad={self.cfg.rotation_theta_rad:.6f}"
-            )
-            return
-
-        self.grasp_type7_phase = "transition_done"
-        self._log(
-            "[GRASP_TYPE7] transition cycle done -> transition_done "
-            f"cycle={self.grasp_type7_cycle_count}, "
-            f"active_fingers={self.use_fingers}"
-        )
-
-    def _is_grasp_type7_transition_phase(self):
-        return self.grasp_type7_phase in (
-            "index_detach_pregrasp",
-            "index_joint1_to_45",
-            "index_attach_to_centroid",
-            "middle_joint1_to_30",
-            "middle_attach_to_centroid",
-            "thumb_pose_0_140_0_0",
-            "thumb_attach_to_centroid",
-            "ring_joint1_to_9",
-            "ring_attach_to_centroid",
-        )
-
-    def _is_grasp_type7_joint1_pd_phase(self):
-        return self.grasp_type7_phase in (
-            "index_detach_pregrasp",
-            "index_joint1_to_45",
-            "middle_joint1_to_30",
-            "thumb_pose_0_140_0_0",
-            "ring_joint1_to_9",
-        )
-
-    def _is_grasp_type7_attach_phase(self):
-        return self.grasp_type7_phase in (
-            "index_attach_to_centroid",
-            "middle_attach_to_centroid",
-            "thumb_attach_to_centroid",
-            "ring_attach_to_centroid",
-        )
-
-    def _transition_finger_qdot_max(self, qdot, finger):
-        idxs = np.asarray(FINGER_JOINT_INDEX[int(finger)], dtype=int)
-        if idxs.size == 0:
-            return 0.0
-        return float(np.max(np.abs(qdot[idxs])))
-
-    def _calc_grasp_type7_transition_pd(self, qdot):
-        pd = np.zeros(JOINT_COUNT, dtype=np.float64)
-        if not self._is_grasp_type7_joint1_pd_phase():
-            self.grasp_type7_transition_pd_err_max = 0.0
-            return pd
-
-        finger = self.grasp_type7_transition_finger_id
-        if finger is None or self.grasp_type7_transition_pd_target is None:
-            return pd
-
-        idxs = np.asarray(FINGER_JOINT_INDEX[int(finger)], dtype=int)
-        pd_local, err = pose_pd(
-            self.grasp_type7_transition_pd_target,
-            self.hand_q[idxs],
-            qdot[idxs],
-            kp=self.cfg.pose_kp,
-            kd=self.cfg.pose_kd,
-            limit=self.cfg.pose_pd_limit,
-        )
-        pd[idxs] = pd_local
-        if int(finger) == G7_THUMB_TRANSITION_FINGER_ID:
-            err_max = float(np.max(np.abs(err))) if err.size else 0.0
-        else:
-            err_max = float(abs(err[0])) if err.size else 0.0
-        self.grasp_type7_transition_pd_err_max = err_max
-
-        if int(finger) == G7_INDEX_TRANSITION_FINGER_ID:
-            self.grasp_type7_index_pd_err_max = err_max
-        elif int(finger) == G7_MIDDLE_TRANSITION_FINGER_ID:
-            self.grasp_type7_middle_pd_err_max = err_max
-        elif int(finger) == G7_THUMB_TRANSITION_FINGER_ID:
-            self.grasp_type7_thumb_pd_err_max = err_max
-        elif int(finger) == G7_RING_TRANSITION_FINGER_ID:
-            self.grasp_type7_ring_pd_err_max = err_max
-
-        if err_max <= float(self.cfg.grasp_type7_index_pd_tolerance_rad):
-            self._start_grasp_type7_transition_attach_to_centroid(finger)
-
-        return pd
-
-    def _grasp_type7_thumb_attach_centroid(self):
-        contact_fingers = [2, 3, 4]
-        tip_pos = {finger: tip_position(self.hand_q, finger) for finger in contact_fingers}
-        points = np.array([tip_pos[finger] for finger in contact_fingers], dtype=np.float64)
-        cg_contact = np.mean(points, axis=0)
-        thumb_pos = tip_position(self.hand_q, G7_THUMB_TRANSITION_FINGER_ID)
-        return cg_contact + float(self.cfg.thumb_centroid_bias) * (thumb_pos - cg_contact)
-
-    def _calc_grasp_type7_transition_attach_tau(self, cv):
-        tau = np.zeros(JOINT_COUNT, dtype=np.float64)
-        attach_forces = {}
-        self.grasp_type7_transition_attach_tau_max = 0.0
-        if not self._is_grasp_type7_attach_phase():
-            return tau, attach_forces
-
-        finger = self.grasp_type7_transition_finger_id
-        if finger is None:
-            return tau, attach_forces
-
-        finger = int(finger)
-        idxs = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
-        pos = tip_position(self.hand_q, finger)
-        target_cv = self._grasp_type7_thumb_attach_centroid() if finger == G7_THUMB_TRANSITION_FINGER_ID else cv
-        diff = target_cv - pos
-        dist = np.linalg.norm(diff)
-        if dist < 1e-9:
-            return tau, attach_forces
-
-        fhat = self.cfg.groped_force_direction_sign * diff / dist
-        force = self._grasp_type7_attach_force(finger) * fhat
-        attach_forces[finger] = force.copy()
-        J = tip_jacobian(self.hand_q, finger, eps=self.cfg.jacobian_eps)
-        tau_local = J.T @ force
-        tau_local = tau_local * GRASP_TAU_SIGN[idxs]
-        tau_limit = self._grasp_type7_attach_tau_limit(finger)
-        tau_local = np.clip(tau_local, -tau_limit, tau_limit)
-        tau[idxs] = tau_local
-        tau_max = float(np.max(np.abs(tau_local)))
-        self.grasp_type7_transition_attach_tau_max = tau_max
-
-        if finger == G7_INDEX_TRANSITION_FINGER_ID:
-            self.grasp_type7_index_attach_tau_max = tau_max
-        elif finger == G7_MIDDLE_TRANSITION_FINGER_ID:
-            self.grasp_type7_middle_attach_tau_max = tau_max
-        elif finger == G7_THUMB_TRANSITION_FINGER_ID:
-            self.grasp_type7_thumb_attach_tau_max = tau_max
-        elif finger == G7_RING_TRANSITION_FINGER_ID:
-            self.grasp_type7_ring_attach_tau_max = tau_max
-        return tau, attach_forces
-
-    def _update_grasp_type7_attach_state(self, qdot, now):
-        finger = self.grasp_type7_transition_finger_id
-        if finger is None:
-            return False
-
-        finger = int(finger)
-        qdot_max = self._transition_finger_qdot_max(qdot, finger)
-        self.grasp_type7_last_qdot_max = qdot_max
-
-        if self.grasp_type7_transition_attach_started_at is None:
-            self.grasp_type7_transition_attach_started_at = now
-            self.grasp_type7_transition_attach_done_since = None
-            return False
-
-        attach_elapsed = now - self.grasp_type7_transition_attach_started_at
-        if attach_elapsed < float(self.cfg.grasp_type7_transition_attach_min_sec):
-            self.grasp_type7_transition_attach_done_since = None
-            return False
-
-        if qdot_max <= float(self.cfg.grasp_type7_transition_attach_qdot_threshold):
-            if self.grasp_type7_transition_attach_done_since is None:
-                self.grasp_type7_transition_attach_done_since = now
-            elif now - self.grasp_type7_transition_attach_done_since >= float(self.cfg.grasp_type7_transition_attach_hold_sec):
-                name = self._grasp_type7_transition_name(finger)
-                self._log(
-                    f"[GRASP_TYPE7] {name}_attach_to_centroid done "
-                    f"qdot_max={qdot_max:.4f}, "
-                    f"hold={now - self.grasp_type7_transition_attach_done_since:.2f}s, "
-                    f"attach_elapsed={attach_elapsed:.2f}s"
-                )
-                if (
-                    finger == G7_INDEX_TRANSITION_FINGER_ID
-                    and bool(self.cfg.grasp_type7_middle_transition_enable)
-                ):
-                    self._start_grasp_type7_middle_detach_pregrasp()
-                elif (
-                    finger == G7_MIDDLE_TRANSITION_FINGER_ID
-                    and bool(self.cfg.grasp_type7_thumb_transition_enable)
-                ):
-                    self._start_grasp_type7_thumb_detach_pregrasp()
-                elif (
-                    finger == G7_THUMB_TRANSITION_FINGER_ID
-                    and bool(self.cfg.grasp_type7_ring_transition_enable)
-                ):
-                    self._start_grasp_type7_ring_detach_pregrasp()
-                else:
-                    self._finish_grasp_type7_transition_cycle()
-        else:
-            self.grasp_type7_transition_attach_done_since = None
-
-        return False
-
-    def _update_grasp_type7_rotation_state(self, qdot, now):
-        if self.active_finger_count != PINKY_SPECIAL_COMMAND:
-            self._reset_grasp_type7_rotation_state()
-            return False
-
-        qdot_max = self._active_finger_qdot_max(qdot)
-        self.grasp_type7_last_qdot_max = qdot_max
-
-        if self.grasp_type7_phase == "idle":
-            self._start_grasp_type7_rotation_state()
-
-        if self.grasp_type7_phase == "grasp_stabilizing":
-            if qdot_max <= float(self.cfg.grasp_type7_start_qdot_threshold):
-                if self.grasp_type7_stable_since is None:
-                    self.grasp_type7_stable_since = now
-                elif now - self.grasp_type7_stable_since >= float(self.cfg.grasp_type7_start_hold_sec):
-                    self.grasp_type7_phase = "rotating"
-                    self.grasp_type7_rotation_started_at = now
-                    self.grasp_type7_done_since = None
-                    self.grasp_type7_rotation_cg_ref = None
-                    self._log(
-                        "[GRASP_TYPE7] grasp stabilized -> rotation_start "
-                        f"qdot_max={qdot_max:.4f}, "
-                        f"hold={now - self.grasp_type7_stable_since:.2f}s"
-                    )
-            else:
-                self.grasp_type7_stable_since = None
-            return False
-
-        if self.grasp_type7_phase == "rotating":
-            rotation_elapsed = (
-                0.0
-                if self.grasp_type7_rotation_started_at is None
-                else now - self.grasp_type7_rotation_started_at
-            )
-            if rotation_elapsed < float(self.cfg.grasp_type7_min_rotation_sec):
-                self.grasp_type7_done_since = None
-                return True
-
-            if qdot_max <= float(self.cfg.grasp_type7_done_qdot_threshold):
-                if self.grasp_type7_done_since is None:
-                    self.grasp_type7_done_since = now
-                elif now - self.grasp_type7_done_since >= float(self.cfg.grasp_type7_done_hold_sec):
-                    self.grasp_type7_rotation_done = True
-                    self._log(
-                        "[GRASP_TYPE7] rotation_done detected "
-                        f"qdot_max={qdot_max:.4f}, "
-                        f"hold={now - self.grasp_type7_done_since:.2f}s, "
-                        f"rotation_elapsed={rotation_elapsed:.2f}s"
-                    )
-                    if bool(self.cfg.grasp_type7_index_transition_enable):
-                        self._start_grasp_type7_index_detach_pregrasp()
-                        return False
-                    self.grasp_type7_phase = "rotation_done"
-            else:
-                self.grasp_type7_done_since = None
-            return True
-
-        if self._is_grasp_type7_attach_phase():
-            return self._update_grasp_type7_attach_state(qdot, now)
-
-        if self.grasp_type7_phase == "rotation_done":
-            return not bool(self.cfg.grasp_type7_stop_rotation_when_done)
-
-        if self._is_grasp_type7_transition_phase() or self.grasp_type7_phase == "transition_done":
-            return False
-
-        return False
-
-    def _reset_pinky_special_grasp(self):
-        self.pinky_special_hold_pose = None
-        self._reset_grasp_type7_rotation_state()
-
-    def _start_pinky_special_grasp(self):
-        pinky_idxs = np.asarray(FINGER_JOINT_INDEX[PINKY_FINGER_ID], dtype=int)
-        target = self.hand_q[pinky_idxs].copy()
-        target[:2] = PINKY_SPECIAL_FIXED_LOCAL_TARGETS
-
-        self._clear_transition_state()
-        self._reset_envelop_grasp()
-        self.pinky_special_hold_pose = target
-        self.use_fingers = selected_fingers(PINKY_SPECIAL_GRASP_COUNT)
-        self.policy = GraspPolicy(self.use_fingers, self.cfg)
-        self.active_finger_count = PINKY_SPECIAL_COMMAND
-        self._start_grasp_type7_rotation_state()
-
-        return target.copy()
-
     def _start_envelop_grasp(self, now):
         self._clear_transition_state()
-        self._reset_pinky_special_grasp()
         self.envelop_hold_pose = self.hand_q.copy()
         self.envelop_started_at = now
         self.envelop_thumb_enabled = False
@@ -2654,7 +2567,7 @@ class GraspController:
 
     def apply_pose_type(self, pose_type: int, now: float) -> None:
         if pose_type not in POSE_TYPE_TARGETS:
-            raise ValueError("pose_type must be 1, 2, or 3")
+            raise ValueError("pose_type must be 1, 2, 3, or 4")
         state, state_start, _ = self._apply_pose_type_command(pose_type, now)
         self.state = state
         self.state_start = state_start
@@ -2666,10 +2579,17 @@ class GraspController:
 
     def apply_grasp_type(self, requested_count: int, now: float, *, internal: bool = False) -> None:
         if requested_count < -1 or requested_count > 7:
-            raise ValueError("grasp_type must be one of -1, 0, 1, 2, 3, 4, 5, 6, 7")
+            raise ValueError(
+                "grasp_type must be one of -1, 0, 1, 2, 3, 4, 5, 6, 7"
+            )
+
+        if requested_count == 7:
+            self._start_card_grasp(now)
+            return
 
         self.cancel_relative_rotation()
         self.cancel_relative_translation()
+        self.cancel_card_grasp()
         self._reset_regular_force_balance_state()
 
         if not internal:
@@ -2681,7 +2601,6 @@ class GraspController:
             self.active_finger_count = 0
             self._clear_transition_state()
             self._reset_envelop_grasp()
-            self._reset_pinky_special_grasp()
             self.state = "NORMAL_POSE"
             self.state_start = now
             self._log("[COMMAND] grasp_type=-1 -> NORMAL_POSE")
@@ -2691,7 +2610,6 @@ class GraspController:
             self.active_finger_count = 0
             self._clear_transition_state()
             self._reset_envelop_grasp()
-            self._reset_pinky_special_grasp()
             self.state = "PRE_GRASP_POSE"
             self.state_start = now
             self._log("[COMMAND] grasp_type=0 -> PRE_GRASP_POSE")
@@ -2700,7 +2618,6 @@ class GraspController:
         if requested_count == 6:
             self.active_finger_count = 6
             self._clear_transition_state()
-            self._reset_pinky_special_grasp()
             self._start_envelop_grasp(now)
             self.state = "ENVELOP_GRASP"
             self.state_start = now
@@ -2713,19 +2630,8 @@ class GraspController:
             )
             return
 
-        if requested_count == PINKY_SPECIAL_COMMAND:
-            pinky_target = self._start_pinky_special_grasp()
-            self.state = "GROPED_GRASP"
-            self.state_start = now
-            self._log(
-                "[COMMAND] grasp_type=7 -> GROPED_GRASP as grasp_type=4, "
-                f"use_fingers={self.use_fingers}, "
-                f"pinky_target_rad={np.round(pinky_target, 4).tolist()}"
-            )
-            return
-
         self._reset_envelop_grasp()
-        self._reset_pinky_special_grasp()
+        self._reset_inactive_collision_avoidance()
 
         if (
             self.active_finger_count in (1, 2)
@@ -2804,7 +2710,6 @@ class GraspController:
         center_hold_forces = {}
         collision_forces = {}
         total_forces = {}
-        rotation_enabled = False
         effective_thumb_centroid_bias = 0.0
         relative_rotation_force_balance_blend = 0.0
         relative_rotation_control_mode = "idle"
@@ -2844,13 +2749,34 @@ class GraspController:
                 limit=self.cfg.pose_pd_limit,
             )
 
+        elif self.state == "CARD_GRASP":
+            policy_result, inactive_pd, err = self._calc_card_grasp(qdot, now)
+            grasp_tau = policy_result.tau.copy()
+            alpha = dict(policy_result.alpha)
+            cg = policy_result.cg.copy()
+            cv = policy_result.cv.copy()
+            fingertip_positions.update(
+                _copy_finger_vectors(policy_result.fingertip_positions)
+            )
+            grasp_forces.update(
+                _copy_finger_vectors(policy_result.grasp_forces)
+            )
+            rotation_forces.update(
+                _copy_finger_vectors(policy_result.rotation_forces)
+            )
+            center_hold_forces.update(
+                _copy_finger_vectors(policy_result.center_hold_forces)
+            )
+            collision_forces.update(
+                _copy_finger_vectors(policy_result.collision_forces)
+            )
+            total_forces.update(
+                _copy_finger_vectors(policy_result.total_forces)
+            )
+            tau = grasp_tau + inactive_pd
+
         elif self.state == "GROPED_GRASP":
             regular_grasp = 1 <= self.active_finger_count <= 5
-            alpha_distribution_mode = (
-                ALPHA_DISTRIBUTION_THUMB_DISTANCE_PROPORTIONAL
-                if regular_grasp
-                else ALPHA_DISTRIBUTION_LEGACY
-            )
             if regular_grasp:
                 effective_thumb_centroid_bias = 0.0
                 relative_rotation_force_balance_blend = 1.0
@@ -2858,25 +2784,6 @@ class GraspController:
                 effective_thumb_centroid_bias = float(
                     self.cfg.thumb_centroid_bias
                 )
-
-            if self.active_finger_count == PINKY_SPECIAL_COMMAND:
-                rotation_enabled = (
-                    self.cfg.rotation_enable_for_grasp_type7
-                    and self._update_grasp_type7_rotation_state(qdot, now)
-                )
-
-            rotation_center_ref = None
-            center_hold_enabled = False
-            if self.active_finger_count == PINKY_SPECIAL_COMMAND and rotation_enabled:
-                if self.grasp_type7_rotation_cg_ref is None:
-                    _, _, cg_ref, _, _ = self.policy.calc_alpha_and_forces(self.hand_q)
-                    self.grasp_type7_rotation_cg_ref = cg_ref.copy()
-                    self._log(
-                        "[GRASP_TYPE7] capture rotation geometric centroid ref "
-                        f"cg_ref={np.round(self.grasp_type7_rotation_cg_ref, 4).tolist()}"
-                    )
-                rotation_center_ref = self.grasp_type7_rotation_cg_ref
-                center_hold_enabled = bool(self.cfg.grasp_type7_center_hold_enable)
 
             using_force_balance_fallback = False
             if (
@@ -2892,11 +2799,9 @@ class GraspController:
                 try:
                     policy_result = self.policy.calc_grasp_tau(
                         self.hand_q,
-                        rotation_enabled=rotation_enabled,
-                        rotation_center=rotation_center_ref,
-                        center_hold_target=rotation_center_ref,
-                        center_hold_enabled=center_hold_enabled,
-                        alpha_distribution_mode=alpha_distribution_mode,
+                        alpha_distribution_mode=(
+                            ALPHA_DISTRIBUTION_THUMB_DISTANCE_PROPORTIONAL
+                        ),
                     )
                 except ValueError as exc:
                     if not regular_grasp:
@@ -2960,6 +2865,7 @@ class GraspController:
                         cg,
                         fingertip_positions,
                         now,
+                        qdot,
                     )
                 )
                 if self.relative_translation_phase in {
@@ -3024,41 +2930,13 @@ class GraspController:
                 )
                 self.last_regular_policy_fingers = tuple(self.use_fingers)
 
-            g7_transition_pd = np.zeros(JOINT_COUNT, dtype=np.float64)
-            g7_transition_attach_tau = np.zeros(JOINT_COUNT, dtype=np.float64)
-            g7_transition_attach_forces = {}
             inactive_control_fingers = list(self.use_fingers)
-            if (
-                self.active_finger_count == PINKY_SPECIAL_COMMAND
-                and self._is_grasp_type7_transition_phase()
-            ):
-                if self.grasp_type7_transition_finger_id is not None:
-                    inactive_control_fingers.append(self.grasp_type7_transition_finger_id)
-                g7_transition_pd = self._calc_grasp_type7_transition_pd(qdot)
-                (
-                    g7_transition_attach_tau,
-                    g7_transition_attach_forces,
-                ) = self._calc_grasp_type7_transition_attach_tau(cv)
-                for finger, force in g7_transition_attach_forces.items():
-                    zero = np.zeros(3, dtype=np.float64)
-                    grasp_forces[finger] = (
-                        grasp_forces.get(finger, zero) + force
-                    )
-                    total_forces[finger] = (
-                        total_forces.get(finger, zero) + force
-                    )
-
             inactive_pd = self._inactive_pre_grasp_pd(
                 inactive_control_fingers,
                 qdot,
                 collision_avoidance_enabled=regular_grasp,
             )
-            tau = (
-                grasp_tau
-                + inactive_pd
-                + g7_transition_pd
-                + g7_transition_attach_tau
-            )
+            tau = grasp_tau + inactive_pd
 
         elif self.state == "ENVELOP_GRASP":
             grasp_tau, envelop_pd, err = self._calc_envelop_grasp(qdot, now)
@@ -3085,7 +2963,6 @@ class GraspController:
             center_hold_forces=_copy_finger_vectors(center_hold_forces),
             collision_forces=_copy_finger_vectors(collision_forces),
             total_forces=_copy_finger_vectors(total_forces),
-            rotation_enabled=bool(rotation_enabled),
             use_fingers=list(self.use_fingers),
             active_finger_count=int(self.active_finger_count),
             inactive_pd_target=self.inactive_pd_target.copy(),
@@ -3099,7 +2976,6 @@ class GraspController:
                 self.inactive_collision_avoidance_active
             ),
             envelop_info=dict(self.envelop_last_info),
-            g7_phase=str(self.grasp_type7_phase),
             relative_rotation_phase=str(self.relative_rotation_phase),
             relative_rotation_target_rad=float(self.relative_rotation_target_rad),
             relative_rotation_current_rad=float(

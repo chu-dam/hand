@@ -24,8 +24,17 @@ HAND_COMPACT_PRE_GRASP_POSE = np.array([
     -0.1709, -0.5348,  1.1196,  0.4133,  # pinky
 ], dtype=np.float64)
 
+HAND_CARD_PRE_GRASP_POSE = np.array([
+     0.0000,  np.pi / 2, -0.3536, -0.7756,  # thumb
+    -0.0166,  0.2112,    0.5688,  0.8292,  # index
+     0.0000,  0.0000,    0.0000,  0.0000,  # middle
+     0.0000,  0.0000,    0.0000,  0.0000,  # ring
+     0.0000,  0.0000,    0.0000,  0.0000,  # pinky
+], dtype=np.float64)
+
 POSE_TYPE_TARGETS = {
     1: HAND_NORMAL_POSE,
     2: HAND_PRE_GRASP_POSE,
     3: HAND_COMPACT_PRE_GRASP_POSE,
+    4: HAND_CARD_PRE_GRASP_POSE,
 }

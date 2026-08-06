@@ -8,9 +8,6 @@ from dg5f_grasp_control.grasp_controller import GraspController
 from dg5f_grasp_control.grasp_policy import GraspPolicy
 from dg5f_grasp_control.hand_model import FINGER_JOINT_INDEX
 from dg5f_grasp_control.kinematics import (
-    finger_capsule_clearance,
-    finger_link_points,
-    segment_segment_distance,
     tip_jacobian,
     tip_position,
 )
@@ -323,6 +320,11 @@ class EnvelopingGraspTest(unittest.TestCase):
 
 
 class InactiveFingerPreGraspTest(unittest.TestCase):
+    def test_unknown_grasp_type_8_is_rejected(self):
+        controller = GraspController(RuntimeConfig(), log=None)
+        with self.assertRaises(ValueError):
+            controller.apply_grasp_type(8, now=1.0)
+
     def _assert_inactive_targets(self, grasp_type, expected_pose):
         controller = GraspController(RuntimeConfig(), log=None)
         if expected_pose is HAND_COMPACT_PRE_GRASP_POSE:
@@ -378,166 +380,99 @@ class InactiveFingerPreGraspTest(unittest.TestCase):
         self.assertEqual(output.active_finger_count, 2)
         self.assertEqual(output.use_fingers, [1, 3])
 
-    def test_capsule_link_fk_matches_existing_fingertip_fk(self):
-        for finger in range(1, 6):
-            with self.subTest(finger=finger):
-                np.testing.assert_allclose(
-                    finger_link_points(HAND_PRE_GRASP_POSE, finger)[-1],
-                    tip_position(HAND_PRE_GRASP_POSE, finger),
-                    rtol=0.0,
-                    atol=1.1e-6,
-                )
-
-    def test_segment_distance_handles_crossing_and_parallel_segments(self):
-        self.assertAlmostEqual(
-            segment_segment_distance(
-                [-1.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [0.0, -1.0, 0.0],
-                [0.0, 1.0, 0.0],
-            ),
-            0.0,
-        )
-        self.assertAlmostEqual(
-            segment_segment_distance(
-                [0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [0.0, 0.25, 0.0],
-                [1.0, 0.25, 0.0],
-            ),
-            0.25,
-        )
-
-    def test_inactive_ring_avoids_a_close_active_middle_link(self):
-        q = HAND_PRE_GRASP_POSE.copy()
-        q[8:12] = [-0.54169605, 2.04880694, 0.62673528, 0.68655433]
-        initial_clearance = finger_capsule_clearance(
-            q,
-            3,
-            4,
-            0.008,
-            first_segment=1,
-        )
-        self.assertLess(initial_clearance, 0.002)
-
+    def test_inactive_ring_matches_middle_displacement_after_early_trigger(self):
         controller = GraspController(RuntimeConfig(), log=None)
         controller.apply_grasp_type(2, now=1.0)
-        output = controller.step(q, QDOT_ZERO, now=1.1)
+        q = HAND_PRE_GRASP_POSE.copy()
+        q[FINGER_JOINT_INDEX[3][0]] = -0.18
+        controller.step(q, QDOT_ZERO, now=1.1)
 
-        self.assertTrue(output.inactive_collision_avoidance_active[3])
-        self.assertLess(output.inactive_collision_min_clearance_m, 0.002)
+        q[FINGER_JOINT_INDEX[3][0]] = -0.19
+        qdot = QDOT_ZERO.copy()
+        qdot[FINGER_JOINT_INDEX[3][0]] = -0.2
+        trigger_output = controller.step(q, qdot, now=1.2)
+
+        self.assertTrue(trigger_output.inactive_collision_avoidance_active[3])
+        self.assertEqual(controller.inactive_collision_follow_source[3], 3)
+        trigger_target = trigger_output.inactive_pd_target[
+            FINGER_JOINT_INDEX[4][0]
+        ]
+
+        q[FINGER_JOINT_INDEX[3][0]] = -0.24
+        output = controller.step(q, qdot, now=1.3)
         self.assertAlmostEqual(
-            output.inactive_collision_avoidance_offsets_rad[3],
-            -RuntimeConfig().inactive_collision_joint1_target_rate_radps
-            * RuntimeConfig().dt,
+            output.inactive_pd_target[FINGER_JOINT_INDEX[4][0]]
+            - trigger_target,
+            -0.05,
         )
-        self.assertLess(
+
+    def test_large_joint_value_crossing_does_not_trigger_inactive_index(self):
+        controller = GraspController(RuntimeConfig(), log=None)
+        controller.apply_grasp_type(2, now=1.0)
+        q = HAND_PRE_GRASP_POSE.copy()
+        q[FINGER_JOINT_INDEX[3][0]] = -0.10
+        controller.step(q, QDOT_ZERO, now=1.1)
+
+        q[FINGER_JOINT_INDEX[3][0]] = 0.40
+        output = controller.step(q, QDOT_ZERO, now=1.2)
+
+        self.assertFalse(output.inactive_collision_avoidance_active[1])
+
+    def test_ring_and_pinky_targets_start_and_propagate_together(self):
+        controller = GraspController(RuntimeConfig(), log=None)
+        controller.apply_grasp_type(2, now=1.0)
+        q = HAND_PRE_GRASP_POSE.copy()
+        q[FINGER_JOINT_INDEX[3][0]] = -0.18
+        controller.step(q, QDOT_ZERO, now=1.1)
+        q[FINGER_JOINT_INDEX[3][0]] = -0.19
+        qdot = QDOT_ZERO.copy()
+        qdot[FINGER_JOINT_INDEX[3][0]] = -0.2
+        trigger_output = controller.step(q, qdot, now=1.2)
+
+        self.assertTrue(trigger_output.inactive_collision_avoidance_active[3])
+        self.assertTrue(trigger_output.inactive_collision_avoidance_active[4])
+        self.assertEqual(controller.inactive_collision_follow_source[4], 4)
+        ring_trigger_target = trigger_output.inactive_pd_target[
+            FINGER_JOINT_INDEX[4][0]
+        ]
+        trigger_target = trigger_output.inactive_pd_target[
+            FINGER_JOINT_INDEX[5][1]
+        ]
+
+        q[FINGER_JOINT_INDEX[3][0]] = -0.24
+        output = controller.step(q, qdot, now=1.3)
+        ring_delta = (
+            output.inactive_pd_target[FINGER_JOINT_INDEX[4][0]]
+            - ring_trigger_target
+        )
+        pinky_delta = (
+            output.inactive_pd_target[FINGER_JOINT_INDEX[5][1]]
+            - trigger_target
+        )
+        self.assertAlmostEqual(
+            ring_delta,
+            -0.05,
+        )
+        self.assertAlmostEqual(pinky_delta, ring_delta)
+
+    def test_following_releases_before_follower_finishes_returning(self):
+        controller = GraspController(RuntimeConfig(), log=None)
+        controller.apply_grasp_type(2, now=1.0)
+        q = HAND_PRE_GRASP_POSE.copy()
+        q[FINGER_JOINT_INDEX[3][0]] = -0.18
+        controller.step(q, QDOT_ZERO, now=1.1)
+        q[FINGER_JOINT_INDEX[3][0]] = -0.205
+        controller.step(q, QDOT_ZERO, now=1.2)
+
+        q[FINGER_JOINT_INDEX[3][0]] = 0.0
+        q[FINGER_JOINT_INDEX[4][0]] = -0.35
+        output = controller.step(q, QDOT_ZERO, now=1.3)
+
+        self.assertFalse(output.inactive_collision_avoidance_active[3])
+        self.assertEqual(controller.inactive_collision_follow_source[3], 0)
+        self.assertEqual(
             output.inactive_pd_target[FINGER_JOINT_INDEX[4][0]],
             HAND_PRE_GRASP_POSE[FINGER_JOINT_INDEX[4][0]],
-        )
-        self.assertAlmostEqual(
-            output.inactive_pd[FINGER_JOINT_INDEX[4][0]],
-            RuntimeConfig().inactive_collision_pd_kp
-            * output.inactive_collision_avoidance_offsets_rad[3],
-        )
-        np.testing.assert_allclose(
-            output.inactive_pd_target[FINGER_JOINT_INDEX[4][1:]],
-            HAND_PRE_GRASP_POSE[FINGER_JOINT_INDEX[4][1:]],
-            rtol=0.0,
-            atol=0.0,
-        )
-
-    def test_ring_avoidance_propagates_to_inactive_pinky(self):
-        q = HAND_PRE_GRASP_POSE.copy()
-        q[8:12] = [-0.54169605, 2.04880694, 0.62673528, 0.68655433]
-        controller = GraspController(RuntimeConfig(), log=None)
-        controller.apply_grasp_type(2, now=1.0)
-
-        output = controller.step(q, QDOT_ZERO, now=1.1)
-
-        # Middle (3) is active. Ring (4) first avoids the middle, and its
-        # previewed avoidance motion must in turn activate pinky (5).
-        self.assertTrue(output.inactive_collision_avoidance_active[3])
-        self.assertTrue(output.inactive_collision_avoidance_active[4])
-        self.assertLess(
-            output.inactive_collision_avoidance_offsets_rad[3],
-            0.0,
-        )
-        self.assertNotEqual(
-            output.inactive_collision_avoidance_offsets_rad[4],
-            0.0,
-        )
-        pinky_joint1 = FINGER_JOINT_INDEX[5][0]
-        pinky_joint2 = FINGER_JOINT_INDEX[5][1]
-        self.assertEqual(
-            output.inactive_pd_target[pinky_joint1],
-            HAND_PRE_GRASP_POSE[pinky_joint1],
-        )
-        self.assertNotEqual(
-            output.inactive_pd_target[pinky_joint2],
-            HAND_PRE_GRASP_POSE[pinky_joint2],
-        )
-        self.assertAlmostEqual(
-            output.inactive_pd[pinky_joint2],
-            RuntimeConfig().inactive_collision_pd_kp
-            * output.inactive_collision_avoidance_offsets_rad[4],
-        )
-
-    def test_disabled_capsule_avoidance_keeps_exact_pre_grasp_target(self):
-        q = HAND_PRE_GRASP_POSE.copy()
-        q[8:12] = [-0.54169605, 2.04880694, 0.62673528, 0.68655433]
-        controller = GraspController(
-            RuntimeConfig(inactive_collision_avoidance_enable=False),
-            log=None,
-        )
-        controller.apply_grasp_type(2, now=1.0)
-
-        output = controller.step(q, QDOT_ZERO, now=1.1)
-
-        np.testing.assert_allclose(
-            output.inactive_pd_target[FINGER_JOINT_INDEX[4]],
-            HAND_PRE_GRASP_POSE[FINGER_JOINT_INDEX[4]],
-            rtol=0.0,
-            atol=0.0,
-        )
-        self.assertFalse(any(output.inactive_collision_avoidance_active))
-
-    def test_fast_approach_activates_from_predicted_clearance(self):
-        cfg = RuntimeConfig()
-        q = HAND_PRE_GRASP_POSE.copy()
-        qdot = QDOT_ZERO.copy()
-        qdot[8:12] = [-1.65740333, -1.05275797, 1.20509786, 0.32864814]
-        current_clearance = finger_capsule_clearance(
-            q,
-            3,
-            4,
-            cfg.inactive_collision_capsule_radius_m,
-            first_segment=cfg.inactive_collision_first_segment,
-        )
-        predicted_clearance = finger_capsule_clearance(
-            q + cfg.inactive_collision_prediction_sec * qdot,
-            3,
-            4,
-            cfg.inactive_collision_capsule_radius_m,
-            first_segment=cfg.inactive_collision_first_segment,
-        )
-        self.assertGreater(
-            current_clearance,
-            cfg.inactive_collision_activation_clearance_m,
-        )
-        self.assertLess(
-            predicted_clearance,
-            cfg.inactive_collision_activation_clearance_m,
-        )
-
-        controller = GraspController(cfg, log=None)
-        controller.apply_grasp_type(2, now=1.0)
-        output = controller.step(q, qdot, now=1.1)
-
-        self.assertTrue(output.inactive_collision_avoidance_active[3])
-        self.assertLessEqual(
-            output.inactive_collision_min_clearance_m,
-            predicted_clearance + 1e-12,
         )
 
 
@@ -827,6 +762,7 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
             relative_rotation_reference_ramp_sec=0.0,
             relative_rotation_position_kp=0.0,
             relative_rotation_position_kd=1.0,
+            relative_rotation_velocity_alpha=1.0,
             relative_rotation_position_error_limit_m=1.0,
             relative_rotation_position_tolerance_m=0.0,
             relative_rotation_force_limit=100.0,
@@ -869,6 +805,32 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
             rtol=0.0,
             atol=1e-12,
         )
+        axis = controller.relative_rotation_axis
+        angular_numerator = 0.0
+        angular_denominator = 0.0
+        for finger in controller.use_fingers:
+            if finger == 1:
+                continue
+            radius = (
+                initial.fingertip_positions[finger]
+                - initial.fingertip_positions[1]
+            )
+            planar_radius = radius - np.dot(radius, axis) * axis
+            finger_indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
+            velocity = (
+                tip_jacobian(Q_FIXED, finger, eps=cfg.jacobian_eps)
+                @ qdot[finger_indices]
+            )
+            angular_numerator += np.dot(
+                axis,
+                np.cross(planar_radius, velocity),
+            )
+            angular_denominator += np.dot(planar_radius, planar_radius)
+        expected_angular_velocity = angular_numerator / angular_denominator
+        self.assertAlmostEqual(
+            controller.relative_rotation_angular_velocity,
+            expected_angular_velocity,
+        )
 
     def test_invalid_angle_and_non_regular_grasps_are_rejected(self):
         controller = GraspController(RuntimeConfig(), log=None)
@@ -883,7 +845,7 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             controller.prepare_relative_rotation(np.deg2rad(10.1), now=1.1)
 
-        for grasp_type in (-1, 6, 7):
+        for grasp_type in (-1, 6):
             with self.subTest(grasp_type=grasp_type):
                 controller.apply_grasp_type(grasp_type, now=2.0)
                 self.assertFalse(
@@ -1123,6 +1085,51 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
 
 
 class RelativeTranslationTargetTest(unittest.TestCase):
+    def test_cartesian_velocity_uses_received_joint_velocity(self):
+        cfg = RuntimeConfig(relative_translation_velocity_alpha=1.0)
+        controller = GraspController(cfg, log=None)
+        controller.apply_grasp_type(3, now=1.0)
+        controller.step(Q_FIXED, QDOT_ZERO, now=1.1)
+        self.assertTrue(
+            controller.prepare_relative_translation(
+                np.array([0.001, 0.0, 0.0]),
+                now=1.2,
+            )
+        )
+        qdot = np.zeros(20, dtype=np.float64)
+        qdot[1] = 0.2
+        qdot[6] = -0.15
+        output = controller.step(Q_FIXED, qdot, now=1.3)
+
+        expected_fingertip_velocities = {}
+        for finger in controller.use_fingers:
+            indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
+            expected_fingertip_velocities[finger] = (
+                tip_jacobian(Q_FIXED, finger, eps=cfg.jacobian_eps)
+                @ qdot[indices]
+            )
+            np.testing.assert_allclose(
+                controller.relative_translation_fingertip_velocities[finger],
+                expected_fingertip_velocities[finger],
+                rtol=0.0,
+                atol=1e-12,
+            )
+
+        expected_centroid_velocity = sum(
+            (
+                controller.relative_translation_contact_weights[finger]
+                * velocity
+                for finger, velocity in expected_fingertip_velocities.items()
+            ),
+            np.zeros(3, dtype=np.float64),
+        )
+        np.testing.assert_allclose(
+            output.relative_translation_centroid_velocity,
+            expected_centroid_velocity,
+            rtol=0.0,
+            atol=1e-12,
+        )
+
     def test_target_is_relative_and_adds_zero_moment_translation_wrench(self):
         controller = GraspController(RuntimeConfig(), log=None)
         controller.apply_grasp_type(3, now=1.0)
@@ -1589,55 +1596,6 @@ class RelativeTranslationTargetTest(unittest.TestCase):
             np.zeros(3, dtype=np.float64),
         )
         np.testing.assert_allclose(resultant, np.zeros(3), rtol=0.0, atol=1e-8)
-
-
-class GraspType7LegacyCompatibilityTest(unittest.TestCase):
-    def test_type7_controller_keeps_legacy_alpha_and_virtual_centroid(self):
-        cfg = RuntimeConfig(
-            alpha1=3.0,
-            thumb_centroid_bias=0.5,
-            rotation_enable_for_grasp_type7=False,
-        )
-        controller = GraspController(cfg, log=None)
-        controller.apply_grasp_type(7, now=1.0)
-        output = controller.step(Q_FIXED, QDOT_ZERO, now=1.0)
-
-        expected = GraspPolicy([1, 2, 3, 4], cfg).calc_grasp_tau(
-            Q_FIXED,
-            alpha_distribution_mode="legacy",
-        )
-
-        self.assertEqual(output.alpha, expected.alpha)
-        np.testing.assert_allclose(output.cg, expected.cg, rtol=0.0, atol=1e-12)
-        np.testing.assert_allclose(output.cv, expected.cv, rtol=0.0, atol=1e-12)
-        assert_vector_dict_allclose(
-            self,
-            output.grasp_forces,
-            expected.grasp_forces,
-        )
-        self.assertGreater(np.linalg.norm(output.cv - output.cg), 1e-6)
-
-    def test_type7_thumb_detach_legacy_path_remains_finite(self):
-        cfg = RuntimeConfig(rotation_enable_for_grasp_type7=False)
-        controller = GraspController(cfg, log=None)
-        controller.apply_grasp_type(7, now=1.0)
-        controller._start_grasp_type7_thumb_detach_pregrasp()
-
-        output = controller.step(Q_FIXED, QDOT_ZERO, now=1.1)
-        expected = GraspPolicy([2, 3, 4], cfg).calc_grasp_tau(
-            Q_FIXED,
-            alpha_distribution_mode="legacy",
-        )
-
-        self.assertEqual(output.g7_phase, "thumb_pose_0_140_0_0")
-        self.assertEqual(output.use_fingers, [2, 3, 4])
-        self.assertEqual(output.alpha, expected.alpha)
-        assert_vector_dict_allclose(
-            self,
-            output.grasp_forces,
-            expected.grasp_forces,
-        )
-        assert_output_is_finite(self, output)
 
 
 if __name__ == "__main__":

@@ -239,16 +239,14 @@ def build_grasp_debug_message(
     if controller_state is None:
         controller_state = output.state if output is not None else controller.state
     if controller_phase is None:
-        if relative_translation_phase != "idle":
+        if controller.state == "CARD_GRASP":
+            controller_phase = controller.card_phase
+        elif relative_translation_phase != "idle":
             controller_phase = relative_translation_phase
         elif relative_rotation_phase != "idle":
             controller_phase = relative_rotation_phase
         else:
-            controller_phase = (
-                output.g7_phase
-                if output is not None
-                else controller.grasp_type7_phase
-            )
+            controller_phase = "idle"
 
     message = GraspDebug()
     message.header.stamp = stamp

@@ -19,14 +19,14 @@ grasp_real:
 
     use_finger_count: 3
 
-    pose_kp: 0.4
+    pose_kp: 0.285
     pose_kd: 0.05
     pose_pd_limit: 0.25
 
-    fric_scale: 0.7
-    fric_tanh_k: 20.0
-    fric_limit: 0.5
-    qdot_alpha: 0.5
+    fric_scale: 1.0
+    fric_tanh_k: 17.0
+    fric_limit: 1.0
+    qdot_alpha: 1.0
 
     alpha1: 3.0
     groped_tau_limit: 3.0
@@ -71,27 +71,17 @@ grasp_real:
     collision_repel_gain: 100.0
     collision_repel_limit: 0.8
 
-    # Capsule-based avoidance between adjacent fingers.
-    # Surface clearance is capsule centerline distance minus both radii.
-    # Index/middle/ring move joint 1; pinky moves joint 2.
+    # Adjacent-joint following for inactive fingers.
+    # Index/middle/ring use joint 1; pinky uses joint 2.
     inactive_collision_avoidance_enable: true
-    inactive_collision_capsule_radius_m: 0.009
-    inactive_collision_activation_clearance_m: 0.009
-    inactive_collision_critical_clearance_m: 0.002
-    inactive_collision_release_hysteresis_m: 0.001
-    inactive_collision_max_joint1_offset_rad: 0.40
-    inactive_collision_joint1_target_rate_radps: 1.5
-    inactive_collision_prediction_sec: 0.25
-    # Dedicated selected-joint PD used only while avoidance is active/returning.
+    # Follow after adjacent monitored joints approach within 2 degrees.
+    inactive_collision_joint_match_tolerance_rad: 0.0349066
+    # Release after the source moves 2 degrees beyond the waiting angle.
+    inactive_collision_joint_release_margin_rad: 0.0349066
     inactive_collision_pd_kp: 0.5
     inactive_collision_pd_kd: 0.10
     inactive_collision_pd_limit: 0.25
-    inactive_collision_gradient_eps_rad: 0.0174533
-    # Keep the previous direction unless +/-1 deg differs by at least 0.1 mm.
-    inactive_collision_direction_min_delta_m: 0.00010
     inactive_collision_joint_limit_margin_rad: 0.03
-    # Ignore the naturally close palm-side root segment; monitor moving links.
-    inactive_collision_first_segment: 1
 
     # Closed-loop relative rotation for regular grasp types 1..5. Positive is
     # right-hand-rule rotation about the palm normal (link_base -X).
@@ -100,7 +90,7 @@ grasp_real:
     # damping through its transmission and joint friction.
     relative_rotation_max_abs_deg: 10.0
     relative_rotation_reference_ramp_sec: 0.5
-    relative_rotation_position_kp: 24.0
+    relative_rotation_position_kp: 20.0
     relative_rotation_position_kd: 0.0
     relative_rotation_position_error_limit_m: 0.025
     relative_rotation_position_tolerance_m: 0.002
@@ -109,99 +99,29 @@ grasp_real:
     relative_rotation_velocity_alpha: 0.20
     relative_rotation_timeout_sec: 1.0
 
-    # grasp_type=7 rotation assist.
-    # theta is not closed-loop object angle; it scales tangential rotation force.
-    # Change rotation_theta_rad sign if the object rotates in the opposite direction.
-    rotation_enable_for_grasp_type7: true
-    rotation_theta_rad: 0.174533
-    rotation_gain: 0.25
-    rotation_force_limit: 0.75
-    rotation_radius_min: 0.035
-    # Cleaner in-place rotation:
-    # - zero_net_force removes the translation component of the rotation assist.
-    # - use_radius_compensation=false prevents near-centroid fingers from dominating.
-    # - nominal_radius sets the constant denominator used when radius compensation is off.
-    # pure_moment solves a least-norm internal force distribution that makes
-    # net rotation force ~= 0 while generating a moment about palm normal.
-    # This is more stable for in-place rotation than per-finger tangent force.
-    grasp_type7_rotation_mode: pure_moment
-    grasp_type7_rotation_zero_net_force: true
-    grasp_type7_rotation_use_radius_compensation: false
-    grasp_type7_rotation_nominal_radius: 0.060
     rotation_palm_normal_x: -1.0
     rotation_palm_normal_y: 0.0
     rotation_palm_normal_z: 0.0
 
-
-    # grasp_type=7 rotation-center hold.
-    # Grasp force still uses thumb-biased Cv, but rotation and center hold use
-    # the unbiased geometric centroid captured at rotation_start.
-    grasp_type7_center_hold_enable: true
-    grasp_type7_center_hold_gain: 1.0
-    grasp_type7_center_hold_force_limit: 0.10
-    grasp_type7_center_hold_project_to_rotation_plane: true
-
-    # grasp_type=7 rotation state detection.
-    # Active grasp-finger qdot_max must stay below the threshold for the hold time.
-    # Phase: grasp_stabilizing -> rotating -> rotation_done.
-    # After rotation_done, the first index transition step can be executed.
-    grasp_type7_start_qdot_threshold: 0.08
-    grasp_type7_start_hold_sec: 0.20
-    grasp_type7_done_qdot_threshold: 0.08
-    grasp_type7_done_hold_sec: 0.20
-    grasp_type7_min_rotation_sec: 0.50
-    grasp_type7_stop_rotation_when_done: true
-    # Repeat: rotation -> index/middle/thumb/ring transition -> rotation -> ...
-    # until another /grasp_type or /pose_type command changes the state.
-    grasp_type7_repeat_transition_cycle: true
-
-
-    # grasp_type=7 first transition step after rotation_done.
-    # Current scope: index finger only.
-    # 1) remove index from active grasp set first, so centroid/force redistributes
-    #    to thumb+middle+ring before detaching the index.
-    # 2) PD-control index to pose_type=2 index joints until max angle error <= 5 deg.
-    # 3) PD-control only index joint_2_1 target to 45 deg, holding the other index
-    #    joints at pose_type=2, until max angle error <= 5 deg.
-    # 4) reattach index toward the current centroid with J^T torque.
-    grasp_type7_index_transition_enable: true
-    grasp_type7_index_pd_tolerance_rad: 0.0872665
-    grasp_type7_index_first_joint_target_rad: 0.785398
-    grasp_type7_index_attach_force: 1.0
-    grasp_type7_index_attach_tau_limit: 0.8
-
-    # grasp_type=7 second transition step after index reattachment.
-    # Middle joint_3_1 moves to 30 deg; middle joints 2~4 hold pose_type=2.
-    grasp_type7_middle_transition_enable: true
-    grasp_type7_middle_first_joint_target_rad: 0.523599
-    grasp_type7_middle_attach_force: 1.0
-    grasp_type7_middle_attach_tau_limit: 0.8
-
-    # grasp_type=7 third transition step after middle reattachment.
-    # Before detaching thumb, active grasp set becomes index+middle+ring, so the
-    # centroid is the mean of currently contacting fingers. Thumb PD target is
-    # [0 deg, 140 deg, 0 deg, pose_type=2 thumb joint_1_4], then thumb reattaches by J^T torque toward
-    # a thumb-biased centroid.
-    grasp_type7_thumb_transition_enable: true
-    grasp_type7_thumb_joint1_target_rad: 0.0
-    grasp_type7_thumb_joint2_target_rad: 2.443461
-    grasp_type7_thumb_joint3_target_rad: 0.0
-    grasp_type7_thumb_joint4_target_rad: -0.2340
-    grasp_type7_thumb_attach_force: 1.0
-    grasp_type7_thumb_attach_tau_limit: 0.8
-
-    # grasp_type=7 fourth transition step after thumb reattachment.
-    # Ring joint_4_1 moves to 9 deg; ring joints 2~4 hold pose_type=2.
-    # Thumb remains attached, so the ordinary thumb-biased centroid is used.
-    grasp_type7_ring_transition_enable: true
-    grasp_type7_ring_first_joint_target_rad: 0.157080
-    grasp_type7_ring_attach_force: 1.0
-    grasp_type7_ring_attach_tau_limit: 0.8
-
-    # Shared attach completion detector before moving to the next transition finger.
-    grasp_type7_transition_attach_qdot_threshold: 0.08
-    grasp_type7_transition_attach_hold_sec: 0.20
-    grasp_type7_transition_attach_min_sec: 0.30
+    # grasp_type=7: floor contact followed by thumb/index pinch hold.
+    card_floor_force_n: 3.0
+    card_floor_hold_force_n: 3.0
+    card_pinch_force_n: 4.0
+    card_pinch_z_kp: 500.0
+    card_pinch_z_force_limit_n: 5.0
+    card_index_tip_target_deg: 80.0
+    card_index_tip_kp: 6.0
+    card_index_tip_kd: 3.0
+    card_index_tip_tau_limit: 0.50
+    card_tip_stall_threshold_m: 0.0002
+    card_floor_stall_sec: 0.20
+    card_pinch_stall_sec: 0.10
+    card_thumb_j1_hold_kp: 0.60
+    card_thumb_j1_hold_kd: 0.10
+    card_thumb_j1_hold_tau_limit: 0.40
+    card_floor_timeout_sec: 2.0
+    card_pinch_timeout_sec: 1.0
+    card_joint_state_timeout_sec: 0.10
 
     # grasp_type=6: enveloping grasp mode
     # time-only sequence:

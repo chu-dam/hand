@@ -71,10 +71,6 @@ through the current Jacobians, latches
 `controller_phase=force_balance_error`, and rejects relative-rotation targets
 until a grasp type is selected again.
 
-`grasp_type=7` intentionally remains on its legacy policy: thumb-biased `Cv`,
-inverse-distance coefficients, and the last active finger as the pivot.
-`thumb_centroid_bias` applies only to this legacy type-7 path.
-
 Every inactive finger in regular grasp types 1-5 holds all four joints at the
 currently selected pre-grasp pose. Because a newly selected finger is already
 waiting there, it joins the Jacobian-transpose grasp immediately without a
@@ -82,24 +78,19 @@ separate PD preparation delay or force blend. A 2F-I/2F-M switch still holds
 the three-finger bridge for 0.5 s to preserve grasp continuity; relative-
 rotation targets are rejected during that bridge.
 
-Regular grasp types also run predictive adjacent-finger link avoidance. Joint
-feedback and the XML chain dimensions produce a simplified capsule model for
-each moving phalanx. An inactive finger first avoids an adjacent active finger;
-while that inactive finger is moving, it becomes an avoidance source for the
-next inactive neighbor. This chained propagation handles cases such as active
-middle -> avoiding ring -> avoiding pinky without spreading undisturbed
-inactive fingers. Both measured-velocity prediction and the previewed avoidance
-command are checked. Index, middle, and ring move joint 1; pinky moves joint 2
-to avoid ring. The smaller of current and 0.25-second predicted surface
-clearance activates avoidance below 9 mm and releases it above 10 mm. Capsules
-use a conservative 9 mm radius. Finite-difference FK selects the sign that
-increases clearance; only the selected avoidance-joint PD target moves,
-with a 0.40 rad offset, 1.5 rad/s target rate, and a damped dedicated command
-(`Kp=0.5`, `Kd=0.10`, limit=0.25 N.m). A direction change requires at least
-0.1 mm difference between the +/-1 degree FK trials. The other three joints
-remain at pre-grasp. The palm-side root segment is ignored because adjacent
-roots are naturally close. Debug fields report minimum clearance, five joint
-offsets, and five activation flags.
+Regular grasp types use adjacent-joint following for inactive-finger collision
+avoidance. The monitored chain is index J1 -> middle J1 -> ring J1 -> pinky J2.
+When adjacent values approach or cross within 2 degrees, their current offset
+is stored. The inactive finger then tracks the adjacent joint displacement and
+velocity with dedicated PD control. A following inactive finger can become the
+source for the next inactive finger, so avoidance propagates from middle to
+ring to pinky in the same control cycle. Downstream targets use the propagated
+command target instead of waiting for upstream joint feedback. Following ends
+when the source moves at least 2 degrees away on the safe side; ordinary pose
+PD completes the follower's return to pre-grasp. Joint limits keep a 0.03 rad
+margin; defaults
+are `Kp=0.5`, `Kd=0.10`, and `limit=0.25 N.m`. The remaining three joints stay
+at pre-grasp, and ENV does not use this avoidance path.
 
 ## Relative rotation command
 
@@ -195,6 +186,24 @@ condition number, and the exact clipped 20-joint delta in
 `translation_torques`. The phase is one of `translating`,
 `translation_reached`, `translation_timeout`, or `translation_error`.
 
+## Floor-card pinch (`grasp_type=7`)
+
+CARD starts only from card pre-grasp (`pose_type=4`). Thumb and index first receive 3 N in
+World `-Z`; if both FK fingertip positions stay within 0.2 mm for 0.2 seconds,
+the index additionally receives 4 N toward the thumb in the World XY plane.
+Both fingers keep World `-Z` contact-height feedback, and a second 0.1-second
+stall stores the current index J1–J3 angles and holds them while index J4 moves
+toward 80 degrees. J1–J3 use the ordinary pre-grasp PD (`Kp=0.285`, `Kd=0.05`,
+limit `0.25 N·m`), while J4 uses `Kp=6.0`, `Kd=1.4`, limit `0.50 N·m`.
+The pinch forces remain active and this final phase has no timeout. Pose, grasp,
+Teaching, RELEASE,
+or stale JointState commands cancel CARD control. The command sequence is:
+
+```bash
+ros2 topic pub --once /pose_type std_msgs/msg/Int32 "{data: 4}"
+ros2 topic pub --once /grasp_type std_msgs/msg/Int32 "{data: 7}"
+```
+
 ## Tuning
 
 Main tuning values are in:
@@ -208,7 +217,7 @@ Common values to change:
 ```yaml
 use_finger_count: 5
 alpha1: 3.0
-pose_kp: 0.4
+pose_kp: 0.285
 pose_kd: 0.05
 pose_pd_limit: 0.25
 min_tip_distance: 0.018
@@ -267,9 +276,9 @@ Both adapters use this controller:
 - `grasp_real_node.py`: ROS joint-state/effort I/O, gravity compensation, and friction compensation.
 - `src/mujoco/grasp_sim.py`: MuJoCo state/actuator I/O and simulation gravity compensation.
 
-The shared controller includes pose control, grasp types 1–7, finger switching,
+The shared controller includes pose control, grasp types 1–6, finger switching,
 inactive-finger targets, envelop grasp, polygon-centroid groped grasp, collision
-repulsion, and grasp-type-7 rotation/transition logic. Therefore changes to
+repulsion, and relative Cartesian manipulation. Therefore changes to
 `grasp_policy.py`, `poses.py`, `hand_model.py`, or `grasp_controller.py` are
 used by both real hardware and MuJoCo.
 
