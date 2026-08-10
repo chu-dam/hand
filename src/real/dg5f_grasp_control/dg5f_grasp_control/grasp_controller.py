@@ -24,7 +24,6 @@ from dg5f_grasp_control.kinematics import (
     tip_position,
 )
 from dg5f_grasp_control.poses import (
-    HAND_CARD_PRE_GRASP_POSE,
     HAND_NORMAL_POSE,
     HAND_PRE_GRASP_POSE,
     POSE_TYPE_TARGETS,
@@ -245,6 +244,7 @@ class GraspController:
         self.card_thumb_j1_hold_error_rad = 0.0
         self.card_thumb_j1_hold_tau = 0.0
         self.card_index_flex_hold_target = None
+        self.card_index_tip_reached_since = None
 
         initial_count = cfg.use_finger_count if 1 <= cfg.use_finger_count <= 5 else 1
         self.use_fingers = selected_fingers(initial_count)
@@ -323,6 +323,7 @@ class GraspController:
         self.card_thumb_j1_hold_error_rad = 0.0
         self.card_thumb_j1_hold_tau = 0.0
         self.card_index_flex_hold_target = None
+        self.card_index_tip_reached_since = None
 
     def _reset_regular_force_balance_state(self) -> None:
         self.regular_force_balance_error_started_at = None
@@ -863,8 +864,37 @@ class GraspController:
         else:
             reference_angular_velocity = 0.0
 
-        position_kp = float(self.cfg.relative_rotation_position_kp)
-        position_kd = float(self.cfg.relative_rotation_position_kd)
+        alpha1 = float(self.cfg.alpha1)
+        alpha1_reference = float(
+            self.cfg.relative_rotation_alpha1_reference
+        )
+        alpha1_double_gain_scale = float(
+            self.cfg.relative_rotation_alpha1_double_gain_scale
+        )
+        negative_direction_gain_scale = float(
+            self.cfg.relative_rotation_negative_direction_gain_scale
+        )
+        if (
+            not np.isfinite(alpha1)
+            or not np.isfinite(alpha1_reference)
+            or not np.isfinite(alpha1_double_gain_scale)
+            or not np.isfinite(negative_direction_gain_scale)
+            or alpha1 < 0.0
+            or alpha1_reference <= 0.0
+            or alpha1_double_gain_scale <= 1.0
+            or negative_direction_gain_scale <= 0.0
+        ):
+            self.relative_rotation_phase = "rotation_error"
+            self._log("[RELATIVE_ROTATION] stopped: invalid alpha1 gain scaling")
+            return rotation_forces
+        gain_exponent = float(np.log2(alpha1_double_gain_scale))
+        gain_scale = float(
+            np.power(alpha1 / alpha1_reference, gain_exponent)
+        )
+        if self.relative_rotation_target_rad < 0.0:
+            gain_scale *= negative_direction_gain_scale
+        position_kp = float(self.cfg.relative_rotation_position_kp) * gain_scale
+        position_kd = float(self.cfg.relative_rotation_position_kd) * gain_scale
         position_error_limit = float(
             self.cfg.relative_rotation_position_error_limit_m
         )
@@ -1622,6 +1652,7 @@ class GraspController:
             finger: False
             for finger in self.card_stall_reference_positions
         }
+        self.card_index_tip_reached_since = None
         self.card_thumb_j1_hold_error_rad = 0.0
         self.card_thumb_j1_hold_tau = 0.0
 
@@ -1795,15 +1826,16 @@ class GraspController:
             self.cfg.card_floor_force_n,
             self.cfg.card_floor_hold_force_n,
             self.cfg.card_pinch_force_n,
-            self.cfg.card_pinch_z_kp,
-            self.cfg.card_pinch_z_force_limit_n,
             self.cfg.card_index_tip_target_deg,
             self.cfg.card_index_tip_kp,
             self.cfg.card_index_tip_kd,
             self.cfg.card_index_tip_tau_limit,
+            self.cfg.card_index_tip_tolerance_deg,
+            self.cfg.card_index_tip_stable_sec,
             self.cfg.card_tip_stall_threshold_m,
             self.cfg.card_floor_stall_sec,
             self.cfg.card_pinch_stall_sec,
+            self.cfg.card_post_pinch_delay_sec,
             self.cfg.card_thumb_j1_hold_kp,
             self.cfg.card_thumb_j1_hold_kd,
             self.cfg.card_thumb_j1_hold_tau_limit,
@@ -1814,8 +1846,12 @@ class GraspController:
         if not all(np.isfinite(value) and value > 0.0 for value in values):
             self._log("[CARD] ignored: every CARD gain/limit must be finite and > 0")
             return False
-        if self.cfg.card_index_tip_target_deg >= 180.0:
-            self._log("[CARD] ignored: index tip target must be < 180 deg")
+        if (
+            self.cfg.card_index_tip_target_deg >= 180.0
+            or not np.isfinite(self.cfg.card_index_tip_return_deg)
+            or abs(self.cfg.card_index_tip_return_deg) >= 180.0
+        ):
+            self._log("[CARD] ignored: index tip targets must be within 180 deg")
             return False
         self.cancel_relative_rotation()
         self.cancel_relative_translation()
@@ -1834,9 +1870,16 @@ class GraspController:
             finger: tip_position(self.hand_q, finger)
             for finger in self.use_fingers
         }
-        self._set_card_phase("card_floor_contact", now, tips)
+        self.card_floor_contact_positions = _copy_finger_vectors(tips)
+        thumb_j1 = FINGER_JOINT_INDEX[CARD_THUMB_ID][0]
+        self.card_thumb_j1_hold_target = float(self.hand_q[thumb_j1])
+        self._set_card_phase(
+            "card_pinch",
+            now,
+            {CARD_INDEX_ID: tips[CARD_INDEX_ID]},
+        )
         self._log(
-            "[COMMAND] grasp_type=7 -> CARD_GRASP, phase=card_floor_contact"
+            "[COMMAND] grasp_type=7 -> CARD_GRASP, phase=card_pinch"
         )
         return True
 
@@ -1878,7 +1921,9 @@ class GraspController:
         if self.card_phase not in {
             "card_floor_contact",
             "card_pinch",
+            "card_post_pinch_wait",
             "card_index_tip_flex",
+            "card_index_tip_return",
         }:
             self._abort_card_grasp(now, f"unknown phase {self.card_phase}")
             zero = {finger: np.zeros(3) for finger in self.use_fingers}
@@ -1949,7 +1994,7 @@ class GraspController:
                     f"stall_motion_mm={motion_mm}; phase=card_pinch"
                 )
 
-        else:  # card_pinch or card_index_tip_flex
+        else:  # card pinch, post-pinch wait, index flex, or index return
             if set(self.card_floor_contact_positions) != {
                 CARD_THUMB_ID,
                 CARD_INDEX_ID,
@@ -1959,6 +2004,9 @@ class GraspController:
                 return self._card_force_result(tip_positions, zero), np.zeros(
                     JOINT_COUNT
                 ), np.zeros(JOINT_COUNT)
+            down_force = (
+                float(self.cfg.card_floor_hold_force_n) * world_down_in_hand
+            )
             toward_thumb = (
                 tip_positions[CARD_THUMB_ID]
                 - tip_positions[CARD_INDEX_ID]
@@ -1987,34 +2035,17 @@ class GraspController:
                 self.rotation_hand_to_world.T
                 @ (toward_thumb_world / horizontal_distance)
             )
-            vertical_forces = {}
-            for finger in (CARD_THUMB_ID, CARD_INDEX_ID):
-                contact_world_z = float(
-                    (
-                        self.rotation_hand_to_world
-                        @ self.card_floor_contact_positions[finger]
-                    )[2]
-                )
-                current_world_z = float(
-                    (self.rotation_hand_to_world @ tip_positions[finger])[2]
-                )
-                force_world_z = np.clip(
-                    -float(self.cfg.card_floor_hold_force_n)
-                    + float(self.cfg.card_pinch_z_kp)
-                    * (contact_world_z - current_world_z),
-                    -float(self.cfg.card_pinch_z_force_limit_n),
-                    0.0,
-                )
-                vertical_forces[finger] = (
-                    self.rotation_hand_to_world.T
-                    @ np.array([0.0, 0.0, force_world_z])
-                )
             forces = {
-                CARD_THUMB_ID: vertical_forces[CARD_THUMB_ID],
-                CARD_INDEX_ID: (
-                    vertical_forces[CARD_INDEX_ID]
-                    + float(self.cfg.card_pinch_force_n) * toward_thumb
+                CARD_THUMB_ID: (
+                    down_force
+                    if self.card_phase in {
+                        "card_index_tip_flex",
+                        "card_index_tip_return",
+                    }
+                    else np.zeros(3, dtype=np.float64)
                 ),
+                CARD_INDEX_ID: down_force
+                + float(self.cfg.card_pinch_force_n) * toward_thumb,
             }
             if (
                 self.card_phase == "card_pinch"
@@ -2029,7 +2060,7 @@ class GraspController:
                     f"stable_for_sec={self.card_stable_elapsed_sec:.3f}, "
                     "stall_motion_mm="
                     f"{1000.0 * self.card_stall_max_motion_m:.3f}; "
-                    "phase=card_index_tip_flex"
+                    "phase=card_post_pinch_wait"
                 )
                 index_hold_joints = np.asarray(
                     FINGER_JOINT_INDEX[CARD_INDEX_ID][:-1],
@@ -2038,7 +2069,66 @@ class GraspController:
                 self.card_index_flex_hold_target = self.hand_q[
                     index_hold_joints
                 ].copy()
+                self.card_floor_contact_positions = _copy_finger_vectors(
+                    tip_positions
+                )
+                self._set_card_phase("card_post_pinch_wait", now)
+            if (
+                self.card_phase == "card_post_pinch_wait"
+                and float(now) - float(self.card_phase_started_at)
+                >= float(self.cfg.card_post_pinch_delay_sec)
+            ):
+                self._log(
+                    "[CARD] post-pinch wait complete; "
+                    f"delay_sec={self.cfg.card_post_pinch_delay_sec:.3f}; "
+                    "phase=card_index_tip_flex"
+                )
                 self._set_card_phase("card_index_tip_flex", now)
+            if self.card_phase in {
+                "card_index_tip_flex",
+                "card_index_tip_return",
+            }:
+                index_tip_joint = FINGER_JOINT_INDEX[CARD_INDEX_ID][-1]
+                index_target_deg = (
+                    float(self.cfg.card_index_tip_target_deg)
+                    if self.card_phase == "card_index_tip_flex"
+                    else float(self.cfg.card_index_tip_return_deg)
+                )
+                index_tip_error = float(
+                    np.deg2rad(index_target_deg)
+                    - self.hand_q[index_tip_joint]
+                )
+                tolerance = np.deg2rad(
+                    float(self.cfg.card_index_tip_tolerance_deg)
+                )
+                if (
+                    self.card_phase == "card_index_tip_return"
+                    and abs(index_tip_error) <= tolerance
+                ):
+                    self._log(
+                        "[CARD] index J4 return target reached; "
+                        f"target_deg={index_target_deg:.3f}; "
+                        f"error_deg={np.degrees(index_tip_error):.3f}; "
+                        "switching to grasp_type=1"
+                    )
+                    self.apply_grasp_type(1, now, internal=True)
+                elif abs(index_tip_error) <= tolerance:
+                    if self.card_index_tip_reached_since is None:
+                        self.card_index_tip_reached_since = float(now)
+                    elif (
+                        float(now) - float(self.card_index_tip_reached_since)
+                        >= float(self.cfg.card_index_tip_stable_sec)
+                    ):
+                        self._log(
+                            "[CARD] index J4 lift target reached; "
+                            f"error_deg={np.degrees(index_tip_error):.3f}; "
+                            "return_target_deg="
+                            f"{self.cfg.card_index_tip_return_deg:.3f}; "
+                            "phase=card_index_tip_return"
+                        )
+                        self._set_card_phase("card_index_tip_return", now)
+                else:
+                    self.card_index_tip_reached_since = None
 
         result = self._card_force_result(tip_positions, forces)
         inactive_pd = self._inactive_pre_grasp_pd(
@@ -2047,31 +2137,15 @@ class GraspController:
             collision_avoidance_enabled=False,
         )
         err = np.zeros(JOINT_COUNT, dtype=np.float64)
-        if self.card_phase == "card_pinch":
-            index_flex_joints = np.asarray(
-                FINGER_JOINT_INDEX[CARD_INDEX_ID][1:],
-                dtype=int,
-            )
-            index_tip_joint = index_flex_joints[-1]
-            tip_tau, tip_error = pose_pd(
-                [float(np.sum(HAND_CARD_PRE_GRASP_POSE[index_flex_joints]))],
-                [float(np.sum(self.hand_q[index_flex_joints]))],
-                [float(np.sum(qdot[index_flex_joints]))],
-                kp=self.cfg.pose_kp,
-                kd=self.cfg.pose_kd,
-                limit=self.cfg.pose_pd_limit,
-            )
-            inactive_pd[index_tip_joint] += tip_tau[0]
-            err[index_tip_joint] = tip_error[0]
-        if self.card_phase == "card_index_tip_flex":
-            if self.card_index_flex_hold_target is None:
-                self._abort_card_grasp(now, "missing index flex hold target")
-                return result, np.zeros(JOINT_COUNT), err
+        if self.card_phase in {"card_index_tip_flex", "card_index_tip_return"}:
             index_joints = np.asarray(
                 FINGER_JOINT_INDEX[CARD_INDEX_ID],
                 dtype=int,
             )
             index_hold_joints = index_joints[:-1]
+            if self.card_index_flex_hold_target is None:
+                self._abort_card_grasp(now, "missing index flex hold target")
+                return result, np.zeros(JOINT_COUNT), err
             hold_tau, hold_error = pose_pd(
                 self.card_index_flex_hold_target,
                 self.hand_q[index_hold_joints],
@@ -2080,19 +2154,24 @@ class GraspController:
                 kd=self.cfg.pose_kd,
                 limit=self.cfg.pose_pd_limit,
             )
+            result.tau[index_hold_joints] += hold_tau
+            err[index_hold_joints] = hold_error
             index_tip_joint = index_joints[-1]
+            target_deg = (
+                float(self.cfg.card_index_tip_target_deg)
+                if self.card_phase == "card_index_tip_flex"
+                else float(self.cfg.card_index_tip_return_deg)
+            )
             tip_tau, tip_error = pose_pd(
-                [np.deg2rad(float(self.cfg.card_index_tip_target_deg))],
+                [np.deg2rad(target_deg)],
                 [self.hand_q[index_tip_joint]],
                 [qdot[index_tip_joint]],
                 kp=self.cfg.card_index_tip_kp,
                 kd=self.cfg.card_index_tip_kd,
                 limit=self.cfg.card_index_tip_tau_limit,
             )
-            result.tau[index_hold_joints] += hold_tau
             result.tau[index_tip_joint] += tip_tau[0]
             result.tau = self._clip_regular_grasp_tau(result.tau)
-            err[index_hold_joints] = hold_error
             err[index_tip_joint] = tip_error[0]
         thumb_j1 = FINGER_JOINT_INDEX[CARD_THUMB_ID][0]
         hold_tau, hold_error = self._card_thumb_j1_hold_pd(qdot)

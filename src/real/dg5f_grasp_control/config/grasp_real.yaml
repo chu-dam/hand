@@ -90,8 +90,13 @@ grasp_real:
     # damping through its transmission and joint friction.
     relative_rotation_max_abs_deg: 10.0
     relative_rotation_reference_ramp_sec: 0.5
-    relative_rotation_position_kp: 20.0
+    relative_rotation_position_kp: 16.0
     relative_rotation_position_kd: 0.0
+    relative_rotation_alpha1_reference: 3.0
+    # Doubling alpha1 multiplies the Cartesian rotation gain by 1.67.
+    relative_rotation_alpha1_double_gain_scale: 1.67
+    # Compensate the measured negative-direction hardware asymmetry.
+    relative_rotation_negative_direction_gain_scale: 1.2
     relative_rotation_position_error_limit_m: 0.025
     relative_rotation_position_tolerance_m: 0.002
     relative_rotation_force_limit: 10.00
@@ -107,15 +112,17 @@ grasp_real:
     card_floor_force_n: 3.0
     card_floor_hold_force_n: 3.0
     card_pinch_force_n: 4.0
-    card_pinch_z_kp: 500.0
-    card_pinch_z_force_limit_n: 5.0
     card_index_tip_target_deg: 80.0
-    card_index_tip_kp: 6.0
-    card_index_tip_kd: 3.0
+    card_index_tip_kp: 1.0
+    card_index_tip_kd: 0.1
     card_index_tip_tau_limit: 0.50
+    card_index_tip_return_deg: 0.0
+    card_index_tip_tolerance_deg: 3.0
+    card_index_tip_stable_sec: 0.10
     card_tip_stall_threshold_m: 0.0002
     card_floor_stall_sec: 0.20
     card_pinch_stall_sec: 0.10
+    card_post_pinch_delay_sec: 2.0
     card_thumb_j1_hold_kp: 0.60
     card_thumb_j1_hold_kd: 0.10
     card_thumb_j1_hold_tau_limit: 0.40

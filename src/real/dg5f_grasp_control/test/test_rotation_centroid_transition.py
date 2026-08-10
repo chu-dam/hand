@@ -757,6 +757,81 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
                 atol=1e-12,
             )
 
+    def test_relative_rotation_gain_scales_with_alpha1(self):
+        def rotation_forces(alpha1):
+            controller = GraspController(
+                RuntimeConfig(
+                    alpha1=alpha1,
+                    relative_rotation_alpha1_reference=3.0,
+                    relative_rotation_alpha1_double_gain_scale=1.67,
+                    relative_rotation_reference_ramp_sec=0.0,
+                    relative_rotation_position_kp=1.0,
+                    relative_rotation_position_kd=0.0,
+                    relative_rotation_position_error_limit_m=1.0,
+                    relative_rotation_position_tolerance_m=0.0,
+                    relative_rotation_force_limit=100.0,
+                ),
+                log=None,
+            )
+            controller.apply_grasp_type(3, now=1.0)
+            output = controller.step(Q_FIXED, QDOT_ZERO, now=1.0)
+            controller.prepare_relative_rotation(np.deg2rad(5.0), now=1.0)
+            return controller._calc_relative_rotation_forces(
+                output.fingertip_positions,
+                now=1.1,
+            )
+
+        baseline = rotation_forces(3.0)
+        doubled = rotation_forces(6.0)
+        zero = rotation_forces(0.0)
+        for finger in baseline:
+            np.testing.assert_allclose(
+                doubled[finger],
+                1.67 * baseline[finger],
+                rtol=0.0,
+                atol=1e-12,
+            )
+            np.testing.assert_allclose(
+                zero[finger],
+                np.zeros(3),
+                rtol=0.0,
+                atol=0.0,
+            )
+
+    def test_negative_rotation_gain_is_1p2_times_positive(self):
+        def rotation_forces(target_deg):
+            controller = GraspController(
+                RuntimeConfig(
+                    relative_rotation_negative_direction_gain_scale=1.2,
+                    relative_rotation_reference_ramp_sec=0.0,
+                    relative_rotation_position_kp=1.0,
+                    relative_rotation_position_kd=0.0,
+                    relative_rotation_position_error_limit_m=1.0,
+                    relative_rotation_position_tolerance_m=0.0,
+                    relative_rotation_force_limit=100.0,
+                ),
+                log=None,
+            )
+            controller.apply_grasp_type(3, now=1.0)
+            output = controller.step(Q_FIXED, QDOT_ZERO, now=1.0)
+            controller.prepare_relative_rotation(
+                np.deg2rad(target_deg),
+                now=1.0,
+            )
+            return controller._calc_relative_rotation_forces(
+                output.fingertip_positions,
+                now=1.1,
+            )
+
+        positive = rotation_forces(5.0)
+        negative = rotation_forces(-5.0)
+        for finger in positive:
+            self.assertAlmostEqual(
+                np.linalg.norm(negative[finger]),
+                1.2 * np.linalg.norm(positive[finger]),
+                places=12,
+            )
+
     def test_rotation_damping_opposes_fingertip_velocity(self):
         cfg = RuntimeConfig(
             relative_rotation_reference_ramp_sec=0.0,
