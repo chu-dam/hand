@@ -1,3 +1,5 @@
+export type HandSide = "left" | "right";
+
 export interface RosTime {
   sec: number;
   nanosec: number;

@@ -36,7 +36,9 @@ hand/
     │   │       └── GraspDebug.msg
     │   └── dg5f_grasp_control/
     │       ├── config/
-    │       │   └── grasp_real.yaml
+    │       │   ├── grasp_real_common.yaml
+    │       │   ├── grasp_real_left_gains.yaml
+    │       │   └── grasp_real_right_gains.yaml
     │       ├── dg5f_grasp_control/
     │       │   ├── grasp_controller.py
     │       │   ├── grasp_real_node.py
@@ -79,7 +81,7 @@ hand/
 | `src/real/dg5f_grasp_control/dg5f_grasp_control/ros_debug.py` | 공통 제어 결과를 고정된 5손가락 `GraspDebug` 메시지로 변환 |
 | `src/real/dg5f_grasp_interfaces/msg/GraspDebug.msg` | 웹/RViz/Foxglove 시각화를 위한 fingertip, centroid, force, torque 인터페이스 |
 | `src/mujoco/grasp_sim.py` | MuJoCo model과 공통 `GraspController`를 연결하는 simulation adapter |
-| `src/real/dg5f_grasp_control/config/grasp_real.yaml` | real과 MuJoCo가 공유하는 controller parameter |
+| `src/real/dg5f_grasp_control/config/grasp_real_common.yaml` | real과 MuJoCo가 공유하는 controller parameter |
 | `src/vendor` | DG5F-S driver, description, hardware interface, TCP communication package |
 | `web_ui` | rosbridge를 통해 JointState/GraspDebug를 시각화하고 고수준 명령을 보내는 React UI |
 | `rb5_payload_gc_rotation_pub.py` | RB5 hand rotation matrix topic publisher |
@@ -220,7 +222,7 @@ ros2 topic pub --once /grasp_type std_msgs/msg/Int32 "{data: 3}"
 
 ## Run MuJoCo Simulation
 
-MuJoCo simulation도 real과 동일한 `GraspController`와 `grasp_real.yaml`을 사용합니다.
+MuJoCo simulation도 real과 동일한 `GraspController`와 `grasp_real_common.yaml`을 사용합니다.
 
 ```bash
 cd ~/hand
@@ -327,8 +329,7 @@ UI의 `Position torque max`에서는 DLS 위치 토크의 최대 절댓값을, D
 시작하고 RELEASE를 즉시 누를 수 있게 준비하십시오. Node.js 24 LTS와 rosbridge 설치 후
 다음 순서로 실행합니다.
 
-손 컨트롤러를 별도 터미널에서 먼저 실행한 뒤, rosbridge와 웹 UI를 한꺼번에
-실행하려면:
+rosbridge, 웹 UI, 왼손/오른손 컨트롤러 실행 API를 한꺼번에 실행하려면:
 
 ```bash
 cd ~/hand
@@ -360,10 +361,10 @@ cd ~/hand
 `start_web.sh` 터미널에서 `Ctrl+C`로 종료하는 것이 우선입니다.
 
 기본 ROS domain은 `73`입니다. 스크립트는 중복 포트를 검사하고 준비 상태를
-기다린 뒤 실행합니다. `Ctrl+C`는 rosbridge와 웹 UI만 종료하며 별도로 실행한
-손 컨트롤러는 유지합니다. 별도 실행한 손 컨트롤러도 반드시 같은
-`ROS_DOMAIN_ID=73`을 사용해야 합니다. 종료 전 반드시 웹에서 `RELEASE` →
-`NORMAL_POSE`를 확인하십시오. 아래는 구성 요소를 각각 실행하는 방법입니다.
+기다린 뒤 실행합니다. 웹의 `LEFT HAND` 또는 `RIGHT HAND`에서 `ACTIVATE`를
+누르면 해당 effort controller와 grasp controller가 실행됩니다. 다른 손을
+활성화하면 기존 손은 먼저 안전 종료됩니다. `Ctrl+C`는 UI에서 실행한 손
+컨트롤러, rosbridge, 웹 UI를 모두 종료합니다.
 
 ```bash
 sudo apt update
@@ -861,7 +862,7 @@ python3 rb5_payload_gc_rotation_pub.py
 주요 parameter는 다음 파일에서 조절합니다.
 
 ```text
-src/real/dg5f_grasp_control/config/grasp_real.yaml
+src/real/dg5f_grasp_control/config/grasp_real_common.yaml
 ```
 
 | Parameter group | Main parameters |

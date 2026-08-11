@@ -4,7 +4,6 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 WEB_DIR="${ROOT_DIR}/web_ui"
-CONTROLLER_MANAGER="/dg5f_s_left/controller_manager"
 
 CHECK_ONLY=false
 if [[ "${1:-}" == "--check" ]]; then
@@ -21,6 +20,7 @@ EOF
 fi
 
 BRIDGE_PID=""
+API_PID=""
 WEB_PID=""
 CLEANUP_STARTED=false
 
@@ -107,11 +107,12 @@ cleanup() {
   fi
   CLEANUP_STARTED=true
 
-  if [[ -n "${WEB_PID}${BRIDGE_PID}" ]]; then
+  if [[ -n "${WEB_PID}${API_PID}${BRIDGE_PID}" ]]; then
     printf '\n'
     log "실행한 프로세스를 역순으로 정리합니다."
   fi
   stop_process "웹 UI" "${WEB_PID}" 50
+  stop_process "컨트롤러 API" "${API_PID}" 100
   stop_process "rosbridge" "${BRIDGE_PID}" 100
   log "정리 완료"
 
@@ -144,7 +145,7 @@ else
 fi
 VITE_ENTRY="${WEB_DIR}/node_modules/vite/bin/vite.js"
 
-for command_name in ros2 timeout ss setsid ps tr; do
+for command_name in ros2 python3 ss setsid ps tr; do
   command -v "${command_name}" >/dev/null 2>&1 \
     || die "필수 명령을 찾을 수 없습니다: ${command_name}"
 done
@@ -163,16 +164,8 @@ fi
 if port_listening 8080; then
   die "8080 포트가 이미 사용 중입니다. 기존 웹 UI를 먼저 종료하세요."
 fi
-
-controller_manager_available() {
-  timeout 4 ros2 control list_controllers \
-    -c "${CONTROLLER_MANAGER}" >/dev/null 2>&1
-}
-
-if controller_manager_available; then
-  log "외부에서 실행 중인 손 컨트롤러를 확인했습니다."
-else
-  warn "손 컨트롤러가 아직 보이지 않습니다. 웹은 실행되지만 HAND/DEBUG는 대기 상태가 됩니다."
+if port_listening 8081; then
+  die "8081 포트가 이미 사용 중입니다. 기존 컨트롤러 API를 먼저 종료하세요."
 fi
 
 if [[ "${CHECK_ONLY}" == true ]]; then
@@ -205,6 +198,11 @@ setsid ros2 launch rosbridge_server rosbridge_websocket_launch.xml \
 BRIDGE_PID=$!
 wait_for_port "rosbridge" 9090 "${BRIDGE_PID}" 30
 
+log "컨트롤러 API 시작"
+setsid python3 "${ROOT_DIR}/scripts/controller_api.py" &
+API_PID=$!
+wait_for_port "컨트롤러 API" 8081 "${API_PID}" 10
+
 log "웹 UI 시작"
 (
   cd "${WEB_DIR}"
@@ -216,12 +214,13 @@ wait_for_port "웹 UI" 8080 "${WEB_PID}" 20
 
 printf '\n'
 log "전체 준비 완료: http://127.0.0.1:8080"
-log "이 터미널의 Ctrl+C는 웹 UI와 rosbridge만 종료하며, 외부 손 컨트롤러는 유지합니다."
-warn "종료 전 웹에서 RELEASE를 누르고 NORMAL_POSE를 확인한 뒤 Ctrl+C를 누르세요."
+log "웹에서 왼손 또는 오른손 컨트롤러를 활성화할 수 있습니다."
+warn "이 터미널의 Ctrl+C는 UI에서 실행한 손 컨트롤러도 함께 종료합니다."
 printf '\n'
 
 while true; do
   process_alive "${WEB_PID}" || die "웹 UI가 예기치 않게 종료되었습니다."
+  process_alive "${API_PID}" || die "컨트롤러 API가 예기치 않게 종료되었습니다."
   process_alive "${BRIDGE_PID}" || die "rosbridge가 예기치 않게 종료되었습니다."
   sleep 1
 done

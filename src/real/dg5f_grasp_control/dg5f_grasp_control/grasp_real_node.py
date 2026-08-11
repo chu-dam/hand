@@ -13,7 +13,7 @@ from std_msgs.msg import Bool, Float64, Float64MultiArray, Int32
 
 from dg5f_grasp_control.config import RuntimeConfig
 from dg5f_grasp_control.control_utils import pose_pd, publish_effort, zero_effort
-from dg5f_grasp_control.friction import calc_friction
+from dg5f_grasp_control.friction import calc_friction, set_hand_side as set_friction_hand_side
 from dg5f_grasp_control.grasp_controller import (
     CARD_INDEX_ID,
     CARD_THUMB_ID,
@@ -25,6 +25,7 @@ from dg5f_grasp_control.hand_model import (
     HAND_JOINT_NAMES,
     JOINT_COUNT,
 )
+from dg5f_grasp_control.kinematics import set_hand_side
 from dg5f_grasp_control.mujoco_gravity import MujocoGravityCompensator
 from dg5f_grasp_control.poses import POSE_TYPE_TARGETS
 from dg5f_grasp_control.ros_debug import build_grasp_debug_message
@@ -33,14 +34,18 @@ from dg5f_grasp_control.ros_debug import build_grasp_debug_message
 FINGER_NAMES = ("thumb", "index", "middle", "ring", "pinky")
 
 
-def _default_model_path():
+def _default_model_path(hand_side):
+    if hand_side == "right":
+        share_dir = get_package_share_directory("dg5f_s_description")
+        return os.path.join(share_dir, "urdf", "dg5fs_right_w_mount.urdf")
+
     share_dir = get_package_share_directory("dg5f_grasp_control")
     return os.path.join(share_dir, "models", "dg5fs_left_w_mount.xml")
 
 
 def _declare_and_load_config(node):
     defaults = RuntimeConfig()
-    node.declare_parameter("model_xml_path", _default_model_path())
+    node.declare_parameter("model_xml_path", "")
     for name, value in defaults.__dict__.items():
         node.declare_parameter(name, value)
 
@@ -48,7 +53,10 @@ def _declare_and_load_config(node):
         name: node.get_parameter(name).value
         for name in defaults.__dict__.keys()
     })
-    return cfg, node.get_parameter("model_xml_path").value
+    set_hand_side(cfg.hand_side)
+    set_friction_hand_side(cfg.hand_side)
+    model_path = node.get_parameter("model_xml_path").value
+    return cfg, model_path or _default_model_path(cfg.hand_side)
 
 
 class GraspRealRunner:
@@ -72,7 +80,7 @@ class GraspRealRunner:
         self.gravity_in_hand_frame = None
         self.last_debug_publish_time = 0.0
 
-        self.teaching_mode = False
+        self.teaching_mode = cfg.start_teaching_mode
         self.teaching_hold_active = False
         self.teaching_hold_pose = np.zeros(JOINT_COUNT, dtype=np.float64)
 
@@ -111,6 +119,7 @@ class GraspRealRunner:
         )
 
     def joint_cb(self, msg):
+        now = time()
         positions = dict(zip(msg.name, msg.position))
         new_q = self.hand_q.copy()
         for index, name in enumerate(HAND_JOINT_NAMES):
@@ -118,15 +127,20 @@ class GraspRealRunner:
                 new_q[index] = positions[name]
 
         velocities = dict(zip(msg.name, msg.velocity))
+        qdot_raw = None
         if all(name in velocities for name in HAND_JOINT_NAMES):
             qdot_raw = np.array(
                 [velocities[name] for name in HAND_JOINT_NAMES],
                 dtype=np.float64,
             )
+
+        if qdot_raw is not None:
+            qdot_raw = np.array(
+                qdot_raw,
+                dtype=np.float64,
+            )
             if not np.all(np.isfinite(qdot_raw)):
                 qdot_raw = None
-        else:
-            qdot_raw = None
 
         if qdot_raw is not None:
             alpha = float(np.clip(self.cfg.qdot_alpha, 0.0, 1.0))
@@ -138,7 +152,7 @@ class GraspRealRunner:
 
         self.hand_q = new_q
         self.got_state = True
-        self.last_joint_state_time = time()
+        self.last_joint_state_time = now
 
     def command_cb(self, msg):
         if self.teaching_mode or self.pending_teaching_mode is True:

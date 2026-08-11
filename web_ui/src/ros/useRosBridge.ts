@@ -5,6 +5,7 @@ import { decodeRotationMatrix, IDENTITY_ROTATION_MATRIX } from "./frames";
 import type {
   Float64MultiArrayMessage,
   GraspDebugMessage,
+  HandSide,
   JointStateMessage,
   Point3,
   RosConnectionStatus,
@@ -12,15 +13,20 @@ import type {
   Vector3StampedMessage,
 } from "./types";
 
-const JOINT_STATE_TOPIC = "/dg5f_s_left/joint_states";
-const DEBUG_TOPIC = "/dg5f_grasp_control/debug";
-const GRASP_TOPIC = "/grasp_type";
-const POSE_TOPIC = "/pose_type";
-const ALPHA_TOPIC = "/dg5f_grasp_control/alpha1_cmd";
-const TEACHING_TOPIC = "/dg5f_grasp_control/teaching_mode";
-const ROTATION_TOPIC = "/dg5f_grasp_control/rotation_matrix_cmd";
-const RELATIVE_ROTATION_DEG_TOPIC = "/dg5f_grasp_control/relative_rotation_deg_cmd";
-const RELATIVE_TRANSLATION_TOPIC = "/dg5f_grasp_control/relative_translation_cmd";
+function topicsForHand(side: HandSide) {
+  const prefix = side === "right" ? "/dg5f_grasp_control/right" : "/dg5f_grasp_control";
+  return {
+    jointState: `/dg5f_s_${side}/joint_states`,
+    debug: `${prefix}/debug`,
+    grasp: side === "right" ? `${prefix}/grasp_type` : "/grasp_type",
+    pose: side === "right" ? `${prefix}/pose_type` : "/pose_type",
+    alpha: `${prefix}/alpha1_cmd`,
+    teaching: `${prefix}/teaching_mode`,
+    rotation: `${prefix}/rotation_matrix_cmd`,
+    relativeRotationDegrees: `${prefix}/relative_rotation_deg_cmd`,
+    relativeTranslation: `${prefix}/relative_translation_cmd`,
+  };
+}
 
 const RECONNECT_DELAY_MS = 2_000;
 const JOINT_RENDER_PERIOD_MS = 33;
@@ -74,7 +80,7 @@ export function defaultRosbridgeUrl(): string {
   return `${scheme}://${hostname}:9090`;
 }
 
-export function useRosBridge(url: string) {
+export function useRosBridge(url: string, handSide: HandSide) {
   const [status, setStatus] = useState<RosConnectionStatus>("connecting");
   const [error, setError] = useState("");
   const [jointState, setJointState] = useState<JointStateMessage | null>(null);
@@ -95,6 +101,7 @@ export function useRosBridge(url: string) {
     let reconnectTimer: number | undefined;
     let lastJointRenderAt = 0;
     const ros = new Ros();
+    const topics = topicsForHand(handSide);
     activeRos.current = ros;
 
     const clearTelemetry = () => {
@@ -117,7 +124,7 @@ export function useRosBridge(url: string) {
 
     const jointTopic = new Topic<JointStateMessage>({
       ros,
-      name: JOINT_STATE_TOPIC,
+      name: topics.jointState,
       messageType: "sensor_msgs/msg/JointState",
       throttle_rate: JOINT_RENDER_PERIOD_MS,
       queue_length: 1,
@@ -125,14 +132,14 @@ export function useRosBridge(url: string) {
     });
     const debugTopic = new Topic<GraspDebugMessage>({
       ros,
-      name: DEBUG_TOPIC,
+      name: topics.debug,
       messageType: "dg5f_grasp_interfaces/msg/GraspDebug",
       queue_length: 1,
       reconnect_on_close: false,
     });
     const rotationTopic = new Topic<Float64MultiArrayMessage>({
       ros,
-      name: ROTATION_TOPIC,
+      name: topics.rotation,
       messageType: "std_msgs/msg/Float64MultiArray",
       throttle_rate: ROTATION_RENDER_PERIOD_MS,
       queue_length: 1,
@@ -148,15 +155,15 @@ export function useRosBridge(url: string) {
     });
 
     publishers.current = {
-      grasp: commandTopic(GRASP_TOPIC, "std_msgs/msg/Int32"),
-      pose: commandTopic(POSE_TOPIC, "std_msgs/msg/Int32"),
-      alpha: commandTopic(ALPHA_TOPIC, "std_msgs/msg/Float64"),
-      teaching: commandTopic(TEACHING_TOPIC, "std_msgs/msg/Bool"),
-      rotation: commandTopic(ROTATION_TOPIC, "std_msgs/msg/Float64MultiArray"),
-      relativeRotationDegrees: commandTopic(RELATIVE_ROTATION_DEG_TOPIC, "std_msgs/msg/Float64"),
+      grasp: commandTopic(topics.grasp, "std_msgs/msg/Int32"),
+      pose: commandTopic(topics.pose, "std_msgs/msg/Int32"),
+      alpha: commandTopic(topics.alpha, "std_msgs/msg/Float64"),
+      teaching: commandTopic(topics.teaching, "std_msgs/msg/Bool"),
+      rotation: commandTopic(topics.rotation, "std_msgs/msg/Float64MultiArray"),
+      relativeRotationDegrees: commandTopic(topics.relativeRotationDegrees, "std_msgs/msg/Float64"),
       relativeTranslation: new Topic<Vector3StampedMessage>({
         ros,
-        name: RELATIVE_TRANSLATION_TOPIC,
+        name: topics.relativeTranslation,
         messageType: "geometry_msgs/msg/Vector3Stamped",
         queue_size: 1,
         reconnect_on_close: false,
@@ -233,7 +240,7 @@ export function useRosBridge(url: string) {
       publishers.current = { ...EMPTY_PUBLISHERS };
       ros.close();
     };
-  }, [attempt, url]);
+  }, [attempt, handSide, url]);
 
   const publish = useCallback((topic: CommandTopic | null, message: CommandMessage): boolean => {
     const ros = activeRos.current;

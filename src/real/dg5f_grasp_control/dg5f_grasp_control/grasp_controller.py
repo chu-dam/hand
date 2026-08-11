@@ -24,9 +24,7 @@ from dg5f_grasp_control.kinematics import (
     tip_position,
 )
 from dg5f_grasp_control.poses import (
-    HAND_NORMAL_POSE,
-    HAND_PRE_GRASP_POSE,
-    POSE_TYPE_TARGETS,
+    get_pose_type_targets,
 )
 
 FINGER_SWITCH_VIA_THREE_DELAY = 0.5
@@ -150,6 +148,7 @@ class GraspController:
         self.cfg = cfg
         self._log_fn = log
         self.hand_q = np.zeros(JOINT_COUNT, dtype=np.float64)
+        self.pose_type_targets = get_pose_type_targets(cfg.hand_side)
 
         self.pose_type = 1
         self.pre_grasp_pose_type = 2
@@ -2186,10 +2185,13 @@ class GraspController:
         self.hand_q = q.copy()
 
     def _current_pre_grasp_pose(self):
-        return POSE_TYPE_TARGETS.get(self.pre_grasp_pose_type, HAND_PRE_GRASP_POSE)
+        return self.pose_type_targets.get(
+            self.pre_grasp_pose_type,
+            self.pose_type_targets[2],
+        )
 
     def _pose_target_for_type(self, pose_type):
-        return POSE_TYPE_TARGETS.get(pose_type, HAND_NORMAL_POSE)
+        return self.pose_type_targets.get(pose_type, self.pose_type_targets[1])
 
     def _apply_pose_type_command(self, pose_type, now):
         self.cancel_relative_rotation()
@@ -2645,7 +2647,7 @@ class GraspController:
         return tau, pd, err
 
     def apply_pose_type(self, pose_type: int, now: float) -> None:
-        if pose_type not in POSE_TYPE_TARGETS:
+        if pose_type not in self.pose_type_targets:
             raise ValueError("pose_type must be 1, 2, 3, or 4")
         state, state_start, _ = self._apply_pose_type_command(pose_type, now)
         self.state = state
@@ -2810,7 +2812,7 @@ class GraspController:
 
         if self.state == "NORMAL_POSE":
             tau, err = pose_pd(
-                HAND_NORMAL_POSE,
+                self.pose_type_targets[1],
                 self.hand_q,
                 qdot,
                 kp=self.cfg.pose_kp,

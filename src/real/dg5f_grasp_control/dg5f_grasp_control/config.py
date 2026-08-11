@@ -3,6 +3,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class RuntimeConfig:
+    hand_side: str = "left"
+    start_teaching_mode: bool = False
     joint_state_topic: str = "/dg5f_s_left/joint_states"
     effort_topic: str = "/dg5f_s_left/effort_controller/commands"
     command_topic: str = "/grasp_type"

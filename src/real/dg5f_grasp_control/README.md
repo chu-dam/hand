@@ -209,7 +209,7 @@ ros2 topic pub --once /grasp_type std_msgs/msg/Int32 "{data: 7}"
 Main tuning values are in:
 
 ```text
-config/grasp_real.yaml
+config/grasp_real_common.yaml
 ```
 
 Common values to change:
@@ -257,7 +257,7 @@ dg5f_grasp_control/grasp_real_node.py   ROS 2 node and state machine
 dg5f_grasp_control/kinematics.py        FK, tip position, numerical Jacobian
 dg5f_grasp_control/grasp_policy.py      alpha, centroid, collision avoidance, J.T force mapping
 dg5f_grasp_control/friction.py          friction compensation function
-dg5f_grasp_control/friction_params.py   measured friction coefficients
+dg5f_grasp_control/friction_params_*.py measured left/right friction coefficients
 dg5f_grasp_control/poses.py             normal pose and pre-grasp pose
 dg5f_grasp_control/mujoco_gravity.py    MuJoCo gravity compensation
 dg5f_grasp_control/hand_model.py        joint names and finger index mapping
@@ -290,7 +290,7 @@ source install/setup.bash
 python3 src/mujoco/grasp_sim.py
 ```
 
-The simulator reads `config/grasp_real.yaml` and subscribes to the same
+The simulator reads `config/grasp_real_common.yaml` and subscribes to the same
 `/grasp_type`, `/pose_type`, alpha1, relative-rotation-degree, and
 rotation-matrix topics as the real node. The relative command topic is
 `/dg5f_grasp_control/relative_rotation_deg_cmd`; it runs the same shared

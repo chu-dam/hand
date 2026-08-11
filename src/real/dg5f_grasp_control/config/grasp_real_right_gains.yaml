@@ -1,0 +1,57 @@
+grasp_real:
+  ros__parameters:
+    # Right-hand-only controller tuning.
+    pose_kp: 0.285
+    pose_kd: 0.05
+    pose_pd_limit: 0.25
+
+    fric_tanh_k: 17.0
+    fric_limit: 1.0
+    qdot_alpha: 1.0
+
+    alpha1: 3.0
+    groped_tau_limit: 3.0
+    groped_force_direction_sign: 1.0
+    thumb_centroid_bias: 0.5
+    rotation_force_balance_max_alpha_ratio: 10.0
+    force_balance_error_ramp_sec: 0.5
+
+    relative_translation_kp: 600.0
+    relative_translation_kd: 6.0
+    relative_translation_shape_kp: 120.0
+    relative_translation_shape_kd: 1.2
+    relative_translation_force_limit: 8.50
+    relative_translation_per_finger_force_limit: 5.50
+    relative_translation_dls_damping: 0.005
+    relative_translation_joint_kp: 1.20
+    relative_translation_joint_kd: 0.06
+    relative_translation_position_torque_limit: 0.30
+    relative_translation_nullspace_grasp_gain: 1.0
+
+    collision_repel_gain: 100.0
+    collision_repel_limit: 0.8
+    inactive_collision_pd_kp: 0.5
+    inactive_collision_pd_kd: 0.10
+    inactive_collision_pd_limit: 0.25
+
+    relative_rotation_position_kp: 16.0
+    relative_rotation_position_kd: 0.0
+    relative_rotation_alpha1_reference: 3.0
+    relative_rotation_alpha1_double_gain_scale: 1.67
+    relative_rotation_negative_direction_gain_scale: 1.2
+    relative_rotation_force_limit: 10.00
+
+    card_floor_force_n: 3.0
+    card_floor_hold_force_n: 3.0
+    card_pinch_force_n: 4.0
+    card_index_tip_kp: 1.0
+    card_index_tip_kd: 0.1
+    card_index_tip_tau_limit: 0.50
+    card_thumb_j1_hold_kp: 0.60
+    card_thumb_j1_hold_kd: 0.10
+    card_thumb_j1_hold_tau_limit: 0.40
+
+    envelop_tau_scale: 0.025
+    envelop_joint_delay: 0.20
+    envelop_non_thumb_tau_sign: 1.0
+    envelop_thumb_tau_sign: 1.0

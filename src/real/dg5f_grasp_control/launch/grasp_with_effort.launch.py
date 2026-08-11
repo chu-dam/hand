@@ -10,7 +10,12 @@ def generate_launch_description():
     grasp_pkg = FindPackageShare("dg5f_grasp_control")
     driver_pkg = FindPackageShare("dg5f_s_driver")
 
-    default_param_file = PathJoinSubstitution([grasp_pkg, "config", "grasp_real.yaml"])
+    common_param_file = PathJoinSubstitution([
+        grasp_pkg, "config", "grasp_real_common.yaml",
+    ])
+    default_param_file = PathJoinSubstitution([
+        grasp_pkg, "config", "grasp_real_left_gains.yaml",
+    ])
     effort_launch = PathJoinSubstitution([
         driver_pkg,
         "launch",
@@ -25,6 +30,6 @@ def generate_launch_description():
             executable="grasp_real",
             name="grasp_real",
             output="screen",
-            parameters=[LaunchConfiguration("param_file")],
+            parameters=[common_param_file, LaunchConfiguration("param_file")],
         ),
     ])

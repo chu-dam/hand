@@ -7,6 +7,7 @@ import URDFLoader, { type URDFRobot } from "urdf-loader";
 import {
   vectorMagnitude,
   type GraspDebugMessage,
+  type HandSide,
   type JointStateMessage,
   type Point3,
   type RotationMatrix3,
@@ -24,7 +25,6 @@ const FINGER_COLORS = [0xc84b42, 0x0b8f8f, 0x5965bd, 0xd3920b, 0x7d54a5];
 const FORCE_COLOR = 0x0b8f8f;
 const MODEL_PACKAGE = "dg5f_s_description";
 const MODEL_ROOT = "robot/dg5f_s_description";
-const MODEL_PATH = `${MODEL_ROOT}/urdf/dg5fs_left.urdf`;
 
 type ViewerStatus = "loading" | "ready" | "error";
 
@@ -34,6 +34,7 @@ interface ViewerState {
 }
 
 interface HandScene3DProps {
+  handSide: HandSide;
   jointState: JointStateMessage | null;
   debug: GraspDebugMessage | null;
   handToWorldRotation: RotationMatrix3;
@@ -291,6 +292,7 @@ function errorText(error: unknown): string {
 }
 
 export function HandScene3D({
+  handSide,
   jointState,
   debug,
   handToWorldRotation,
@@ -574,7 +576,7 @@ export function HandScene3D({
     };
 
     loader.load(
-      assetUrl(MODEL_PATH),
+      assetUrl(`${MODEL_ROOT}/urdf/dg5fs_${handSide}.urdf`),
       (robot) => {
         if (disposed) {
           disposeObject(robot);
@@ -615,7 +617,7 @@ export function HandScene3D({
       renderRef.current = () => undefined;
       resetViewRef.current = () => undefined;
     };
-  }, []);
+  }, [handSide]);
 
   const frameMatches = !debug || debug.header.frame_id === "link_base";
   const live = viewer.status === "ready" && mappedJointCount === EXPECTED_JOINTS.size;

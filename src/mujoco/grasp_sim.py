@@ -240,7 +240,7 @@ class GraspSim:
             / "real"
             / "dg5f_grasp_control"
             / "config"
-            / "grasp_real.yaml"
+            / "grasp_real_common.yaml"
         )
         self.cfg = (
             load_runtime_config_yaml(shared_yaml)

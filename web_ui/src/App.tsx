@@ -2,12 +2,14 @@ import { useEffect, useState } from "react";
 
 import brandLogoUrl from "../../logo.png";
 import { ControlPanel } from "./components/ControlPanel";
+import { ControllerLauncher } from "./components/ControllerLauncher";
 import { DebugReadout } from "./components/DebugReadout";
 import { ForceHistoryPanel } from "./components/ForceHistoryPanel";
 import { HandScene3D } from "./components/HandScene3D";
 import { JointTable } from "./components/JointTable";
 import { StatusPill } from "./components/StatusPill";
 import { defaultRosbridgeUrl, useRosBridge } from "./ros/useRosBridge";
+import type { HandSide } from "./ros/types";
 
 type NoticeTone = "ok" | "warning" | "error";
 
@@ -32,13 +34,14 @@ function pointText(point: { x: number; y: number; z: number } | undefined) {
 export function App() {
   const [rosbridgeUrl, setRosbridgeUrl] = useState(defaultRosbridgeUrl);
   const [urlDraft, setUrlDraft] = useState(rosbridgeUrl);
+  const [selectedHand, setSelectedHand] = useState<HandSide>("left");
   const [now, setNow] = useState(Date.now());
   const [notice, setNotice] = useState<Notice>({
     message: "웹 UI가 준비되었습니다. rosbridge 연결을 기다리는 중입니다.",
     tone: "warning",
   });
 
-  const ros = useRosBridge(rosbridgeUrl);
+  const ros = useRosBridge(rosbridgeUrl, selectedHand);
   const connected = ros.status === "connected";
   const jointAge = ageSeconds(ros.lastJointAt, now);
   const debugAge = ageSeconds(ros.lastDebugAt, now);
@@ -103,7 +106,7 @@ export function App() {
             tone={connected ? "ok" : ros.status === "error" ? "danger" : "wait"}
           />
           <StatusPill
-            label="HAND"
+            label={`HAND · ${selectedHand.toUpperCase()}`}
             value={handConnected ? "LIVE" : "WAITING"}
             tone={handConnected ? "ok" : "wait"}
           />
@@ -145,6 +148,12 @@ export function App() {
         </div>
       </section>
 
+      <ControllerLauncher
+        selectedHand={selectedHand}
+        onSelectHand={setSelectedHand}
+        onNotice={pushNotice}
+      />
+
       <section className="telemetry-ribbon">
         <article>
           <span>Grasp type</span>
@@ -171,6 +180,7 @@ export function App() {
       <section className="workspace">
         <div className="visual-column">
           <HandScene3D
+            handSide={selectedHand}
             jointState={ros.jointState}
             debug={ros.debug}
             handToWorldRotation={ros.handToWorldRotation}

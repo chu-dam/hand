@@ -11,10 +11,16 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
-        ("share/" + package_name + "/config", ["config/grasp_real.yaml"]),
+        ("share/" + package_name + "/config", [
+            "config/grasp_real_common.yaml",
+            "config/grasp_real_left_gains.yaml",
+            "config/grasp_real_right_gains.yaml",
+        ]),
         ("share/" + package_name + "/launch", [
             "launch/grasp_real.launch.py",
+            "launch/grasp_right_compensation.launch.py",
             "launch/grasp_with_effort.launch.py",
+            "launch/grasp_with_effort_right.launch.py",
         ]),
         ("share/" + package_name + "/models", ["models/dg5fs_left_w_mount.xml"]),
         ("share/" + package_name + "/models/meshes", glob("models/meshes/*.STL")),
