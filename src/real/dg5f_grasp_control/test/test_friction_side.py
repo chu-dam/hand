@@ -25,7 +25,8 @@ class FrictionSideTest(unittest.TestCase):
         qdot = np.linspace(-0.2, 0.2, 20)
         friction.set_hand_side("right")
         expected = (
-            friction_params_right.HAND_FRIC_FC
+            friction_params_right.HAND_FRIC_COULOMB_SCALE
+            * friction_params_right.HAND_FRIC_FC
             * np.tanh(20.0 * qdot)
             + friction_params_right.HAND_FRIC_B * qdot
         )

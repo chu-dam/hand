@@ -1,8 +1,8 @@
 grasp_real:
   ros__parameters:
     # Right-hand-only controller tuning.
-    pose_kp: 0.285
-    pose_kd: 0.05
+    pose_kp: 0.28
+    pose_kd: 0.06
     pose_pd_limit: 0.25
 
     fric_tanh_k: 17.0

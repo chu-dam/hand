@@ -31,14 +31,32 @@ FINGER_AVOIDANCE_JOINT_LOCAL_INDEX = {
     5: 1,
 }
 
-# Limits copied from dg5fs_left_w_mount.xml for each selected avoidance joint.
-FINGER_AVOIDANCE_JOINT_LIMITS = {
+# Limits copied from each hand URDF for the selected avoidance joints. The
+# right-hand joint coordinates are mirrored, so its limits are negated.
+LEFT_FINGER_AVOIDANCE_JOINT_LIMITS = {
     1: (-1.57079632679, 1.57079632679),
     2: (-0.261799387799, 0.837758040957),
     3: (-0.733038285838, 0.575958653158),
     4: (-0.837758040957, 0.209439510239),
     5: (-1.57079632679, 0.645771823238),
 }
+
+RIGHT_FINGER_AVOIDANCE_JOINT_LIMITS = {
+    finger: (-upper, -lower)
+    for finger, (lower, upper) in LEFT_FINGER_AVOIDANCE_JOINT_LIMITS.items()
+}
+
+
+def get_finger_avoidance_joint_limits(hand_side):
+    if hand_side == "left":
+        return LEFT_FINGER_AVOIDANCE_JOINT_LIMITS
+    if hand_side == "right":
+        return RIGHT_FINGER_AVOIDANCE_JOINT_LIMITS
+    raise ValueError("hand_side must be 'left' or 'right'")
+
+
+# Backward-compatible left-hand name.
+FINGER_AVOIDANCE_JOINT_LIMITS = LEFT_FINGER_AVOIDANCE_JOINT_LIMITS
 
 GRASP_TAU_SIGN = np.ones(JOINT_COUNT, dtype=np.float64)
 

@@ -12,11 +12,11 @@ from dg5f_grasp_control.grasp_policy import (
     GraspPolicyResult,
 )
 from dg5f_grasp_control.hand_model import (
-    FINGER_AVOIDANCE_JOINT_LIMITS,
     FINGER_AVOIDANCE_JOINT_LOCAL_INDEX,
     FINGER_JOINT_INDEX,
     GRASP_TAU_SIGN,
     JOINT_COUNT,
+    get_finger_avoidance_joint_limits,
     selected_fingers,
 )
 from dg5f_grasp_control.kinematics import (
@@ -149,6 +149,9 @@ class GraspController:
         self._log_fn = log
         self.hand_q = np.zeros(JOINT_COUNT, dtype=np.float64)
         self.pose_type_targets = get_pose_type_targets(cfg.hand_side)
+        self.finger_avoidance_joint_limits = (
+            get_finger_avoidance_joint_limits(cfg.hand_side)
+        )
 
         self.pose_type = 1
         self.pre_grasp_pose_type = 2
@@ -2379,7 +2382,7 @@ class GraspController:
             if source == 0:
                 command_targets[finger] = current[finger]
                 return current[finger]
-            lower, upper = FINGER_AVOIDANCE_JOINT_LIMITS[finger]
+            lower, upper = self.finger_avoidance_joint_limits[finger]
             usable_margin = min(margin, 0.49 * (upper - lower))
             waiting = float(pre_grasp_pose[joint_indices[finger]])
             source_target = (
@@ -2512,7 +2515,7 @@ class GraspController:
                         avoidance_state_index
                     ]
                 )
-                lower, upper = FINGER_AVOIDANCE_JOINT_LIMITS[finger]
+                lower, upper = self.finger_avoidance_joint_limits[finger]
                 margin = max(
                     0.0,
                     float(self.cfg.inactive_collision_joint_limit_margin_rad),
