@@ -40,18 +40,13 @@ grasp_real:
     rotation_force_balance_max_alpha_ratio: 10.0
     # Fade the last valid regular-grasp command to zero on a balance failure.
     force_balance_error_ramp_sec: 0.5
-    # Virtual-force diagnostics and zero-resultant shape stabilization. The
-    # centroid motion itself uses the DLS joint-position settings below.
-    relative_translation_max_m: 0.010
+    # Per-fingertip Cartesian PD force added to the ordinary grasp force.
+    relative_translation_max_m: 0.020
     relative_translation_kp: 600.0
     relative_translation_kd: 6.0
-    # Zero-resultant fingertip-shape stabilization. Centroid position is
-    # controlled only along the requested translation axis.
-    relative_translation_shape_kp: 120.0
-    relative_translation_shape_kd: 1.2
     # Smooth the Cartesian reference instead of applying a position step.
     relative_translation_reference_ramp_sec: 0.7
-    # Cartesian diagnostic/shape force limits.
+    # Cartesian translation force limits.
     relative_translation_force_limit: 8.50
     relative_translation_per_finger_force_limit: 5.50
     relative_translation_velocity_alpha: 0.20
@@ -59,15 +54,6 @@ grasp_real:
     relative_translation_velocity_tolerance_mps: 0.003
     relative_translation_settle_sec: 0.20
     relative_translation_timeout_sec: 3.0
-    # One-dimensional centroid DLS task along the requested direction. Existing
-    # grasp/shape torque is projected only out of that command-axis task.
-    relative_translation_dls_damping: 0.005
-    relative_translation_nullspace_rcond: 0.00001
-    relative_translation_joint_kp: 1.20
-    relative_translation_joint_kd: 0.06
-    relative_translation_joint_correction_limit_rad: 0.30
-    relative_translation_position_torque_limit: 0.30
-    relative_translation_nullspace_grasp_gain: 1.0
     jacobian_eps: 0.000001
 
     min_tip_distance: 0.018
@@ -100,6 +86,7 @@ grasp_real:
     relative_rotation_alpha1_double_gain_scale: 1.67
     # Compensate the measured negative-direction hardware asymmetry.
     relative_rotation_negative_direction_gain_scale: 1.2
+    relative_rotation_positive_direction_damping_scale: 1.0
     relative_rotation_position_error_limit_m: 0.025
     relative_rotation_position_tolerance_m: 0.002
     relative_rotation_force_limit: 10.00

@@ -24,6 +24,16 @@ class RightGainConfigTest(unittest.TestCase):
         )
         self.assertEqual(left_params["envelop_thumb_tau_sign"], -1.0)
         self.assertEqual(right_params["envelop_thumb_tau_sign"], 1.0)
+        self.assertEqual(left_params["relative_rotation_position_kd"], 0.0)
+        self.assertEqual(right_params["relative_rotation_position_kd"], 1.0)
+        self.assertEqual(
+            left_params["relative_rotation_positive_direction_damping_scale"],
+            1.0,
+        )
+        self.assertEqual(
+            right_params["relative_rotation_positive_direction_damping_scale"],
+            1.4,
+        )
 
 
 if __name__ == "__main__":

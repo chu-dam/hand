@@ -43,18 +43,12 @@ class RuntimeConfig:
     # On a regular-grasp balance failure, fade the most recent valid bounded
     # Cartesian command to zero instead of switching to the legacy policy.
     force_balance_error_ramp_sec: float = 0.5
-    relative_translation_max_m: float = 0.010
-    # Cartesian gains retained for virtual-force diagnostics and the
-    # zero-resultant fingertip-shape term. Centroid motion itself is controlled
-    # by the DLS joint-position gains below.
+    relative_translation_max_m: float = 0.020
+    # Per-fingertip Cartesian PD force added to the ordinary grasp force.
     relative_translation_kp: float = 600.0
     relative_translation_kd: float = 6.0
-    # Relative fingertip-shape stabilization remains active, but centroid
-    # position control is applied only along the commanded translation axis.
-    relative_translation_shape_kp: float = 120.0
-    relative_translation_shape_kd: float = 1.2
     relative_translation_reference_ramp_sec: float = 0.7
-    # Hard limits for the diagnostic/shape Cartesian force calculation.
+    # Hard limits for the Cartesian translation force calculation.
     relative_translation_force_limit: float = 8.50
     relative_translation_per_finger_force_limit: float = 5.50
     relative_translation_velocity_alpha: float = 0.20
@@ -62,16 +56,6 @@ class RuntimeConfig:
     relative_translation_velocity_tolerance_mps: float = 0.003
     relative_translation_settle_sec: float = 0.20
     relative_translation_timeout_sec: float = 3.0
-    # Command-axis centroid-position controller. The damped least-squares
-    # inverse maps only the scalar error along the requested direction to an
-    # active-joint correction; orthogonal centroid motion stays unconstrained.
-    relative_translation_dls_damping: float = 0.005
-    relative_translation_nullspace_rcond: float = 1e-5
-    relative_translation_joint_kp: float = 1.20
-    relative_translation_joint_kd: float = 0.06
-    relative_translation_joint_correction_limit_rad: float = 0.30
-    relative_translation_position_torque_limit: float = 0.30
-    relative_translation_nullspace_grasp_gain: float = 1.0
     jacobian_eps: float = 1e-6
 
     min_tip_distance: float = 0.018
@@ -102,6 +86,7 @@ class RuntimeConfig:
     relative_rotation_alpha1_reference: float = 3.0
     relative_rotation_alpha1_double_gain_scale: float = 1.67
     relative_rotation_negative_direction_gain_scale: float = 1.2
+    relative_rotation_positive_direction_damping_scale: float = 1.0
     relative_rotation_position_error_limit_m: float = 0.025
     relative_rotation_position_tolerance_m: float = 0.002
     relative_rotation_force_limit: float = 10.00

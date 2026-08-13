@@ -160,7 +160,7 @@ export function ControlPanel({
     translationMmInput.trim() !== ""
     && Number.isFinite(parsedTranslationMm)
     && parsedTranslationMm > 0
-    && parsedTranslationMm <= 10
+    && parsedTranslationMm <= 20
   );
   const parsedRotationDegrees = Number(rotationDegreesInput);
   const rotationDegreesValid = (
@@ -251,11 +251,11 @@ export function ControlPanel({
 
   const prepareRelativeTranslation = () => {
     if (!taskSpaceSectionActive) {
-      onNotice("Task-space target은 활성 grasp type 1~5에서만 요청할 수 있습니다.", "error");
+      onNotice("Translation은 활성 grasp type 1~5에서만 요청할 수 있습니다.", "error");
       return;
     }
     if (!translationMmValid) {
-      onNotice("Relative distance는 0보다 크고 10 mm 이하여야 합니다.", "error");
+      onNotice("Relative distance는 0보다 크고 20 mm 이하여야 합니다.", "error");
       return;
     }
     const unit = TASK_SPACE_UNIT_VECTORS[taskSpaceDirection];
@@ -370,7 +370,7 @@ export function ControlPanel({
 
         <div className="control-section">
           <div className="control-section-title">
-            <div><span>04</span><strong>Task-Space Position</strong></div>
+            <div><span>04</span><strong>Translation</strong></div>
             <small>2F-I · 2F-M · 3F · 4F · 5F only</small>
           </div>
           <div
@@ -386,7 +386,7 @@ export function ControlPanel({
                     className="number-input"
                     type="number"
                     min="0.1"
-                    max="10"
+                    max="20"
                     step="0.1"
                     inputMode="decimal"
                     value={translationMmInput}
@@ -460,27 +460,25 @@ export function ControlPanel({
                   : "—"}</strong>
               </div>
               <div>
-                <span>Position torque max · 20 joints</span>
+                <span>Translation torque max · 20 joints</span>
                 <strong>{translationTargetReady
-                  ? maxAbsTorque(debug?.relative_translation_position_torques)
+                  ? maxAbsTorque(debug?.translation_torques)
                   : "—"}</strong>
               </div>
               <div>
-                <span>DLS · σmin / condition</span>
-                <strong>{translationTargetReady
-                  ? `${Number(debug?.relative_translation_dls_sigma_min ?? 0).toFixed(4)} · κ ${Number(debug?.relative_translation_dls_condition ?? 0).toFixed(1)}`
-                  : "—"}</strong>
+                <span>Control mapping</span>
+                <strong>{translationTargetReady ? "Jᵢᵀ(Fgrasp + Ftranslation)" : "—"}</strong>
               </div>
             </div>
             <p className="task-space-stage-note">
               {translationPhase === "translating"
-                ? "TRANSLATING · 3-axis centroid DLS position control is active; grasp torque runs in its null space."
+                ? "TRANSLATING · Each fingertip tracks its captured Cartesian target through Jacobian transpose control."
                 : translationPhase === "translation_reached"
-                  ? "REACHED · DLS target hold is active; Remaining is kept near zero on all axes."
+                  ? "REACHED · Cartesian fingertip target hold is active."
                   : translationPhase === "translation_timeout"
                     ? "TIMEOUT · position control was removed. Check the grasp and retry with 1 mm."
                   : translationPhase === "translation_error"
-                      ? "ERROR · position control was removed because the DLS solve failed."
+                      ? "ERROR · translation control was removed because the Cartesian state was invalid."
                       : "Actual motion enabled. Start with 1 mm and keep RELEASE ready."}
             </p>
           </div>

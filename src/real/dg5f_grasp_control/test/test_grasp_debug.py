@@ -223,10 +223,10 @@ class GraspDebugTest(unittest.TestCase):
         )
         self.assertEqual(
             message.relative_translation_control_mode,
-            "axis_centroid_dls_nullspace",
+            "cartesian_fingertip_jacobian_transpose",
         )
-        self.assertGreater(message.relative_translation_dls_sigma_min, 0.0)
-        self.assertTrue(np.isfinite(message.relative_translation_dls_condition))
+        self.assertEqual(message.relative_translation_dls_sigma_min, 0.0)
+        self.assertEqual(message.relative_translation_dls_condition, 0.0)
         self.assertEqual(len(message.relative_translation_joint_error), 20)
         self.assertEqual(len(message.relative_translation_position_torques), 20)
         self.assertEqual(
@@ -236,6 +236,12 @@ class GraspDebugTest(unittest.TestCase):
         self.assertGreater(
             np.linalg.norm(message.relative_translation_position_torques),
             0.0,
+        )
+        np.testing.assert_allclose(
+            message.relative_translation_position_torques,
+            message.translation_torques,
+            rtol=0.0,
+            atol=1e-12,
         )
         np.testing.assert_allclose(
             [

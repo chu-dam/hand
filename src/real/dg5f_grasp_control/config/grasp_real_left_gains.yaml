@@ -18,15 +18,8 @@ grasp_real:
 
     relative_translation_kp: 600.0
     relative_translation_kd: 6.0
-    relative_translation_shape_kp: 120.0
-    relative_translation_shape_kd: 1.2
     relative_translation_force_limit: 8.50
     relative_translation_per_finger_force_limit: 5.50
-    relative_translation_dls_damping: 0.005
-    relative_translation_joint_kp: 1.20
-    relative_translation_joint_kd: 0.06
-    relative_translation_position_torque_limit: 0.30
-    relative_translation_nullspace_grasp_gain: 1.0
 
     collision_repel_gain: 100.0
     collision_repel_limit: 0.8
@@ -39,6 +32,7 @@ grasp_real:
     relative_rotation_alpha1_reference: 3.0
     relative_rotation_alpha1_double_gain_scale: 1.67
     relative_rotation_negative_direction_gain_scale: 1.2
+    relative_rotation_positive_direction_damping_scale: 1.0
     relative_rotation_force_limit: 10.00
 
     card_floor_force_n: 3.0

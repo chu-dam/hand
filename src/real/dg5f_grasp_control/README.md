@@ -9,14 +9,14 @@ This package keeps the existing DG5F-S effort controller launch file and moves t
 Place this package under your workspace `src/` directory, then build:
 
 ```bash
-cd /home/chu/DG-5F-S
+cd /home/chu/hand
 colcon build --symlink-install
 source install/setup.bash
 ```
 
 ## Recommended Execution
 
-Terminal 1: start the existing effort controller.
+Left hand, terminal 1: start the effort controller.
 
 ```bash
 ros2 launch dg5f_s_driver dg5f_s_left_effort_controller.launch.py
@@ -34,13 +34,26 @@ You can also run the node directly:
 ros2 run dg5f_grasp_control grasp_real
 ```
 
+For the right hand, use the combined launch below. It selects the right joint
+state/effort topics, analytic FK/Jacobian, poses, measured friction parameters,
+gain overlay, and `dg5fs_right_w_mount.urdf` gravity model.
+
 ## One-Command Execution
 
-If the existing `dg5f_s_driver` package is available in the same workspace, this launch starts both the effort controller and the grasp node:
+If the existing `dg5f_s_driver` package is available in the same workspace,
+these launches start both the effort controller and grasp node:
 
 ```bash
+# Left
 ros2 launch dg5f_grasp_control grasp_with_effort.launch.py
+
+# Right (friction scale 1.0)
+ros2 launch dg5f_grasp_control grasp_with_effort_right.launch.py
 ```
+
+Common settings live in `config/grasp_real_common.yaml`; hand-specific gains
+live in `config/grasp_real_left_gains.yaml` and
+`config/grasp_real_right_gains.yaml`.
 
 ## General grasp force policy (`grasp_type=1~5`)
 
@@ -132,7 +145,7 @@ command for `grasp_type=1~5` captures the current geometric centroid and stores
 C_target = C_start + delta_link_base
 ```
 
-The maximum command norm defaults to `relative_translation_max_m=0.010`. At
+The maximum command norm defaults to `relative_translation_max_m=0.020`. At
 command time the controller captures every active fingertip and sets
 
 ```text
@@ -140,50 +153,23 @@ P_target_i = P_start_i + delta_link_base
 ```
 
 The Cartesian reference advances with a 0.7-second smoothstep instead of a
-position step. Let `a` be the unit vector of the requested direction. Only the
-centroid error along `a` is controlled; the two orthogonal centroid directions
-remain unconstrained:
+position step. Every fingertip uses its own full 3-D target error and velocity:
 
 ```text
-Jc = [w1 J1  w2 J2  ...  wn Jn]
-Ja = a.T Jc
-Ja# = Ja.T / (Ja Ja.T + lambda^2)
-e_axis = a.T (C_reference - Cg)
-delta_q = Ja# e_axis
-tau_position = Kq delta_q - Dq Ja# Ja qdot
+F_translation_i = (Kp (P_reference_i - P_i)
+                  + Kd (Pdot_reference - Pdot_i)) / N_contacts
+F_total_i = F_grasp_i + F_translation_i
+tau_i = Ji.T F_total_i
 ```
 
-The existing grasp and relative fingertip-shape torque is treated as a
-secondary task and projected out of the command-axis task:
-
-```text
-N = I - pinv(Ja) Ja
-tau = tau_position + N.T tau_grasp+shape
-```
-
-The null-space transition uses the same smooth reference progress so pressing
-Move does not create an instantaneous grasp-torque step. The shape force is
-constructed with zero resultant:
-
-```text
-f_shape_i = g_i - w_i * sum(g)
-sum(f_shape_i) = 0
-```
-
-It can therefore help preserve the captured contact geometry without adding a
-direct object resultant. Joint correction and position-torque limits, DLS
-damping, a 3-second timeout, command-axis fingertip/centroid settle checks, and
-normal grasp torque clipping remain active. Start real-hand commissioning with
-a 1 mm command and keep RELEASE ready.
+The per-finger and total translation-force limits, a 3-second timeout, full
+3-D fingertip settle checks, and normal grasp torque clipping remain active.
+Start real-hand commissioning with a 1 mm command and keep RELEASE ready.
 
 `GraspDebug` reports the start, target, delta, remaining error, centroid
-velocity, virtual Cartesian diagnostic force, and per-finger virtual/shape
-forces. These Cartesian values are not sensor measurements and do not include
-the DLS position torque. It also reports `relative_translation_joint_error`,
-`relative_translation_position_torques`, the retained
-`relative_translation_nullspace_grasp_torques`, DLS minimum singular value and
-condition number, and the exact clipped 20-joint delta in
-`translation_torques`. The phase is one of `translating`,
+velocity, commanded Cartesian force, per-finger translation forces, and the
+exact 20-joint translation contribution in `translation_torques`. These are
+controller commands, not force sensor measurements. The phase is one of `translating`,
 `translation_reached`, `translation_timeout`, or `translation_error`.
 
 ## Floor-card pinch (`grasp_type=7`)
@@ -206,59 +192,37 @@ ros2 topic pub --once /grasp_type std_msgs/msg/Int32 "{data: 7}"
 
 ## Tuning
 
-Main tuning values are in:
+Common limits/timing and hand-specific gains are in:
 
 ```text
 config/grasp_real_common.yaml
+config/grasp_real_left_gains.yaml
+config/grasp_real_right_gains.yaml
 ```
 
-Common values to change:
+Current Translation tuning differs by hand:
 
 ```yaml
-use_finger_count: 5
-alpha1: 3.0
-pose_kp: 0.285
-pose_kd: 0.05
-pose_pd_limit: 0.25
-min_tip_distance: 0.018
-collision_repel_gain: 100.0
-collision_repel_limit: 0.8
-rotation_force_balance_max_alpha_ratio: 10.0
-force_balance_error_ramp_sec: 0.5
+# grasp_real_left_gains.yaml
 relative_translation_kp: 600.0
 relative_translation_kd: 6.0
-relative_translation_shape_kp: 120.0
-relative_translation_shape_kd: 1.2
-relative_translation_reference_ramp_sec: 0.7
-relative_translation_force_limit: 8.5
-relative_translation_per_finger_force_limit: 5.5
-relative_translation_dls_damping: 0.005
-relative_translation_nullspace_rcond: 0.00001
-relative_translation_joint_kp: 1.20
-relative_translation_joint_kd: 0.06
-relative_translation_joint_correction_limit_rad: 0.30
-relative_translation_position_torque_limit: 0.30
-relative_translation_nullspace_grasp_gain: 1.0
-relative_rotation_max_abs_deg: 10.0
-relative_rotation_reference_ramp_sec: 0.5
-relative_rotation_position_kp: 24.0
-relative_rotation_position_kd: 0.0
-relative_rotation_position_error_limit_m: 0.025
-relative_rotation_position_tolerance_m: 0.002
-relative_rotation_force_limit: 10.00
-relative_rotation_radius_min: 0.015
-relative_rotation_timeout_sec: 1.0  # always removes Fr after command start
+
+# grasp_real_right_gains.yaml
+relative_translation_kp: 1200.0
+relative_translation_kd: 20.0
+relative_translation_velocity_alpha: 0.50
 ```
 
 ## File Roles
 
 ```text
 dg5f_grasp_control/grasp_real_node.py   ROS 2 node and state machine
-dg5f_grasp_control/kinematics.py        FK, tip position, numerical Jacobian
+dg5f_grasp_control/kinematics.py        left/right FK and analytic Jacobian selector
+dg5f_grasp_control/kinematics_*.py      hand-specific FK and analytic Jacobian
 dg5f_grasp_control/grasp_policy.py      alpha, centroid, collision avoidance, J.T force mapping
 dg5f_grasp_control/friction.py          friction compensation function
 dg5f_grasp_control/friction_params_*.py measured left/right friction coefficients
-dg5f_grasp_control/poses.py             normal pose and pre-grasp pose
+dg5f_grasp_control/poses.py             left/right normal and pre-grasp poses
 dg5f_grasp_control/mujoco_gravity.py    MuJoCo gravity compensation
 dg5f_grasp_control/hand_model.py        joint names and finger index mapping
 ```

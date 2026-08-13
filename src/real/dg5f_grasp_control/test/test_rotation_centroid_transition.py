@@ -907,6 +907,37 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
             expected_angular_velocity,
         )
 
+    def test_positive_rotation_damping_scale_only_scales_d_term(self):
+        def damping_force(scale):
+            cfg = RuntimeConfig(
+                relative_rotation_reference_ramp_sec=0.0,
+                relative_rotation_position_kp=0.0,
+                relative_rotation_position_kd=1.0,
+                relative_rotation_positive_direction_damping_scale=scale,
+                relative_rotation_force_limit=100.0,
+                relative_rotation_radius_min=1e-6,
+            )
+            controller = GraspController(cfg, log=None)
+            controller.apply_grasp_type(3, now=1.0)
+            initial = controller.step(Q_FIXED, QDOT_ZERO, now=1.0)
+            controller.prepare_relative_rotation(np.deg2rad(5.0), now=1.0)
+            finger = next(value for value in controller.use_fingers if value != 1)
+            qdot = np.zeros(20)
+            qdot[FINGER_JOINT_INDEX[finger][1]] = 0.25
+            forces = controller._calc_relative_rotation_forces(
+                initial.fingertip_positions,
+                now=1.1,
+                qdot=qdot,
+            )
+            return forces[finger]
+
+        np.testing.assert_allclose(
+            damping_force(1.1),
+            1.1 * damping_force(1.0),
+            rtol=0.0,
+            atol=1e-12,
+        )
+
     def test_invalid_angle_and_non_regular_grasps_are_rejected(self):
         controller = GraspController(RuntimeConfig(), log=None)
         controller.apply_grasp_type(3, now=1.0)
@@ -1205,7 +1236,7 @@ class RelativeTranslationTargetTest(unittest.TestCase):
             atol=1e-12,
         )
 
-    def test_target_is_relative_and_adds_zero_moment_translation_wrench(self):
+    def test_target_is_relative_and_adds_fingertip_forces_to_grasp(self):
         controller = GraspController(RuntimeConfig(), log=None)
         controller.apply_grasp_type(3, now=1.0)
         before = controller.step(Q_FIXED, QDOT_ZERO, now=1.1)
@@ -1256,19 +1287,8 @@ class RelativeTranslationTargetTest(unittest.TestCase):
             after.translation_forces.values(),
             np.zeros(3, dtype=np.float64),
         )
-        moment = sum(
-            (
-                np.cross(
-                    after.fingertip_positions[finger] - after.cg,
-                    force,
-                )
-                for finger, force in after.translation_forces.items()
-            ),
-            np.zeros(3, dtype=np.float64),
-        )
         self.assertGreater(resultant[0], 0.0)
         np.testing.assert_allclose(resultant[1:], np.zeros(2), rtol=0.0, atol=1e-10)
-        np.testing.assert_allclose(moment, np.zeros(3), rtol=0.0, atol=1e-10)
         np.testing.assert_allclose(
             after.relative_translation_command_force,
             resultant,
@@ -1276,11 +1296,13 @@ class RelativeTranslationTargetTest(unittest.TestCase):
             atol=1e-12,
         )
         self.assertGreater(np.linalg.norm(after.tau - before.tau), 1e-8)
-        assert_vector_dict_allclose(
-            self,
-            after.total_forces,
-            before.total_forces,
-        )
+        for finger in after.total_forces:
+            np.testing.assert_allclose(
+                after.total_forces[finger],
+                before.total_forces[finger] + after.translation_forces[finger],
+                rtol=0.0,
+                atol=1e-12,
+            )
         np.testing.assert_allclose(
             after.translation_torques,
             after.grasp_tau - before.grasp_tau,
@@ -1290,14 +1312,15 @@ class RelativeTranslationTargetTest(unittest.TestCase):
         self.assertGreater(np.max(np.abs(after.translation_torques)), 0.0)
         self.assertEqual(
             after.relative_translation_control_mode,
-            "axis_centroid_dls_nullspace",
+            "cartesian_fingertip_jacobian_transpose",
         )
 
     def test_reference_ramp_avoids_a_cartesian_force_step(self):
         cfg = RuntimeConfig(
             relative_translation_kd=0.0,
-            relative_translation_shape_kd=0.0,
             relative_translation_reference_ramp_sec=0.5,
+            relative_translation_force_limit=100.0,
+            relative_translation_per_finger_force_limit=100.0,
         )
         controller = GraspController(cfg, log=None)
         controller.apply_grasp_type(3, now=1.0)
@@ -1326,12 +1349,13 @@ class RelativeTranslationTargetTest(unittest.TestCase):
             atol=1e-12,
         )
 
-    def test_cross_axis_offset_does_not_create_centroid_drive_force(self):
+    def test_cross_axis_offset_is_corrected_for_every_fingertip(self):
         cfg = RuntimeConfig(
             relative_translation_kd=0.0,
-            relative_translation_shape_kd=0.0,
             relative_translation_velocity_alpha=0.0,
             relative_translation_reference_ramp_sec=0.0,
+            relative_translation_force_limit=100.0,
+            relative_translation_per_finger_force_limit=100.0,
         )
         controller = GraspController(cfg, log=None)
         controller.apply_grasp_type(3, now=1.0)
@@ -1353,18 +1377,17 @@ class RelativeTranslationTargetTest(unittest.TestCase):
             now=1.3,
         )
         resultant = sum(forces.values(), np.zeros(3, dtype=np.float64))
-        self.assertGreater(resultant[0], 0.0)
         np.testing.assert_allclose(
-            resultant[1:],
-            np.zeros(2),
+            resultant,
+            cfg.relative_translation_kp
+            * (np.array([0.001, 0.0, 0.0]) - cross_offset),
             rtol=0.0,
             atol=1e-12,
         )
 
-    def test_independent_fingertip_error_creates_shape_restoring_moment(self):
+    def test_each_fingertip_uses_its_own_position_error(self):
         cfg = RuntimeConfig(
             relative_translation_kd=0.0,
-            relative_translation_shape_kd=0.0,
             relative_translation_reference_ramp_sec=0.0,
             relative_translation_force_limit=100.0,
             relative_translation_per_finger_force_limit=100.0,
@@ -1382,37 +1405,23 @@ class RelativeTranslationTargetTest(unittest.TestCase):
         shifted_q = Q_FIXED.copy()
         shifted_q[4] += 0.02
         output = controller.step(shifted_q, QDOT_ZERO, now=1.3)
-        resultant = sum(
-            output.translation_forces.values(),
-            np.zeros(3, dtype=np.float64),
-        )
-        shape_forces = {
-            finger: force
-            - controller.relative_translation_contact_weights[finger] * resultant
-            for finger, force in output.translation_forces.items()
-        }
-        np.testing.assert_allclose(
-            sum(shape_forces.values(), np.zeros(3, dtype=np.float64)),
-            np.zeros(3),
-            rtol=0.0,
-            atol=1e-12,
-        )
-
-        restoring_moment = sum(
-            (
-                np.cross(
-                    output.fingertip_positions[finger] - output.cg,
-                    force,
-                )
-                for finger, force in shape_forces.items()
-            ),
-            np.zeros(3, dtype=np.float64),
-        )
-        self.assertGreater(np.linalg.norm(restoring_moment), 1e-4)
+        for finger, force in output.translation_forces.items():
+            expected_error = (
+                controller.relative_translation_target_fingertips[finger]
+                - output.fingertip_positions[finger]
+            )
+            np.testing.assert_allclose(
+                force,
+                cfg.relative_translation_kp
+                / len(controller.use_fingers)
+                * expected_error,
+                rtol=0.0,
+                atol=1e-12,
+            )
 
     def test_target_rejects_out_of_range_distance(self):
         controller = GraspController(
-            RuntimeConfig(relative_translation_max_m=0.010),
+            RuntimeConfig(relative_translation_max_m=0.020),
             log=None,
         )
         controller.apply_grasp_type(3, now=1.0)
@@ -1420,22 +1429,18 @@ class RelativeTranslationTargetTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             controller.prepare_relative_translation(
-                np.array([0.0101, 0.0, 0.0]),
+                np.array([0.0201, 0.0, 0.0]),
                 now=1.2,
             )
 
-    def test_axis_dls_joint_position_control_is_bounded_for_all_xyz_axes(self):
-        cfg = RuntimeConfig(
-            relative_translation_reference_ramp_sec=0.0,
-            relative_translation_joint_correction_limit_rad=0.20,
-            relative_translation_position_torque_limit=0.15,
-        )
+    def test_xyz_translation_uses_fingertip_jacobian_transpose(self):
+        cfg = RuntimeConfig(relative_translation_reference_ramp_sec=0.0)
         for axis in range(3):
             controller = GraspController(cfg, log=None)
             controller.apply_grasp_type(2, now=1.0)
-            controller.step(HAND_PRE_GRASP_POSE, QDOT_ZERO, now=1.1)
+            baseline = controller.step(HAND_PRE_GRASP_POSE, QDOT_ZERO, now=1.1)
             delta = np.zeros(3, dtype=np.float64)
-            delta[axis] = 0.005
+            delta[axis] = 0.001
             self.assertTrue(
                 controller.prepare_relative_translation(delta, now=1.2)
             )
@@ -1443,106 +1448,28 @@ class RelativeTranslationTargetTest(unittest.TestCase):
 
             self.assertEqual(
                 output.relative_translation_control_mode,
-                "axis_centroid_dls_nullspace",
+                "cartesian_fingertip_jacobian_transpose",
             )
-            self.assertGreater(
-                np.max(np.abs(output.relative_translation_joint_error)),
-                0.0,
-            )
-            self.assertLessEqual(
-                np.max(np.abs(output.relative_translation_joint_error)),
-                0.20 + 1e-12,
-            )
-            self.assertGreater(
-                np.max(np.abs(output.relative_translation_position_torques)),
-                0.0,
-            )
-            self.assertLessEqual(
-                np.max(np.abs(output.relative_translation_position_torques)),
-                0.15 + 1e-12,
-            )
-            self.assertGreater(output.relative_translation_dls_sigma_min, 0.0)
-            self.assertTrue(
-                np.isfinite(output.relative_translation_dls_condition)
-            )
-
-    def test_grasp_torque_is_projected_out_of_command_axis_task(self):
-        cfg = RuntimeConfig(relative_translation_reference_ramp_sec=0.0)
-        controller = GraspController(cfg, log=None)
-        controller.apply_grasp_type(3, now=1.0)
-        controller.step(HAND_PRE_GRASP_POSE, QDOT_ZERO, now=1.1)
-        self.assertTrue(
-            controller.prepare_relative_translation(
-                np.array([0.001, 0.0, 0.0]),
-                now=1.2,
-            )
-        )
-        output = controller.step(HAND_PRE_GRASP_POSE, QDOT_ZERO, now=1.3)
-
-        active_indices = np.concatenate(
-            [
-                np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
+            expected_total_forces = {
+                finger: baseline.total_forces[finger]
+                + output.translation_forces[finger]
                 for finger in controller.use_fingers
-            ]
-        )
-        centroid_jacobian = np.hstack(
-            [
-                controller.relative_translation_contact_weights[finger]
-                * tip_jacobian(HAND_PRE_GRASP_POSE, finger)
-                for finger in controller.use_fingers
-            ]
-        )
-        translation_axis = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-        axis_jacobian = translation_axis.reshape(1, 3) @ centroid_jacobian
-        leakage = axis_jacobian @ (
-            output.relative_translation_nullspace_grasp_torques[active_indices]
-        )
-        np.testing.assert_allclose(
-            leakage,
-            np.zeros(1),
-            rtol=0.0,
-            atol=1e-10,
-        )
-
-    def test_cross_axis_centroid_error_does_not_change_position_torque(self):
-        cfg = RuntimeConfig(relative_translation_reference_ramp_sec=0.0)
-        controller = GraspController(cfg, log=None)
-        controller.apply_grasp_type(3, now=1.0)
-        baseline = controller.step(HAND_PRE_GRASP_POSE, QDOT_ZERO, now=1.1)
-        self.assertTrue(
-            controller.prepare_relative_translation(
-                np.array([0.001, 0.0, 0.0]),
-                now=1.2,
+            }
+            np.testing.assert_allclose(
+                output.grasp_tau,
+                controller.policy.calc_tau_from_total_forces(
+                    HAND_PRE_GRASP_POSE,
+                    expected_total_forces,
+                ),
+                rtol=0.0,
+                atol=1e-12,
             )
-        )
-        controller.relative_translation_reference_progress = 1.0
-
-        controller.relative_translation_error = np.array(
-            [0.001, 0.0, 0.0],
-            dtype=np.float64,
-        )
-        axis_only_torque = controller._calc_relative_translation_joint_control(
-            base_total_forces=baseline.total_forces,
-            base_grasp_tau=baseline.grasp_tau,
-            qdot=QDOT_ZERO,
-        )[2]
-
-        controller.relative_translation_error = np.array(
-            [0.001, 0.050, -0.040],
-            dtype=np.float64,
-        )
-        cross_offset_torque = controller._calc_relative_translation_joint_control(
-            base_total_forces=baseline.total_forces,
-            base_grasp_tau=baseline.grasp_tau,
-            qdot=QDOT_ZERO,
-        )[2]
-
-        np.testing.assert_allclose(
-            cross_offset_torque,
-            axis_only_torque,
-            rtol=0.0,
-            atol=1e-12,
-        )
+            np.testing.assert_allclose(
+                output.translation_torques,
+                output.grasp_tau - baseline.grasp_tau,
+                rtol=0.0,
+                atol=1e-12,
+            )
 
     def test_pose_or_grasp_change_cancels_target(self):
         controller = GraspController(RuntimeConfig(), log=None)
@@ -1565,7 +1492,7 @@ class RelativeTranslationTargetTest(unittest.TestCase):
             atol=0.0,
         )
 
-    def test_two_through_five_finger_translation_has_no_cross_axis_resultant_or_moment(self):
+    def test_all_regular_grasps_apply_equal_force_along_requested_axis(self):
         for grasp_type in (1, 2, 3, 4, 5):
             for axis in range(3):
                 with self.subTest(grasp_type=grasp_type, axis=axis):
@@ -1585,17 +1512,6 @@ class RelativeTranslationTargetTest(unittest.TestCase):
                         output.translation_forces.values(),
                         np.zeros(3, dtype=np.float64),
                     )
-                    moment = sum(
-                        (
-                            np.cross(
-                                output.fingertip_positions[finger] - output.cg,
-                                force,
-                            )
-                            for finger, force in output.translation_forces.items()
-                        ),
-                        np.zeros(3, dtype=np.float64),
-                    )
-
                     self.assertGreater(resultant[axis], 0.0)
                     cross_axes = np.delete(resultant, axis)
                     np.testing.assert_allclose(
@@ -1604,12 +1520,11 @@ class RelativeTranslationTargetTest(unittest.TestCase):
                         rtol=0.0,
                         atol=1e-10,
                     )
-                    np.testing.assert_allclose(
-                        moment,
-                        np.zeros(3),
-                        rtol=0.0,
-                        atol=1e-10,
-                    )
+                    forces = list(output.translation_forces.values())
+                    for force in forces[1:]:
+                        np.testing.assert_allclose(
+                            force, forces[0], rtol=0.0, atol=1e-12
+                        )
 
     def test_timeout_removes_translation_force(self):
         cfg = RuntimeConfig(

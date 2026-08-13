@@ -46,7 +46,10 @@ hand/
     │       │   ├── kinematics.py
     │       │   ├── mujoco_gravity.py
     │       │   ├── friction.py
-    │       │   ├── friction_params.py
+    │       │   ├── friction_params_left.py
+    │       │   ├── friction_params_right.py
+    │       │   ├── kinematics_left.py
+    │       │   ├── kinematics_right.py
     │       │   ├── poses.py
     │       │   ├── hand_model.py
     │       │   ├── control_utils.py
@@ -54,7 +57,9 @@ hand/
     │       │   └── config.py
     │       ├── launch/
     │       │   ├── grasp_real.launch.py
-    │       │   └── grasp_with_effort.launch.py
+    │       │   ├── grasp_right_compensation.launch.py
+    │       │   ├── grasp_with_effort.launch.py
+    │       │   └── grasp_with_effort_right.launch.py
     │       ├── models/
     │       │   ├── dg5fs_left_w_mount.xml
     │       │   └── meshes/
@@ -174,6 +179,8 @@ PY
 
 ### Option 1. Driver와 grasp controller를 한 번에 실행
 
+왼손:
+
 ```bash
 cd ~/hand
 source /opt/ros/humble/setup.bash
@@ -182,7 +189,17 @@ export ROS_DOMAIN_ID=73
 ros2 launch dg5f_grasp_control grasp_with_effort.launch.py
 ```
 
-### Option 2. Driver와 grasp controller를 따로 실행
+오른손:
+
+```bash
+cd ~/hand
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+export ROS_DOMAIN_ID=73
+ros2 launch dg5f_grasp_control grasp_with_effort_right.launch.py
+```
+
+### Option 2. 왼손 Driver와 grasp controller를 따로 실행
 
 Terminal 1: DG5F-S effort controller
 
@@ -246,17 +263,18 @@ MuJoCo를 source tree에서 직접 실행하면 `src/real/dg5f_grasp_control`을
 
 ## Topics
 
-| Purpose | Topic | Type |
-| --- | --- | --- |
-| Grasp mode command | `/grasp_type` | `std_msgs/msg/Int32` |
-| Pose command | `/pose_type` | `std_msgs/msg/Int32` |
-| Grasp force coefficient | `/dg5f_grasp_control/alpha1_cmd` | `std_msgs/msg/Float64` |
-| Relative task-space target | `/dg5f_grasp_control/relative_translation_cmd` | `geometry_msgs/msg/Vector3Stamped` |
-| Relative rotation target (degrees) | `/dg5f_grasp_control/relative_rotation_deg_cmd` | `std_msgs/msg/Float64` |
-| Hand rotation matrix | `/dg5f_grasp_control/rotation_matrix_cmd` | `std_msgs/msg/Float64MultiArray` |
-| Real hand joint state | `/dg5f_s_left/joint_states` | `sensor_msgs/msg/JointState` |
-| Real hand effort command | `/dg5f_s_left/effort_controller/commands` | `std_msgs/msg/Float64MultiArray` |
-| Control visualization debug | `/dg5f_grasp_control/debug` | `dg5f_grasp_interfaces/msg/GraspDebug` |
+| Purpose | Left | Right | Type |
+| --- | --- | --- | --- |
+| Grasp mode | `/grasp_type` | `/dg5f_grasp_control/right/grasp_type` | `std_msgs/msg/Int32` |
+| Pose | `/pose_type` | `/dg5f_grasp_control/right/pose_type` | `std_msgs/msg/Int32` |
+| Alpha1 | `/dg5f_grasp_control/alpha1_cmd` | `/dg5f_grasp_control/right/alpha1_cmd` | `std_msgs/msg/Float64` |
+| Translation | `/dg5f_grasp_control/relative_translation_cmd` | `/dg5f_grasp_control/right/relative_translation_cmd` | `geometry_msgs/msg/Vector3Stamped` |
+| Relative rotation | `/dg5f_grasp_control/relative_rotation_deg_cmd` | `/dg5f_grasp_control/right/relative_rotation_deg_cmd` | `std_msgs/msg/Float64` |
+| Rotation matrix | `/dg5f_grasp_control/rotation_matrix_cmd` | `/dg5f_grasp_control/right/rotation_matrix_cmd` | `std_msgs/msg/Float64MultiArray` |
+| Teaching mode | `/dg5f_grasp_control/teaching_mode` | `/dg5f_grasp_control/right/teaching_mode` | `std_msgs/msg/Bool` |
+| Joint state | `/dg5f_s_left/joint_states` | `/dg5f_s_right/joint_states` | `sensor_msgs/msg/JointState` |
+| Effort command | `/dg5f_s_left/effort_controller/commands` | `/dg5f_s_right/effort_controller/commands` | `std_msgs/msg/Float64MultiArray` |
+| Debug | `/dg5f_grasp_control/debug` | `/dg5f_grasp_control/right/debug` | `dg5f_grasp_interfaces/msg/GraspDebug` |
 
 기존 `/dg5f_grasp_control/finger_count_cmd` 대신 `/grasp_type`을 사용합니다.
 
@@ -283,8 +301,7 @@ controller 상태를 다음 topic으로 발행합니다.
 - 상대 회전 목표/접촉점 추정 현재각/남은각/각속도/회전 모멘트,
   엄지 pivot, 제어 mode와 phase
 - 상대 병진 시작/목표 centroid, 명령 변위, 남은 오차와 phase
-- 상대 병진 DLS 최소 특이값/조건수, 관절 보정량, 위치제어 토크,
-  null-space 파지 토크
+- 손가락별 3축 Translation 힘과 `JᵢᵀFtranslation,i`의 20관절 토크
 - 비사용 손가락 회피 활성 상태와 추종 관절 목표 offset
 - 손가락별 `alpha`
 - grasp, rotation, center-hold, collision, total force
@@ -300,6 +317,8 @@ ros2 topic echo /dg5f_grasp_control/debug --once
 ros2 topic hz /dg5f_grasp_control/debug
 ```
 
+오른손 debug는 `/dg5f_grasp_control/right/debug`를 사용합니다.
+
 `debug_publish_hz`를 `0` 이하로 설정하면 debug 발행을 비활성화합니다.
 Pose, Teaching, Envelop mode는 joint-space 제어이므로 Cartesian force 배열이
 0인 것이 정상입니다.
@@ -308,24 +327,22 @@ Pose, Teaching, Envelop mode는 joint-space 제어이므로 Cartesian force 배�
 
 ## Web Control UI
 
-`web_ui`에는 실제 `dg5fs_left.urdf`/CAD mesh를 JointState 20축으로 구동하는
-3D hand, 고정된 월드 X/Y/Z 축, GraspDebug의 fingertip·centroid·계산 force
+`web_ui`에는 선택한 손의 `dg5fs_left.urdf` 또는 `dg5fs_right.urdf`와 CAD mesh를
+JointState 20축으로 구동하는 3D hand, 고정된 월드 X/Y/Z 축, GraspDebug의 fingertip·centroid·계산 force
 overlay, 월드 X/Y/Z 힘 이력 그래프와 시간 초기화, 그리고 Teaching, Pose, Grasp,
 상대 회전 목표, Alpha1, rotation matrix 명령을 전송하는 React UI가 있습니다.
-파지 후 활성화되는 `04 Task-Space Position`에서 원하는 이동량(mm)과
+파지 후 활성화되는 `04 Translation`에서 원하는 이동량(mm)과
 `±X/±Y/±Z` World 방향을 선택할 수 있습니다. 상대 목표를 ROS로 전달하면
-geometric centroid Jacobian을 선택한 이동 방향에 투영하여 1차원 DLS
-위치제어를 적용합니다. 선택하지 않은 두 방향의 centroid 변위는 제어하지
-않습니다. 기존 파지력과 손끝 형상 복원력은 명령 축 이동을 방해하지 않도록
-`N = I - pinv(Ja)Ja`의 null space로 투영됩니다. 목표와 제어 계층은 0.7초
-smoothstep으로 전환되며, 관절 보정량과 위치 토크에 각각 제한이 적용됩니다.
+명령 순간 각 fingertip 위치에 상대 변위를 더해 목표를 저장합니다. 각 손가락은
+활성 손가락 수로 정규화한 3-D 위치 오차 PD 힘과 기존 파지력을 합친 뒤
+`Ji.T`로 관절 토크를 계산합니다.
+목표는 0.7초 smoothstep으로 전환되고 Cartesian 힘 제한이 적용됩니다.
 
-UI의 `Position torque max`에서는 DLS 위치 토크의 최대 절댓값을, DLS의 `σmin`과
-`condition`에서는 현재 centroid Jacobian 상태를 확인할 수 있습니다. 힘 그래프의
+UI의 `Translation torque max`에서는 병진 제어 토크의 최대 절댓값을 확인할 수
+있습니다. 힘 그래프의
 `total_forces`는 센서 측정값이 아니라 Cartesian policy의 명령 힘입니다. 상대 회전
 중에는 고정 목표 좌표 오차로 계산한 `Fr,i`와 기존 파지력 `Fg,i`의 합을 표시합니다.
-기존 X축 배율과 adaptive `J.T` 힘 증폭 설정은 호환성을 위해 남아 있지만 새 병진
-제어에는 사용되지 않습니다. 최초 하드웨어 시험은 반드시 `1 mm`로
+최초 하드웨어 시험은 반드시 `1 mm`로
 시작하고 RELEASE를 즉시 누를 수 있게 준비하십시오. Node.js 24 LTS와 rosbridge 설치 후
 다음 순서로 실행합니다.
 
@@ -728,7 +745,8 @@ API나 kinematics에 직접 의존하지 않으며, 외부 시스템에서 아�
 
 | 구분 | 값 |
 | --- | --- |
-| Topic | `/dg5f_grasp_control/rotation_matrix_cmd` |
+| Left topic | `/dg5f_grasp_control/rotation_matrix_cmd` |
+| Right topic | `/dg5f_grasp_control/right/rotation_matrix_cmd` |
 | Type | `std_msgs/msg/Float64MultiArray` |
 | Data | row-major `3 × 3` rotation matrix, 총 9개 값 |
 | 의미 | hand (`link_base`) 좌표의 벡터를 world 좌표로 회전하는 행렬 |
@@ -760,6 +778,9 @@ ros2 topic pub --once \
   std_msgs/msg/Float64MultiArray \
   "{data: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]}"
 ```
+
+오른손은 같은 메시지를 `/dg5f_grasp_control/right/rotation_matrix_cmd`로
+발행합니다.
 
 Real controller는 유효한 행렬 9개를 수신할 때마다 저장된 행렬과 hand frame의
 중력 벡터를 즉시 갱신합니다.
@@ -801,6 +822,7 @@ MuJoCo에서도 같은 topic을 받아 simulation model의 중력 방향과 grav
 export ROS_DOMAIN_ID=73
 ros2 topic info /dg5f_grasp_control/rotation_matrix_cmd --verbose
 ros2 topic echo /dg5f_grasp_control/rotation_matrix_cmd --once
+# 오른손은 위 topic 경로에 /right를 추가
 ```
 
 Real controller terminal에 아래 로그가 출력되면 행렬 수신과 중력 방향 갱신이
@@ -825,7 +847,7 @@ model에서 `link_mount`와 `link_base`는 위치 차이만 있고 축 방향은
 
 RB5 테스트에서는 RB5 제어와 hand 제어를 별도 process로 실행합니다.
 
-Terminal 1: hand controller
+Terminal 1: 왼손 hand controller
 
 ```bash
 cd ~/hand
@@ -851,6 +873,10 @@ python3 rb5_payload_gc_rotation_pub.py
 /dg5f_grasp_control/rotation_matrix_cmd
 ```
 
+이 예제 publisher는 왼손 공통 topic을 발행합니다. 오른손과 연결할 때는
+`ROTATION_MATRIX_TOPIC`을 `/dg5f_grasp_control/right/rotation_matrix_cmd`로
+바꿔 실행합니다.
+
 `rb5_payload_gc_rotation_pub.py` 대신 다른 로봇팔을 사용해도 hand 측 코드는 변경할
 필요가 없습니다. 해당 로봇팔에서 현재 `R_hand_to_world`를 계산하여 같은 topic으로
 발행하면 좌표계 변환과 hand 중력보상이 자동으로 갱신됩니다.
@@ -863,7 +889,14 @@ python3 rb5_payload_gc_rotation_pub.py
 
 ```text
 src/real/dg5f_grasp_control/config/grasp_real_common.yaml
+src/real/dg5f_grasp_control/config/grasp_real_left_gains.yaml
+src/real/dg5f_grasp_control/config/grasp_real_right_gains.yaml
 ```
+
+공통 파일에는 토픽, 제한, timeout 등 양손 공통값이 있고, pose/grasp,
+Translation, Rotation, collision, envelop 게인은 좌우 gain 파일에서 각각 조절합니다.
+FK/Jacobian과 pose 및 측정 마찰 파라미터도 런타임 `hand_side`에 따라 좌우 구현을
+선택합니다. 오른손 중력보상은 `dg5fs_right_w_mount.urdf`를 사용합니다.
 
 | Parameter group | Main parameters |
 | --- | --- |
@@ -874,6 +907,7 @@ src/real/dg5f_grasp_control/config/grasp_real_common.yaml
 | Groped grasp (type 1~5) | `alpha1`, `groped_tau_limit`, `rotation_force_balance_max_alpha_ratio`, `force_balance_error_ramp_sec` |
 | Collision repel | `min_tip_distance`, `collision_repel_gain`, `collision_repel_limit` |
 | Type 6 | `envelop_tau_scale`, `envelop_joint_delay`, torque signs |
+| Translation (type 1~5) | `relative_translation_kp`, `relative_translation_kd`, force limits, velocity filter |
 | Relative rotation (type 1~5) | `relative_rotation_position_*`, `relative_rotation_force_limit`, `relative_rotation_radius_min`, `relative_rotation_reference_ramp_sec` |
 
 MuJoCo도 같은 YAML 파일을 읽으므로 parameter를 한 곳에서 관리할 수 있습니다.
