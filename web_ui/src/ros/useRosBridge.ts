@@ -24,6 +24,7 @@ function topicsForHand(side: HandSide) {
     teaching: `${prefix}/teaching_mode`,
     rotation: `${prefix}/rotation_matrix_cmd`,
     relativeRotationDegrees: `${prefix}/relative_rotation_deg_cmd`,
+    continuousRotation: `${prefix}/continuous_rotation_cmd`,
     relativeTranslation: `${prefix}/relative_translation_cmd`,
   };
 }
@@ -50,6 +51,7 @@ interface Publishers {
   teaching: CommandTopic | null;
   rotation: CommandTopic | null;
   relativeRotationDegrees: CommandTopic | null;
+  continuousRotation: CommandTopic | null;
   relativeTranslation: RelativeTranslationTopic | null;
 }
 
@@ -60,6 +62,7 @@ const EMPTY_PUBLISHERS: Publishers = {
   teaching: null,
   rotation: null,
   relativeRotationDegrees: null,
+  continuousRotation: null,
   relativeTranslation: null,
 };
 
@@ -161,6 +164,7 @@ export function useRosBridge(url: string, handSide: HandSide) {
       teaching: commandTopic(topics.teaching, "std_msgs/msg/Bool"),
       rotation: commandTopic(topics.rotation, "std_msgs/msg/Float64MultiArray"),
       relativeRotationDegrees: commandTopic(topics.relativeRotationDegrees, "std_msgs/msg/Float64"),
+      continuousRotation: commandTopic(topics.continuousRotation, "std_msgs/msg/Bool"),
       relativeTranslation: new Topic<Vector3StampedMessage>({
         ros,
         name: topics.relativeTranslation,
@@ -276,6 +280,10 @@ export function useRosBridge(url: string, handSide: HandSide) {
     (value: number) => publish(publishers.current.relativeRotationDegrees, { data: value }),
     [publish],
   );
+  const setContinuousRotation = useCallback(
+    (value: boolean) => publish(publishers.current.continuousRotation, { data: value }),
+    [publish],
+  );
   const setRelativeTranslationWorld = useCallback((deltaMeters: Point3): boolean => {
     const ros = activeRos.current;
     const topic = publishers.current.relativeTranslation;
@@ -311,6 +319,7 @@ export function useRosBridge(url: string, handSide: HandSide) {
     setTeachingMode,
     setRotationMatrix,
     setRelativeRotationDegrees,
+    setContinuousRotation,
     setRelativeTranslationWorld,
   };
 }

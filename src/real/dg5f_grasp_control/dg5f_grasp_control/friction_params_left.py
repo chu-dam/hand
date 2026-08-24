@@ -5,7 +5,9 @@ HAND_FRIC_COULOMB_SCALE = 0.7
 #팁 무게
 #기존: 6.5g
 #현재: 4.0g
-#ros2 topic pub --once   /dg5f_grasp_control/rotation_matrix_cmd   std_msgs/msg/Float64MultiArray   "{data: [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0]}"
+
+#ros2 topic pub --once   /dg5f_grasp_control/right/rotation_matrix_cmd   std_msgs/msg/Float64MultiArray   "{data: [0.0, 0.0, -1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0]}"
+
 
 HAND_FRIC_FC = np.array([
     0.01875485, 0.02295355, 0.04195685, 0.05820004,

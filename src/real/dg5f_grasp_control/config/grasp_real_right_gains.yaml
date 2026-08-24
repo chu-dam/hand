@@ -1,9 +1,24 @@
 grasp_real:
   ros__parameters:
     # Right-hand-only controller tuning.
-    pose_kp: 0.28
-    pose_kd: 0.06
+    pose_kp: 0.29
+    pose_kd: 0.05
     pose_pd_limit: 0.25
+    pre_rotation_pose_kp: 0.60
+    pre_rotation_pose_kd: 0.085
+    pre_rotation_pose_pd_limit: 0.30
+    pre_rotation_pinky_j1_kp: 1.00
+    pre_rotation_pinky_j1_kd: 0.09
+    pre_rotation_pinky_j1_tau_limit: 0.60
+    blind_grasp_pre_rotation_pose_kp: 1.0
+    blind_grasp_pre_rotation_pose_kd: 0.13
+
+    continuous_rotation_release_deg: 15.0
+    continuous_rotation_index_ring_release_deg: 20.0
+    continuous_rotation_ring_j2_release_deg: 30.0
+    continuous_rotation_thumb_j2_release_deg: 20.0
+    continuous_rotation_release_sec: 0.20
+    continuous_rotation_move_sec: 0.30
 
     fric_tanh_k: 17.0
     fric_limit: 1.0
@@ -35,6 +50,7 @@ grasp_real:
     relative_rotation_negative_direction_gain_scale: 1.2
     relative_rotation_positive_direction_damping_scale: 1.4
     relative_rotation_force_limit: 10.00
+
 
     card_floor_force_n: 3.0
     card_floor_hold_force_n: 3.0

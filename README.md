@@ -270,6 +270,7 @@ MuJoCo를 source tree에서 직접 실행하면 `src/real/dg5f_grasp_control`을
 | Alpha1 | `/dg5f_grasp_control/alpha1_cmd` | `/dg5f_grasp_control/right/alpha1_cmd` | `std_msgs/msg/Float64` |
 | Translation | `/dg5f_grasp_control/relative_translation_cmd` | `/dg5f_grasp_control/right/relative_translation_cmd` | `geometry_msgs/msg/Vector3Stamped` |
 | Relative rotation | `/dg5f_grasp_control/relative_rotation_deg_cmd` | `/dg5f_grasp_control/right/relative_rotation_deg_cmd` | `std_msgs/msg/Float64` |
+| Continuous rotation | `/dg5f_grasp_control/continuous_rotation_cmd` | `/dg5f_grasp_control/right/continuous_rotation_cmd` | `std_msgs/msg/Bool` |
 | Rotation matrix | `/dg5f_grasp_control/rotation_matrix_cmd` | `/dg5f_grasp_control/right/rotation_matrix_cmd` | `std_msgs/msg/Float64MultiArray` |
 | Teaching mode | `/dg5f_grasp_control/teaching_mode` | `/dg5f_grasp_control/right/teaching_mode` | `std_msgs/msg/Bool` |
 | Joint state | `/dg5f_s_left/joint_states` | `/dg5f_s_right/joint_states` | `sensor_msgs/msg/JointState` |
@@ -277,6 +278,12 @@ MuJoCo를 source tree에서 직접 실행하면 `src/real/dg5f_grasp_control`을
 | Debug | `/dg5f_grasp_control/debug` | `/dg5f_grasp_control/right/debug` | `dg5f_grasp_interfaces/msg/GraspDebug` |
 
 기존 `/dg5f_grasp_control/finger_count_cmd` 대신 `/grasp_type`을 사용합니다.
+오른손에는 연속 회전 준비용 `pose_type=5` (`Pre-rotation`)와 전용 자세에
+`Kp=1.0`, `Kd=5.0`을 사용하는 `pose_type=6`
+(`Pre-rotation (Blind Grasping)`)가 있습니다. 왼손 pose type은 기존 `1~4`를
+사용합니다. 오른손 Pre-rotation 상태에서
+`continuous_rotation_cmd=true`를 보내면 `5F grasp → -10° rotation →
+index/middle/ring/pinky 순차 release/regrasp`를 반복하고, `false`로 중지합니다.
 
 ---
 

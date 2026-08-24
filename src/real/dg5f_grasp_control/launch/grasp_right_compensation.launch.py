@@ -56,6 +56,7 @@ def generate_launch_description():
                     "alpha1_topic": "/dg5f_grasp_control/right/alpha1_cmd",
                     "relative_translation_topic": "/dg5f_grasp_control/right/relative_translation_cmd",
                     "relative_rotation_deg_topic": "/dg5f_grasp_control/right/relative_rotation_deg_cmd",
+                    "continuous_rotation_topic": "/dg5f_grasp_control/right/continuous_rotation_cmd",
                     "rotation_matrix_topic": "/dg5f_grasp_control/right/rotation_matrix_cmd",
                     "teaching_mode_topic": "/dg5f_grasp_control/right/teaching_mode",
                     "debug_topic": "/dg5f_grasp_control/right/debug",

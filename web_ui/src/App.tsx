@@ -195,6 +195,7 @@ export function App() {
           <DebugReadout debug={ros.debug} />
         </div>
         <ControlPanel
+          handSide={selectedHand}
           connected={connected}
           ready={controlsReady}
           debug={ros.debug}
@@ -205,6 +206,7 @@ export function App() {
           onRotationMatrix={ros.setRotationMatrix}
           onRelativeTranslation={ros.setRelativeTranslationWorld}
           onRelativeRotation={ros.setRelativeRotationDegrees}
+          onContinuousRotation={ros.setContinuousRotation}
           handToWorldRotation={ros.handToWorldRotation}
           onNotice={pushNotice}
         />

@@ -24,6 +24,7 @@ from dg5f_grasp_control.kinematics import (
     tip_position,
 )
 from dg5f_grasp_control.poses import (
+    RIGHT_HAND_CONTINUOUS_ROTATION_POSE,
     get_pose_type_targets,
 )
 
@@ -38,6 +39,15 @@ PINKY_FINGER_ID = 5
 INACTIVE_COLLISION_CHAIN = (2, 3, 4, 5)
 CARD_THUMB_ID = 1
 CARD_INDEX_ID = 2
+CONTINUOUS_ROTATION_GROUPS = ((3,), (4, 2), (1,), (5,))
+CONTINUOUS_ROTATION_GROUP_NAMES = ("middle", "ring_index", "thumb", "pinky")
+CONTINUOUS_ROTATION_RELEASE_JOINTS = {
+    1: ((1, -1.0), (2, -1.0)),
+    2: ((1, -1.0), (2, 1.0)),
+    3: ((1, -1.0), (2, 1.0)),
+    4: ((1, -1.0), (2, 1.0)),
+    5: ((0, -1.0),),
+}
 
 
 def _copy_finger_vectors(values: Dict[int, np.ndarray]) -> Dict[int, np.ndarray]:
@@ -205,6 +215,11 @@ class GraspController:
         self.relative_rotation_axis = np.zeros(3, dtype=np.float64)
         self.relative_rotation_last_wrapped_angle = None
         self.relative_rotation_reference_progress = 0.0
+        self.continuous_rotation_active = False
+        self.continuous_rotation_phase = "idle"
+        self.continuous_rotation_phase_started_at = None
+        self.continuous_rotation_group_index = 0
+        self.continuous_rotation_pose_target = None
         # Relative translation stores each fingertip position at command time
         # and tracks the translated targets with Cartesian PD forces.
         self.relative_translation_phase = "idle"
@@ -279,6 +294,110 @@ class GraspController:
         self.relative_rotation_axis[:] = 0.0
         self.relative_rotation_last_wrapped_angle = None
         self.relative_rotation_reference_progress = 0.0
+
+    def cancel_continuous_rotation(self) -> None:
+        self.continuous_rotation_active = False
+        self.continuous_rotation_phase = "idle"
+        self.continuous_rotation_phase_started_at = None
+        self.continuous_rotation_group_index = 0
+        self.continuous_rotation_pose_target = None
+
+    def _set_continuous_rotation_phase(self, phase: str, now: float) -> None:
+        self.continuous_rotation_phase = str(phase)
+        self.continuous_rotation_phase_started_at = float(now)
+        self._log(f"[CONTINUOUS_ROTATION] phase={phase}")
+
+    def _start_continuous_release(self, now: float) -> None:
+        group = CONTINUOUS_ROTATION_GROUPS[
+            self.continuous_rotation_group_index
+        ]
+        target = self.continuous_rotation_pose_target.copy()
+        if group == (5,):
+            for finger in range(1, 5):
+                indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
+                target[indices] = self.pose_type_targets[5][indices]
+        elif group == (3,):
+            pinky_j1 = int(FINGER_JOINT_INDEX[5][0])
+            target[pinky_j1] = self.pose_type_targets[5][pinky_j1]
+        for finger in group:
+            if finger in (2, 3, 4):
+                joint_1 = int(FINGER_JOINT_INDEX[finger][0])
+                target[joint_1] = RIGHT_HAND_CONTINUOUS_ROTATION_POSE[joint_1]
+            release_deg = (
+                self.cfg.continuous_rotation_index_ring_release_deg
+                if finger in (2, 4)
+                else self.cfg.continuous_rotation_release_deg
+            )
+            for local_joint, direction in CONTINUOUS_ROTATION_RELEASE_JOINTS[finger]:
+                joint_release_deg = (
+                    self.cfg.continuous_rotation_ring_j2_release_deg
+                    if finger == 4 and local_joint == 1
+                    else self.cfg.continuous_rotation_thumb_j2_release_deg
+                    if finger == 1 and local_joint == 1
+                    else release_deg
+                )
+                release_angle = np.deg2rad(float(joint_release_deg))
+                joint = int(FINGER_JOINT_INDEX[finger][local_joint])
+                target[joint] += direction * release_angle
+        self.continuous_rotation_pose_target = target
+        name = CONTINUOUS_ROTATION_GROUP_NAMES[
+            self.continuous_rotation_group_index
+        ]
+        self._set_continuous_rotation_phase(f"continuous_release_{name}", now)
+
+    def _start_continuous_move(self, now: float) -> None:
+        group = CONTINUOUS_ROTATION_GROUPS[
+            self.continuous_rotation_group_index
+        ]
+        for finger in group:
+            indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
+            self.continuous_rotation_pose_target[indices] = (
+                RIGHT_HAND_CONTINUOUS_ROTATION_POSE[indices]
+            )
+        name = CONTINUOUS_ROTATION_GROUP_NAMES[
+            self.continuous_rotation_group_index
+        ]
+        self._set_continuous_rotation_phase(f"continuous_move_{name}", now)
+
+    def _process_continuous_rotation(self, now: float) -> None:
+        if not self.continuous_rotation_active:
+            return
+        elapsed = float(now) - float(self.continuous_rotation_phase_started_at)
+        if self.continuous_rotation_phase.startswith("continuous_release_"):
+            if elapsed >= float(self.cfg.continuous_rotation_release_sec):
+                if self.continuous_rotation_group_index == 3:
+                    self.continuous_rotation_group_index = 0
+                    self._start_continuous_release(now)
+                else:
+                    self._start_continuous_move(now)
+            return
+        if self.continuous_rotation_phase.startswith("continuous_move_"):
+            if elapsed < float(self.cfg.continuous_rotation_move_sec):
+                return
+            self.continuous_rotation_group_index += 1
+            self._start_continuous_release(now)
+            return
+
+    def start_continuous_rotation(self, now: float) -> bool:
+        if (
+            self.cfg.hand_side != "right"
+            or self.state != "PRE_GRASP_POSE"
+            or self.pose_type != 5
+        ):
+            self._log(
+                "[CONTINUOUS_ROTATION] ignored: requires right-hand "
+                "PRE_GRASP_POSE with pose_type=5"
+            )
+            return False
+        self.continuous_rotation_active = True
+        self.continuous_rotation_group_index = 0
+        self.continuous_rotation_pose_target = self.pose_type_targets[5].copy()
+        self._start_continuous_release(now)
+        return True
+
+    def stop_continuous_rotation(self, now: float) -> None:
+        self.cancel_continuous_rotation()
+        self._log("[CONTINUOUS_ROTATION] stopped")
 
     def cancel_relative_translation(self) -> None:
         """Cancel the stored Cartesian fingertip translation target."""
@@ -406,7 +525,13 @@ class GraspController:
             )
         return self.policy.calc_zero_grasp_result(self.hand_q)
 
-    def prepare_relative_rotation(self, angle_rad: float, now: float) -> bool:
+    def prepare_relative_rotation(
+        self,
+        angle_rad: float,
+        now: float,
+        *,
+        internal: bool = False,
+    ) -> bool:
         """Start closed-loop rotation relative to the contact configuration."""
 
         angle_rad = float(angle_rad)
@@ -423,6 +548,11 @@ class GraspController:
             )
         if not np.isfinite(now):
             raise ValueError("now must be finite")
+        if self.continuous_rotation_active and not internal:
+            self._log(
+                "[RELATIVE_ROTATION] ignored: continuous rotation is active"
+            )
+            return False
         if self.state != "GROPED_GRASP" or self.active_finger_count not in range(1, 6):
             self._log(
                 "[RELATIVE_ROTATION] ignored: requires active grasp_type 1..5 "
@@ -518,6 +648,11 @@ class GraspController:
             )
         if not np.isfinite(now):
             raise ValueError("now must be finite")
+        if self.continuous_rotation_active:
+            self._log(
+                "[RELATIVE_TRANSLATION] ignored: continuous rotation is active"
+            )
+            return False
         if self.state != "GROPED_GRASP" or self.active_finger_count not in range(1, 6):
             self._log(
                 "[RELATIVE_TRANSLATION] ignored: requires active grasp_type 1..5 "
@@ -1868,6 +2003,8 @@ class GraspController:
                 2: "default pre-grasp",
                 3: "compact pre-grasp",
                 4: "card pre-grasp",
+                5: "rotation pre-grasp",
+                6: "rotation pre-grasp (blind grasping)",
             }[pose_type]
 
         self._log(f"[POSE_TYPE] pose_type={pose_type} -> {label}")
@@ -2302,7 +2439,9 @@ class GraspController:
 
     def apply_pose_type(self, pose_type: int, now: float) -> None:
         if pose_type not in self.pose_type_targets:
-            raise ValueError("pose_type must be 1, 2, 3, or 4")
+            valid = ", ".join(map(str, self.pose_type_targets))
+            raise ValueError(f"pose_type must be one of: {valid}")
+        self.cancel_continuous_rotation()
         state, state_start, _ = self._apply_pose_type_command(pose_type, now)
         self.state = state
         self.state_start = state_start
@@ -2317,6 +2456,9 @@ class GraspController:
             raise ValueError(
                 "grasp_type must be one of -1, 0, 1, 2, 3, 4, 5, 6, 7"
             )
+
+        if not internal:
+            self.cancel_continuous_rotation()
 
         if requested_count == 7:
             self._start_card_grasp(now)
@@ -2430,6 +2572,7 @@ class GraspController:
         if self.state_start == 0.0:
             self.state_start = now
         self._process_timers(now)
+        self._process_continuous_rotation(now)
 
         err = np.zeros(JOINT_COUNT, dtype=np.float64)
         grasp_tau = np.zeros(JOINT_COUNT, dtype=np.float64)
@@ -2475,15 +2618,50 @@ class GraspController:
             )
 
         elif self.state == "PRE_GRASP_POSE":
+            pre_rotation = (
+                self.cfg.hand_side == "right" and self.pose_type in (5, 6)
+            )
+            blind_grasp_pre_rotation = pre_rotation and self.pose_type == 6
+            pose_target = (
+                self.continuous_rotation_pose_target
+                if self.continuous_rotation_active
+                else self._current_pre_grasp_pose()
+            )
             tau, err = pose_pd(
-                self._current_pre_grasp_pose(),
+                pose_target,
                 self.hand_q,
                 qdot,
-                kp=self.cfg.pose_kp,
-                kd=self.cfg.pose_kd,
-                limit=self.cfg.pose_pd_limit,
+                kp=(
+                    self.cfg.blind_grasp_pre_rotation_pose_kp
+                    if blind_grasp_pre_rotation
+                    else self.cfg.pre_rotation_pose_kp
+                    if pre_rotation
+                    else self.cfg.pose_kp
+                ),
+                kd=(
+                    self.cfg.blind_grasp_pre_rotation_pose_kd
+                    if blind_grasp_pre_rotation
+                    else self.cfg.pre_rotation_pose_kd
+                    if pre_rotation
+                    else self.cfg.pose_kd
+                ),
+                limit=(
+                    self.cfg.pre_rotation_pose_pd_limit
+                    if pre_rotation
+                    else self.cfg.pose_pd_limit
+                ),
             )
-
+            if pre_rotation and not blind_grasp_pre_rotation:
+                pinky_j1 = int(FINGER_JOINT_INDEX[5][0])
+                pinky_tau, _ = pose_pd(
+                    [pose_target[pinky_j1]],
+                    [self.hand_q[pinky_j1]],
+                    [qdot[pinky_j1]],
+                    kp=self.cfg.pre_rotation_pinky_j1_kp,
+                    kd=self.cfg.pre_rotation_pinky_j1_kd,
+                    limit=self.cfg.pre_rotation_pinky_j1_tau_limit,
+                )
+                tau[pinky_j1] = pinky_tau[0]
         elif self.state == "CARD_GRASP":
             policy_result, inactive_pd, err = self._calc_card_grasp(qdot, now)
             grasp_tau = policy_result.tau.copy()
@@ -2570,10 +2748,12 @@ class GraspController:
 
             if regular_grasp:
                 base_total_forces = _copy_finger_vectors(total_forces)
-                generic_rotation_forces = self._calc_relative_rotation_forces(
-                    fingertip_positions,
-                    now,
-                    qdot,
+                generic_rotation_forces = (
+                    self._calc_relative_rotation_forces(
+                        fingertip_positions,
+                        now,
+                        qdot,
+                    )
                 )
                 rotation_forces.update(generic_rotation_forces)
                 if self.relative_rotation_phase in {

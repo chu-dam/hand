@@ -207,27 +207,40 @@ def filter_trials_for_fit(trials):
 def fit_joint_model(trials):
     """
     Fit:
-        tau = Fc * sign(qdot) + B * qdot + bias
+        Fc = (positive intercept - negative intercept) / 2
+        B = (positive slope + negative slope) / 2
+
+    The signed directional average cancels a direction-independent gravity
+    error. The discarded gravity estimate is
+    (positive intercept + negative intercept) / 2.
     """
     fit_df, excluded = filter_trials_for_fit(trials)
 
-    if len(fit_df) < 4:
+    direction_fits = {}
+    for direction in (1, -1):
+        group = fit_df[fit_df["direction"] == direction]
+        if len(group) < 2:
+            return None, fit_df, excluded
+        qdot_dir = group["qdot_fit"].to_numpy(dtype=np.float64)
+        tau_dir = group["test_effort"].to_numpy(dtype=np.float64)
+        slope, intercept = np.linalg.lstsq(
+            np.column_stack([qdot_dir, np.ones_like(qdot_dir)]),
+            tau_dir,
+            rcond=None,
+        )[0]
+        direction_fits[direction] = (float(slope), float(intercept))
+
+    B_pos, intercept_pos = direction_fits[1]
+    B_neg, intercept_neg = direction_fits[-1]
+    Fc = 0.5 * (intercept_pos - intercept_neg)
+    B = 0.5 * (B_pos + B_neg)
+    gravity_offset = 0.5 * (intercept_pos + intercept_neg)
+    if Fc < 0.0 or B < 0.0:
         return None, fit_df, excluded
 
     qdot = fit_df["qdot_fit"].to_numpy(dtype=np.float64)
     tau = fit_df["test_effort"].to_numpy(dtype=np.float64)
-
-    A = np.column_stack([
-        np.sign(qdot),
-        qdot,
-        np.ones_like(qdot),
-    ])
-
-    param, residuals, rank, s = np.linalg.lstsq(A, tau, rcond=None)
-
-    Fc, B, bias = param
-
-    tau_hat = A @ param
+    tau_hat = Fc * np.sign(qdot) + B * qdot
     err = tau - tau_hat
 
     ss_res = np.sum(err ** 2)
@@ -237,7 +250,7 @@ def fit_joint_model(trials):
     result = {
         "Fc": Fc,
         "B": B,
-        "bias": bias,
+        "gravity_offset": gravity_offset,
         "rmse": float(np.sqrt(np.mean(err ** 2))),
         "r2": float(r2),
         "n_trials_used": len(fit_df),
@@ -287,17 +300,16 @@ def fit_directional_lines(trials):
 def save_params_py(summary):
     Fc_arr = np.zeros(20)
     B_arr = np.zeros(20)
-    bias_arr = np.zeros(20)
 
     for _, row in summary.iterrows():
         idx = int(row["joint_index"])
         Fc_arr[idx] = float(row["Fc"])
         B_arr[idx] = float(row["B"])
-        bias_arr[idx] = float(row["bias"])
 
     with open(OUT_PARAMS_PY, "w") as f:
         f.write("# Auto-generated friction parameters\n")
-        f.write("# Model: tau_fric = Fc * tanh(TANH_K * qdot) + B * qdot + bias\n")
+        f.write("# Model: tau_fric = Fc * tanh(TANH_K * qdot) + B * qdot\n")
+        f.write("# Fc/B use the symmetric average of positive/negative sweeps.\n")
         f.write("# qdot unit: rad/s\n")
         f.write("import numpy as np\n\n")
 
@@ -313,16 +325,9 @@ def save_params_py(summary):
             f.write(f"    {v:.8f},\n")
         f.write("], dtype=np.float64)\n\n")
 
-        f.write("FRIC_BIAS = np.array([\n")
-        for v in bias_arr:
-            f.write(f"    {v:.8f},\n")
-        f.write("], dtype=np.float64)\n\n")
-
-        f.write("def compute_friction(qdot, use_bias=False, scale=1.0):\n")
+        f.write("def compute_friction(qdot, scale=1.0):\n")
         f.write("    qdot = np.asarray(qdot, dtype=np.float64)\n")
         f.write("    tau = FRIC_FC * np.tanh(TANH_K * qdot) + FRIC_B * qdot\n")
-        f.write("    if use_bias:\n")
-        f.write("        tau = tau + FRIC_BIAS\n")
         f.write("    return scale * tau\n")
 
 
@@ -382,7 +387,7 @@ def main():
         print("------------------------------------")
         print(f"Fc   = {fit_result['Fc']:.6f}")
         print(f"B    = {fit_result['B']:.6f}")
-        print(f"bias = {fit_result['bias']:.6f}")
+        print(f"discarded gravity offset = {fit_result['gravity_offset']:.6f}")
         print(f"rmse = {fit_result['rmse']:.6f}")
         print(f"R^2  = {fit_result['r2']:.4f}")
         print(f"used = {fit_result['n_trials_used']} / {len(g)}")

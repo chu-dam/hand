@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { rotateVectorToWorld } from "../ros/frames";
-import type { GraspDebugMessage, Point3, RotationMatrix3 } from "../ros/types";
+import type { GraspDebugMessage, HandSide, Point3, RotationMatrix3 } from "../ros/types";
 
 const GRASP_OPTIONS = [
   { value: 1, label: "Thumb + Index", short: "2F-I" },
@@ -17,6 +17,12 @@ const POSE_OPTIONS = [
   { value: 2, label: "Pre-grasp" },
   { value: 3, label: "Compact" },
   { value: 4, label: "Card" },
+];
+
+const RIGHT_POSE_OPTIONS = [
+  ...POSE_OPTIONS,
+  { value: 5, label: "Pre-rotation" },
+  { value: 6, label: "Pre-rotation (Blind Grasping)" },
 ];
 
 const MANIPULATION_GRASP_TYPES = new Set([1, 2, 3, 4, 5]);
@@ -103,6 +109,7 @@ function validateRotationMatrix(input: string[]): MatrixResult {
 }
 
 interface ControlPanelProps {
+  handSide: HandSide;
   connected: boolean;
   ready: boolean;
   debug: GraspDebugMessage | null;
@@ -113,11 +120,13 @@ interface ControlPanelProps {
   onRotationMatrix: (value: number[]) => boolean;
   onRelativeTranslation: (deltaWorldMeters: Point3) => boolean;
   onRelativeRotation: (degrees: number) => boolean;
+  onContinuousRotation: (enable: boolean) => boolean;
   handToWorldRotation: RotationMatrix3;
   onNotice: (message: string, tone?: "ok" | "warning" | "error") => void;
 }
 
 export function ControlPanel({
+  handSide,
   connected,
   ready,
   debug,
@@ -128,6 +137,7 @@ export function ControlPanel({
   onRotationMatrix,
   onRelativeTranslation,
   onRelativeRotation,
+  onContinuousRotation,
   handToWorldRotation,
   onNotice,
 }: ControlPanelProps) {
@@ -137,6 +147,10 @@ export function ControlPanel({
   const [rotationDegreesInput, setRotationDegreesInput] = useState("5");
   const [matrix, setMatrix] = useState([...IDENTITY_MATRIX]);
   const teaching = Boolean(debug?.teaching_mode);
+  const continuousRotationActive = (
+    debug?.controller_phase?.startsWith("continuous_") === true
+    && debug.controller_phase !== "continuous_error"
+  );
   const commandDisabled = !ready || teaching;
   const cardGraspAvailable = (
     ready
@@ -150,6 +164,7 @@ export function ControlPanel({
     && debug?.controller_state === "GROPED_GRASP"
     && MANIPULATION_GRASP_TYPES.has(debug?.grasp_type ?? -1)
     && debug?.controller_phase !== "force_balance_error"
+    && !continuousRotationActive
   );
   const taskSpaceSectionActive = manipulationSectionActive;
   const rotationSectionActive = manipulationSectionActive;
@@ -171,6 +186,18 @@ export function ControlPanel({
   const rotationCommandEnabled = rotationSectionActive
     && rotationDegreesValid
     && parsedRotationDegrees !== 0;
+  const continuousRotationAvailable = (
+    handSide === "right"
+    && ready
+    && !teaching
+    && (
+      continuousRotationActive
+      || (
+        debug?.controller_state === "PRE_GRASP_POSE"
+        && debug?.pose_type === 5
+      )
+    )
+  );
   const rotationDirection = !rotationDegreesValid
     ? "SET ANGLE"
     : parsedRotationDegrees > 0
@@ -315,8 +342,8 @@ export function ControlPanel({
             <div><span>02</span><strong>Pose</strong></div>
             <small>current {debug?.pose_type ?? "—"}</small>
           </div>
-          <div className="segmented four-column">
-            {POSE_OPTIONS.map((option) => (
+          <div className={`segmented pose-grid ${handSide === "right" ? "right-pose-grid" : ""}`}>
+            {(handSide === "right" ? RIGHT_POSE_OPTIONS : POSE_OPTIONS).map((option) => (
               <button
                 key={option.value}
                 className={debug?.pose_type === option.value ? "active" : ""}
@@ -568,6 +595,25 @@ export function ControlPanel({
               </button>
             </div>
           </div>
+          <button
+            className="secondary-wide apply-button"
+            disabled={!continuousRotationAvailable}
+            title={continuousRotationAvailable
+              ? continuousRotationActive
+                ? "Stop continuous rotation"
+                : "Start continuous rotation"
+              : "Available only in the right-hand Pre-rotation pose"}
+            onClick={() => report(
+              onContinuousRotation(!continuousRotationActive),
+              continuousRotationActive
+                ? "Continuous rotation 중지 요청을 전송했습니다."
+                : "Continuous rotation 시작 요청을 전송했습니다.",
+            )}
+          >
+            {continuousRotationActive
+              ? "Stop continuous rotation"
+              : "Continuous rotation"}
+          </button>
         </div>
 
         <div className="control-section">
@@ -582,7 +628,7 @@ export function ControlPanel({
               max="10"
               step="0.1"
               value={sliderAlpha}
-              disabled={commandDisabled}
+              disabled={commandDisabled || continuousRotationActive}
               onChange={(event) => setAlphaInput(event.target.value)}
             />
             <input
@@ -592,10 +638,16 @@ export function ControlPanel({
               max="10"
               step="0.1"
               value={alphaInput}
-              disabled={commandDisabled}
+              disabled={commandDisabled || continuousRotationActive}
               onChange={(event) => setAlphaInput(event.target.value)}
             />
-            <button className="apply-button" disabled={commandDisabled} onClick={applyAlpha}>Apply</button>
+            <button
+              className="apply-button"
+              disabled={commandDisabled || continuousRotationActive}
+              onClick={applyAlpha}
+            >
+              Apply
+            </button>
           </div>
         </div>
 

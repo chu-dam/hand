@@ -10,6 +10,7 @@ grasp_real:
     alpha1_topic: /dg5f_grasp_control/alpha1_cmd
     relative_translation_topic: /dg5f_grasp_control/relative_translation_cmd
     relative_rotation_deg_topic: /dg5f_grasp_control/relative_rotation_deg_cmd
+    continuous_rotation_topic: /dg5f_grasp_control/continuous_rotation_cmd
     rotation_matrix_topic: /dg5f_grasp_control/rotation_matrix_cmd
     teaching_mode_topic: /dg5f_grasp_control/teaching_mode
     debug_topic: /dg5f_grasp_control/debug

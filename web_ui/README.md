@@ -17,6 +17,10 @@ DG5F-S controller ── ROS 2 topics ── rosbridge :9090 ── browser UI :
 - 마우스 회전·확대/축소·이동 및 force vector 크기 조절
 - 파지 후 활성화되는 Translation UI (`±X/±Y/±Z`, 상대 이동량 mm)
 - Teaching, Pose, Grasp Type, 상대 회전 목표, Alpha1, hand rotation matrix 명령
+- 오른손 전용 `Pre-rotation` pose (`pose_type=5`)
+- 전용 자세와 `Kp=1.0`, `Kd=5.0`을 쓰는 오른손
+  `Pre-rotation (Blind Grasping)` pose (`pose_type=6`)
+- Pre-rotation에서만 시작 가능한 `Continuous rotation` Start/Stop 버튼
 - 연결이 끊기거나 telemetry가 1초 이상 오래되면 모든 제어 명령 자동 잠금
 - 회전행렬의 직교성 및 `det(R)≈1` 검증
 
@@ -196,6 +200,9 @@ Rotation 입력은 현재 물체 자세 기준의 상대 각도입니다. 양수
 ```
 
 오른손은 `/dg5f_grasp_control/right/relative_rotation_deg_cmd`를 사용합니다.
+연속 회전 버튼은 오른손 Pre-rotation 상태에서
+`/dg5f_grasp_control/right/continuous_rotation_cmd` (`std_msgs/msg/Bool`)로
+pose-PD 반복 시퀀스의 Start/Stop을 전송합니다.
 
 일반 `grasp_type=1~5`는 항상 `Cv=Cg`를 사용합니다. 엄지(Finger ID 1)의
 `alpha1`을 기준으로 centroid 거리 비례 nominal force를 만들며, 4F·5F는 비음수

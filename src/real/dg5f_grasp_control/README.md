@@ -134,6 +134,13 @@ rolling or slipping contacts can make it differ from the physical object
 angle. There is no timed `Cv -> Cg` transition; the obsolete
 centroid-transition stage has been removed.
 
+For the right hand, `/dg5f_grasp_control/right/continuous_rotation_cmd=true`
+starts a repeating sequence from `pose_type=5`: middle, ring+index, thumb, and
+pinky move in order. After the thumb move, fingers 1--4 return to the
+Pre-rotation pose while only pinky J1 releases. Pinky J1 returns when the next
+middle release starts. The sequence uses the Pre-rotation pose PD; pinky J1
+keeps its configured gain scale.
+
 ## Relative task-space translation
 
 `/dg5f_grasp_control/relative_translation_cmd` uses

@@ -239,7 +239,14 @@ def build_grasp_debug_message(
     if controller_state is None:
         controller_state = output.state if output is not None else controller.state
     if controller_phase is None:
-        if controller.state == "CARD_GRASP":
+        continuous_phase = getattr(
+            controller,
+            "continuous_rotation_phase",
+            "idle",
+        )
+        if continuous_phase != "idle":
+            controller_phase = continuous_phase
+        elif controller.state == "CARD_GRASP":
             controller_phase = controller.card_phase
         elif relative_translation_phase != "idle":
             controller_phase = relative_translation_phase

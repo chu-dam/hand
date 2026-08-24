@@ -12,6 +12,7 @@ class RuntimeConfig:
     alpha1_topic: str = "/dg5f_grasp_control/alpha1_cmd"
     relative_translation_topic: str = "/dg5f_grasp_control/relative_translation_cmd"
     relative_rotation_deg_topic: str = "/dg5f_grasp_control/relative_rotation_deg_cmd"
+    continuous_rotation_topic: str = "/dg5f_grasp_control/continuous_rotation_cmd"
     rotation_matrix_topic: str = "/dg5f_grasp_control/rotation_matrix_cmd"
     teaching_mode_topic: str = "/dg5f_grasp_control/teaching_mode"
     debug_topic: str = "/dg5f_grasp_control/debug"
@@ -27,6 +28,21 @@ class RuntimeConfig:
     pose_kp: float = 0.285
     pose_kd: float = 0.05
     pose_pd_limit: float = 0.25
+    pre_rotation_pose_kp: float = 0.60
+    pre_rotation_pose_kd: float = 0.085
+    pre_rotation_pose_pd_limit: float = 0.30
+    pre_rotation_pinky_j1_kp: float = 1.00
+    pre_rotation_pinky_j1_kd: float = 0.09
+    pre_rotation_pinky_j1_tau_limit: float = 0.60
+    blind_grasp_pre_rotation_pose_kp: float = 1.0
+    blind_grasp_pre_rotation_pose_kd: float = 5.0
+
+    continuous_rotation_release_deg: float = 15.0
+    continuous_rotation_index_ring_release_deg: float = 20.0
+    continuous_rotation_ring_j2_release_deg: float = 30.0
+    continuous_rotation_thumb_j2_release_deg: float = 20.0
+    continuous_rotation_release_sec: float = 0.20
+    continuous_rotation_move_sec: float = 0.30
 
     fric_scale: float = 0.7
     fric_tanh_k: float = 20.0
@@ -93,6 +109,7 @@ class RuntimeConfig:
     relative_rotation_radius_min: float = 0.015
     relative_rotation_velocity_alpha: float = 0.20
     relative_rotation_timeout_sec: float = 1.0
+
 
     rotation_palm_normal_x: float = -1.0
     rotation_palm_normal_y: float = 0.0

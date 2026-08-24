@@ -68,6 +68,30 @@ RIGHT_HAND_CARD_PRE_GRASP_POSE = np.array([
      0.0000,  0.0000,    0.0000,  0.0000,  # pinky
 ], dtype=np.float64)
 
+RIGHT_HAND_PRE_ROTATION_POSE = np.array([
+     0.7384, -1.0917, 0.2936, 0.8437,  # thumb
+    -0.0799,  0.7665, 0.5812, 0.2939,  # index
+     0.1504,  0.5627, 0.7418, 0.2431,  # middle
+     0.2705,  0.7821, 0.6339, 0.2834,  # ring
+     0.7327,  0.9755, 1.0877, 0.0398,  # pinky
+], dtype=np.float64)
+
+RIGHT_HAND_BLIND_GRASP_PRE_ROTATION_POSE = np.array([
+     0.6720, -1.1132, 0.2288, 0.3156,  # thumb
+    -0.1105,  0.6432, 0.5466, 0.2972,  # index
+     0.0922,  0.5243, 0.7561, 0.2082,  # middle
+     0.2087,  0.7514, 0.6196, 0.3023,  # ring
+     0.7922,  0.9118, 0.9467, 0.0593,  # pinky
+], dtype=np.float64)
+
+RIGHT_HAND_CONTINUOUS_ROTATION_POSE = np.array([
+     0.7660, -1.3130, 0.5590, 0.4587,  # thumb
+    -0.2552,  0.9154, 0.5842, 0.2882,  # index
+    -0.1162,  0.6428, 0.5979, 0.2505,  # middle
+     0.0005,  0.6575, 0.5683, 0.2827,  # ring
+     0.8777,  0.7625, 0.5538, 0.2868,  # pinky
+], dtype=np.float64)
+
 
 LEFT_POSE_TYPE_TARGETS = {
     1: LEFT_HAND_NORMAL_POSE,
@@ -81,6 +105,8 @@ RIGHT_POSE_TYPE_TARGETS = {
     2: RIGHT_HAND_PRE_GRASP_POSE,
     3: RIGHT_HAND_COMPACT_PRE_GRASP_POSE,
     4: RIGHT_HAND_CARD_PRE_GRASP_POSE,
+    5: RIGHT_HAND_PRE_ROTATION_POSE,
+    6: RIGHT_HAND_BLIND_GRASP_PRE_ROTATION_POSE,
 }
 
 

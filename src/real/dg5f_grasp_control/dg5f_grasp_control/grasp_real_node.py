@@ -27,7 +27,6 @@ from dg5f_grasp_control.hand_model import (
 )
 from dg5f_grasp_control.kinematics import set_hand_side
 from dg5f_grasp_control.mujoco_gravity import MujocoGravityCompensator
-from dg5f_grasp_control.poses import POSE_TYPE_TARGETS
 from dg5f_grasp_control.ros_debug import build_grasp_debug_message
 
 
@@ -76,6 +75,7 @@ class GraspRealRunner:
         self.pending_teaching_mode = None
         self.pending_relative_rotation_rad = None
         self.pending_relative_translation_hand = None
+        self.pending_continuous_rotation = None
         self.rotation_hand_to_world = np.eye(3, dtype=np.float64)
         self.gravity_in_hand_frame = None
         self.last_debug_publish_time = 0.0
@@ -109,6 +109,12 @@ class GraspRealRunner:
             Bool,
             cfg.teaching_mode_topic,
             self.teaching_mode_cb,
+            10,
+        )
+        node.create_subscription(
+            Bool,
+            cfg.continuous_rotation_topic,
+            self.continuous_rotation_cb,
             10,
         )
         node.create_subscription(
@@ -178,9 +184,10 @@ class GraspRealRunner:
             return
 
         pose_type = int(msg.data)
-        if pose_type not in POSE_TYPE_TARGETS:
+        if pose_type not in self.controller.pose_type_targets:
+            valid = ", ".join(map(str, self.controller.pose_type_targets))
             self.node.get_logger().warn(
-                f"Ignore invalid pose_type command: {pose_type}. Use 1, 2, 3, or 4."
+                f"Ignore invalid pose_type command: {pose_type}. Use {valid}."
             )
             return
         self.pending_pose_type = pose_type
@@ -191,7 +198,23 @@ class GraspRealRunner:
         if enable:
             self.pending_relative_rotation_rad = None
 
+    def continuous_rotation_cb(self, msg):
+        enable = bool(msg.data)
+        if enable and (
+            self.teaching_mode or self.pending_teaching_mode is True
+        ):
+            self.node.get_logger().warn(
+                "Ignore continuous rotation while Teaching Mode is active."
+            )
+            return
+        self.pending_continuous_rotation = enable
+
     def alpha1_cb(self, msg):
+        if self.controller.continuous_rotation_active:
+            self.node.get_logger().warn(
+                "Ignore alpha1 command while continuous rotation is active."
+            )
+            return
         alpha1 = float(msg.data)
         try:
             self.controller.set_alpha1(alpha1)
@@ -317,6 +340,8 @@ class GraspRealRunner:
             self.pending_pose_type = None
             self.pending_relative_rotation_rad = None
             self.pending_relative_translation_hand = None
+            self.pending_continuous_rotation = None
+            self.controller.cancel_continuous_rotation()
             self.controller.cancel_relative_rotation()
             self.controller.cancel_relative_translation()
             self.controller.cancel_card_grasp()
@@ -356,6 +381,22 @@ class GraspRealRunner:
             command = self.pending_finger_count
             self.pending_finger_count = None
             self.controller.apply_grasp_type(command, now)
+
+        if self.pending_continuous_rotation is not None:
+            enable = self.pending_continuous_rotation
+            self.pending_continuous_rotation = None
+            if enable:
+                if self.controller.start_continuous_rotation(now):
+                    self.node.get_logger().info(
+                        "Continuous rotation sequence started."
+                    )
+                else:
+                    self.node.get_logger().warn(
+                        "Continuous rotation requires right-hand "
+                        "Pre-rotation pose."
+                    )
+            else:
+                self.controller.stop_continuous_rotation(now)
 
         if self.pending_relative_rotation_rad is not None:
             angle_rad = self.pending_relative_rotation_rad
@@ -408,6 +449,7 @@ class GraspRealRunner:
         print(f"[GRASP_TYPE_TOPIC] {self.cfg.command_topic}")
         print(f"[POSE_TYPE_TOPIC] {self.cfg.pose_topic}")
         print(f"[ALPHA1_TOPIC] {self.cfg.alpha1_topic}")
+        print(f"[CONTINUOUS_ROTATION_TOPIC] {self.cfg.continuous_rotation_topic}")
         print(f"[RELATIVE_ROTATION_DEG_TOPIC] {self.cfg.relative_rotation_deg_topic}")
         print(f"[RELATIVE_TRANSLATION_TOPIC] {self.cfg.relative_translation_topic}")
         print(f"[ROTATION_MATRIX_TOPIC] {self.cfg.rotation_matrix_topic}")
