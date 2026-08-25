@@ -207,6 +207,7 @@ class GraspController:
         self.relative_rotation_target_rad = 0.0
         self.relative_rotation_started_at = None
         self.relative_rotation_pivot = np.zeros(3, dtype=np.float64)
+        self.relative_rotation_fixed_pivot = False
         self.relative_rotation_start_fingertips = {}
         self.relative_rotation_current_rad = 0.0
         self.relative_rotation_error_rad = 0.0
@@ -286,6 +287,7 @@ class GraspController:
         self.relative_rotation_target_rad = 0.0
         self.relative_rotation_started_at = None
         self.relative_rotation_pivot[:] = 0.0
+        self.relative_rotation_fixed_pivot = False
         self.relative_rotation_start_fingertips = {}
         self.relative_rotation_current_rad = 0.0
         self.relative_rotation_error_rad = 0.0
@@ -363,6 +365,28 @@ class GraspController:
         if not self.continuous_rotation_active:
             return
         elapsed = float(now) - float(self.continuous_rotation_phase_started_at)
+        if self.continuous_rotation_phase == "blind_grasp_settle":
+            if elapsed >= float(self.cfg.blind_rotation_grasp_settle_sec):
+                points = np.array([
+                    tip_position(self.hand_q, finger)
+                    for finger in range(1, 6)
+                ])
+                try:
+                    center = self._fit_blind_rotation_sphere_center(points)
+                except (ValueError, np.linalg.LinAlgError) as exc:
+                    self.cancel_continuous_rotation()
+                    self._log(f"[BLIND_ROTATION] sphere fit failed: {exc}")
+                    return
+                self.cancel_continuous_rotation()
+                accepted = self.prepare_relative_rotation(
+                    np.deg2rad(-10.0),
+                    now,
+                    internal=True,
+                    fixed_pivot=center,
+                )
+                if not accepted:
+                    self._log("[BLIND_ROTATION] closed-loop rotation rejected")
+            return
         if self.continuous_rotation_phase.startswith("continuous_release_"):
             if elapsed >= float(self.cfg.continuous_rotation_release_sec):
                 if self.continuous_rotation_group_index == 3:
@@ -380,6 +404,15 @@ class GraspController:
 
     def start_continuous_rotation(self, now: float) -> bool:
         if (
+            self.cfg.hand_side == "right"
+            and self.state == "PRE_GRASP_POSE"
+            and self.pose_type == 6
+        ):
+            self.apply_grasp_type(5, now, internal=True)
+            self.continuous_rotation_active = True
+            self._set_continuous_rotation_phase("blind_grasp_settle", now)
+            return True
+        if (
             self.cfg.hand_side != "right"
             or self.state != "PRE_GRASP_POSE"
             or self.pose_type != 5
@@ -394,6 +427,61 @@ class GraspController:
         self.continuous_rotation_pose_target = self.pose_type_targets[5].copy()
         self._start_continuous_release(now)
         return True
+
+    def _fit_blind_rotation_sphere_center(
+        self,
+        points: np.ndarray,
+    ) -> np.ndarray:
+        points = np.asarray(points, dtype=np.float64)
+        radius = float(self.cfg.blind_rotation_sphere_radius_m)
+        if (
+            points.shape != (5, 3)
+            or not np.all(np.isfinite(points))
+            or not np.isfinite(radius)
+            or radius <= 0.0
+        ):
+            raise ValueError("blind rotation requires five finite contacts and radius > 0")
+
+        design = np.column_stack((2.0 * points, np.ones(5)))
+        center = np.linalg.lstsq(
+            design,
+            np.sum(points * points, axis=1),
+            rcond=None,
+        )[0][:3]
+        for _ in range(8):
+            delta = center - points
+            distances = np.linalg.norm(delta, axis=1)
+            if np.any(distances <= 1e-9):
+                raise ValueError("blind rotation sphere fit is degenerate")
+            residual = distances - radius
+            jacobian = delta / distances[:, None]
+            step = np.linalg.lstsq(jacobian, -residual, rcond=None)[0]
+            center += step
+            if float(np.linalg.norm(step)) <= 1e-9:
+                break
+        if not np.all(np.isfinite(center)):
+            raise ValueError("blind rotation sphere center is not finite")
+        residual = np.abs(np.linalg.norm(points - center, axis=1) - radius)
+        maximum_residual = float(np.max(residual))
+        residual_limit = float(
+            self.cfg.blind_rotation_sphere_fit_max_residual_m
+        )
+        if (
+            not np.isfinite(residual_limit)
+            or residual_limit < 0.0
+            or maximum_residual > residual_limit
+        ):
+            raise ValueError(
+                "sphere fit residual exceeds limit "
+                f"({1000.0 * maximum_residual:.2f} mm > "
+                f"{1000.0 * residual_limit:.2f} mm)"
+            )
+        self._log(
+            "[BLIND_ROTATION] sphere center="
+            f"{np.round(center, 4).tolist()} | "
+            f"residual_max_mm={1000.0 * maximum_residual:.2f}"
+        )
+        return center
 
     def stop_continuous_rotation(self, now: float) -> None:
         self.cancel_continuous_rotation()
@@ -531,6 +619,7 @@ class GraspController:
         now: float,
         *,
         internal: bool = False,
+        fixed_pivot: np.ndarray | None = None,
     ) -> bool:
         """Start closed-loop rotation relative to the contact configuration."""
 
@@ -538,14 +627,6 @@ class GraspController:
         now = float(now)
         if not np.isfinite(angle_rad) or angle_rad == 0.0:
             raise ValueError("relative rotation angle must be finite and non-zero")
-        maximum = float(np.deg2rad(self.cfg.relative_rotation_max_abs_deg))
-        if not np.isfinite(maximum) or maximum <= 0.0:
-            raise ValueError("relative rotation maximum must be finite and > 0")
-        if abs(angle_rad) > maximum + 1e-12:
-            raise ValueError(
-                "relative rotation magnitude must be <= "
-                f"{self.cfg.relative_rotation_max_abs_deg:.3f} deg"
-            )
         if not np.isfinite(now):
             raise ValueError("now must be finite")
         if self.continuous_rotation_active and not internal:
@@ -608,11 +689,20 @@ class GraspController:
         if not np.isfinite(axis_norm) or axis_norm <= 1e-12:
             raise ValueError("rotation palm-normal axis must be finite and non-zero")
         axis /= axis_norm
+        if fixed_pivot is not None:
+            fixed_pivot = np.asarray(fixed_pivot, dtype=np.float64)
+            if fixed_pivot.shape != (3,) or not np.all(np.isfinite(fixed_pivot)):
+                raise ValueError("fixed rotation pivot must be a finite 3-vector")
 
         self.cancel_relative_translation()
         self.cancel_relative_rotation()
         self.relative_rotation_target_rad = angle_rad
-        self.relative_rotation_pivot = start_fingertips[1].copy()
+        self.relative_rotation_fixed_pivot = fixed_pivot is not None
+        self.relative_rotation_pivot = (
+            fixed_pivot.copy()
+            if fixed_pivot is not None
+            else start_fingertips[1].copy()
+        )
         self.relative_rotation_start_fingertips = start_fingertips
         self.relative_rotation_current_rad = 0.0
         self.relative_rotation_error_rad = angle_rad
@@ -626,7 +716,8 @@ class GraspController:
         self._log(
             "[RELATIVE_ROTATION] closed-loop contact rotation started "
             f"target_delta_deg={np.degrees(angle_rad):.3f}, "
-            f"axis={np.round(axis, 4).tolist()}"
+            f"axis={np.round(axis, 4).tolist()}, "
+            f"pivot={'sphere_center' if fixed_pivot is not None else 'thumb'}"
         )
         return True
 
@@ -763,12 +854,16 @@ class GraspController:
             float(self.cfg.relative_rotation_radius_min),
             1e-6,
         )
-        current_pivot = tip_positions.get(1)
+        current_pivot = (
+            self.relative_rotation_pivot
+            if self.relative_rotation_fixed_pivot
+            else tip_positions.get(1)
+        )
         if current_pivot is None:
             raise ValueError("thumb pivot is unavailable")
         current_pivot = np.asarray(current_pivot, dtype=np.float64)
         for finger, start_position in self.relative_rotation_start_fingertips.items():
-            if finger == 1:
+            if finger == 1 and not self.relative_rotation_fixed_pivot:
                 continue
             current_position = tip_positions.get(finger)
             if current_position is None:
@@ -818,7 +913,7 @@ class GraspController:
         now: float,
         qdot: np.ndarray | None = None,
     ) -> Dict[int, np.ndarray]:
-        """Track non-thumb fingertip targets about the thumb pivot."""
+        """Track fingertip targets about the saved rotation pivot."""
 
         rotation_forces = self._zero_translation_forces(tip_positions)
         self.relative_rotation_command_moment = 0.0
@@ -985,7 +1080,11 @@ class GraspController:
 
         axis = np.asarray(self.relative_rotation_axis, dtype=np.float64)
         start_pivot = self.relative_rotation_pivot
-        current_pivot = tip_positions[1]
+        current_pivot = (
+            start_pivot
+            if self.relative_rotation_fixed_pivot
+            else tip_positions[1]
+        )
         fingertip_velocities = {}
         for finger in expected_fingers:
             indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
@@ -997,12 +1096,14 @@ class GraspController:
                 )
                 @ qdot[indices]
             )
-        thumb_velocity = fingertip_velocities[1]
-        driven_fingers = [
-            finger
-            for finger in self.relative_rotation_start_fingertips
-            if finger != 1
-        ]
+        pivot_velocity = (
+            np.zeros(3, dtype=np.float64)
+            if self.relative_rotation_fixed_pivot
+            else fingertip_velocities[1]
+        )
+        driven_fingers = list(self.relative_rotation_start_fingertips)
+        if not self.relative_rotation_fixed_pivot:
+            driven_fingers.remove(1)
         if not driven_fingers:
             self.relative_rotation_phase = "rotation_error"
             self._log("[RELATIVE_ROTATION] stopped: no non-thumb driven finger")
@@ -1012,7 +1113,7 @@ class GraspController:
         for finger in driven_fingers:
             radius = tip_positions[finger] - current_pivot
             planar_radius = radius - np.dot(radius, axis) * axis
-            relative_velocity = fingertip_velocities[finger] - thumb_velocity
+            relative_velocity = fingertip_velocities[finger] - pivot_velocity
             angular_numerator += float(
                 np.dot(axis, np.cross(planar_radius, relative_velocity))
             )
@@ -1073,16 +1174,17 @@ class GraspController:
                 f"{np.degrees(self.relative_rotation_current_rad):.3f}"
             )
 
-        # Thumb receives only the ordinary grasp force. Every other active
-        # finger tracks a target rotated about the command-time thumb contact.
-        rotation_forces[1][:] = 0.0
+        # Generic rotation leaves the thumb on ordinary grasp force. Blind
+        # sphere rotation drives all five fingertips about the fitted center.
+        if not self.relative_rotation_fixed_pivot:
+            rotation_forces[1][:] = 0.0
         for finger in driven_fingers:
             start_position = self.relative_rotation_start_fingertips[finger]
             start_radius = start_position - start_pivot
             rho = float(np.linalg.norm(start_radius))
             target_position = current_pivot + reference_rotation @ start_radius
             target_velocity = (
-                thumb_velocity
+                pivot_velocity
                 + reference_angular_velocity
                 * np.cross(axis, reference_rotation @ start_radius)
             )
@@ -2769,11 +2871,15 @@ class GraspController:
                     )
                     if self.relative_rotation_phase == "rotating":
                         relative_rotation_control_mode = (
-                            "cartesian_thumb_pivot_jacobian_transpose"
+                            "cartesian_sphere_center_jacobian_transpose"
+                            if self.relative_rotation_fixed_pivot
+                            else "cartesian_thumb_pivot_jacobian_transpose"
                         )
                     else:
                         relative_rotation_control_mode = (
-                            "cartesian_thumb_pivot_hold"
+                            "cartesian_sphere_center_hold"
+                            if self.relative_rotation_fixed_pivot
+                            else "cartesian_thumb_pivot_hold"
                         )
                 translation_forces.update(
                     self._calc_relative_translation_forces(

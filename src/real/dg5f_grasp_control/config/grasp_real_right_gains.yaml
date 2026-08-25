@@ -19,6 +19,9 @@ grasp_real:
     continuous_rotation_thumb_j2_release_deg: 20.0
     continuous_rotation_release_sec: 0.20
     continuous_rotation_move_sec: 0.30
+    blind_rotation_grasp_settle_sec: 0.50
+    blind_rotation_sphere_radius_m: 0.0375
+    blind_rotation_sphere_fit_max_residual_m: 0.020
 
     fric_tanh_k: 17.0
     fric_limit: 1.0
@@ -39,17 +42,20 @@ grasp_real:
 
     collision_repel_gain: 100.0
     collision_repel_limit: 0.8
+    inactive_collision_avoidance_enable: false
     inactive_collision_pd_kp: 0.5
     inactive_collision_pd_kd: 0.10
     inactive_collision_pd_limit: 0.25
 
-    relative_rotation_position_kp: 16.0
-    relative_rotation_position_kd: 1.0
+    relative_rotation_reference_ramp_sec: 0.0
+    relative_rotation_position_kp: 12.0
+    relative_rotation_position_kd: 1.2
     relative_rotation_alpha1_reference: 3.0
     relative_rotation_alpha1_double_gain_scale: 1.67
-    relative_rotation_negative_direction_gain_scale: 1.2
+    relative_rotation_negative_direction_gain_scale: 1.0
     relative_rotation_positive_direction_damping_scale: 1.4
     relative_rotation_force_limit: 10.00
+    relative_rotation_timeout_sec: 3.0
 
 
     card_floor_force_n: 3.0

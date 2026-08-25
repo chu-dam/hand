@@ -21,6 +21,8 @@ DG5F-S controller ── ROS 2 topics ── rosbridge :9090 ── browser UI :
 - 전용 자세와 `Kp=1.0`, `Kd=5.0`을 쓰는 오른손
   `Pre-rotation (Blind Grasping)` pose (`pose_type=6`)
 - Pre-rotation에서만 시작 가능한 `Continuous rotation` Start/Stop 버튼
+- `Pre-rotation (Blind Grasping)`에서 5지 파지 후 구 중심 기준 -10° 회전을 시작하는
+  `Continuous rotation (Blind Grasping)` 버튼
 - 연결이 끊기거나 telemetry가 1초 이상 오래되면 모든 제어 명령 자동 잠금
 - 회전행렬의 직교성 및 `det(R)≈1` 검증
 

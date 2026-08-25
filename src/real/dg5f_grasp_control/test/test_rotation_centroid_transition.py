@@ -948,8 +948,9 @@ class GeneralGraspRotationPreparationTest(unittest.TestCase):
                     controller.prepare_relative_rotation(value, now=1.0)
 
         controller.step(Q_FIXED, QDOT_ZERO, now=1.1)
-        with self.assertRaises(ValueError):
-            controller.prepare_relative_rotation(np.deg2rad(10.1), now=1.1)
+        self.assertTrue(
+            controller.prepare_relative_rotation(np.deg2rad(45.0), now=1.1)
+        )
 
         for grasp_type in (-1, 6):
             with self.subTest(grasp_type=grasp_type):

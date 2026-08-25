@@ -27,6 +27,62 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         left = GraspController(RuntimeConfig(hand_side="left"), log=None)
         self.assertFalse(left.start_continuous_rotation(now=2.0))
 
+    def test_blind_rotation_starts_five_finger_grasp(self):
+        controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
+        controller.apply_pose_type(6, now=1.0)
+
+        self.assertTrue(controller.start_continuous_rotation(now=2.0))
+        self.assertEqual(controller.state, "GROPED_GRASP")
+        self.assertEqual(controller.active_finger_count, 5)
+        self.assertEqual(controller.use_fingers, [1, 2, 3, 4, 5])
+        self.assertEqual(
+            controller.continuous_rotation_phase,
+            "blind_grasp_settle",
+        )
+
+    def test_blind_rotation_uses_sphere_center_and_all_five_fingers(self):
+        controller = GraspController(
+            RuntimeConfig(
+                hand_side="right",
+                relative_rotation_reference_ramp_sec=0.0,
+            ),
+            log=None,
+        )
+        center = np.array([0.08, -0.01, 0.11])
+        directions = np.array([
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, -np.sqrt(0.5), -np.sqrt(0.5)],
+        ])
+        points = center + 0.0375 * directions
+        fitted = controller._fit_blind_rotation_sphere_center(points)
+        np.testing.assert_allclose(fitted, center, atol=1e-9)
+
+        positions = {
+            finger: points[finger - 1]
+            for finger in range(1, 6)
+        }
+        controller.relative_rotation_phase = "rotating"
+        controller.relative_rotation_target_rad = np.deg2rad(-10.0)
+        controller.relative_rotation_error_rad = np.deg2rad(-10.0)
+        controller.relative_rotation_axis = np.array([-1.0, 0.0, 0.0])
+        controller.relative_rotation_pivot = fitted
+        controller.relative_rotation_fixed_pivot = True
+        controller.relative_rotation_start_fingertips = positions
+        controller.relative_rotation_last_wrapped_angle = 0.0
+        controller.relative_rotation_started_at = 0.0
+
+        forces = controller._calc_relative_rotation_forces(
+            positions,
+            now=0.1,
+            qdot=np.zeros(20),
+        )
+        self.assertEqual(set(forces), {1, 2, 3, 4, 5})
+        self.assertGreater(float(np.linalg.norm(forces[1])), 0.0)
+        self.assertLess(controller.relative_rotation_command_moment, 0.0)
+
     def test_supplied_pose_values(self):
         np.testing.assert_allclose(
             RIGHT_HAND_CONTINUOUS_ROTATION_POSE,

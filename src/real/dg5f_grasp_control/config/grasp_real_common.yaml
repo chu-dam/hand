@@ -78,7 +78,6 @@ grasp_real:
     # Fixed command-time fingertip targets use a normalized Cartesian position
     # force. Explicit D is disabled by default; the real mechanism supplies
     # damping through its transmission and joint friction.
-    relative_rotation_max_abs_deg: 10.0
     relative_rotation_reference_ramp_sec: 0.5
     relative_rotation_position_kp: 16.0
     relative_rotation_position_kd: 0.0

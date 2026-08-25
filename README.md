@@ -586,7 +586,7 @@ ros2 topic pub --once \
 
 - 양수: 손바닥 법선(`link_base -X`) 기준 right-hand-rule CCW 상대 회전
 - 음수: 같은 축 기준 CW 상대 회전
-- 허용 범위: `±10°`
+- 각도 크기 제한 없음
 - `0`, `NaN`, `Inf`: 거부
 - `grasp_type=1~5`: 최소 한 번의 정상 force-balance control cycle이 확인되면,
   즉시 `rotating` 시작

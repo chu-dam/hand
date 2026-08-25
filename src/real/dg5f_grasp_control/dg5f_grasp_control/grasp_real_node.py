@@ -393,7 +393,7 @@ class GraspRealRunner:
                 else:
                     self.node.get_logger().warn(
                         "Continuous rotation requires right-hand "
-                        "Pre-rotation pose."
+                        "Pre-rotation or Pre-rotation (Blind Grasping) pose."
                     )
             else:
                 self.controller.stop_continuous_rotation(now)

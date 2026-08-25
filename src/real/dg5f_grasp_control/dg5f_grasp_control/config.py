@@ -43,6 +43,9 @@ class RuntimeConfig:
     continuous_rotation_thumb_j2_release_deg: float = 20.0
     continuous_rotation_release_sec: float = 0.20
     continuous_rotation_move_sec: float = 0.30
+    blind_rotation_grasp_settle_sec: float = 0.50
+    blind_rotation_sphere_radius_m: float = 0.0375
+    blind_rotation_sphere_fit_max_residual_m: float = 0.020
 
     fric_scale: float = 0.7
     fric_tanh_k: float = 20.0
@@ -95,7 +98,6 @@ class RuntimeConfig:
     # J.T.  Explicit D gain defaults to zero because the real transmission and
     # joint friction already provide substantial physical damping.
     # No centroid/null-space controller is used in this rotation path.
-    relative_rotation_max_abs_deg: float = 10.0
     relative_rotation_reference_ramp_sec: float = 0.5
     relative_rotation_position_kp: float = 24.0
     relative_rotation_position_kd: float = 0.0

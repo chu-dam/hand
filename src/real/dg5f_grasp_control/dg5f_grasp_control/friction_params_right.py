@@ -1,5 +1,6 @@
-import numpy as np
+#ros2 topic pub --once  /dg5f_grasp_control/right/rotation_matrix_cmd std_msgs/msg/Float64MultiArray "{data: [0.4695, 0.0, -0.8829, 0.0, 1.0, 0.0, 0.8829, 0.0, 0.4695]}"
 
+import numpy as np
 
 HAND_FRIC_COULOMB_SCALE = 0.7
 

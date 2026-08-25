@@ -141,6 +141,12 @@ Pre-rotation pose while only pinky J1 releases. Pinky J1 returns when the next
 middle release starts. The sequence uses the Pre-rotation pose PD; pinky J1
 keeps its configured gain scale.
 
+From right-hand `pose_type=6`, the same command starts a five-finger blind
+grasp, waits `blind_rotation_grasp_settle_sec`, fits the configured 75 mm
+sphere, then tracks all five fingertip targets rotated by -10 degrees about
+the fixed fitted center using the existing Cartesian position-error/Jacobian-
+transpose controller. The ordinary five-finger grasp force remains active.
+
 ## Relative task-space translation
 
 `/dg5f_grasp_control/relative_translation_cmd` uses

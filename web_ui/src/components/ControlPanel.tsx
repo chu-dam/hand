@@ -26,8 +26,6 @@ const RIGHT_POSE_OPTIONS = [
 ];
 
 const MANIPULATION_GRASP_TYPES = new Set([1, 2, 3, 4, 5]);
-const MAX_RELATIVE_ROTATION_DEG = 10;
-
 const TASK_SPACE_DIRECTIONS = ["+X", "+Y", "+Z", "-X", "-Y", "-Z"] as const;
 type TaskSpaceDirection = typeof TASK_SPACE_DIRECTIONS[number];
 
@@ -181,7 +179,6 @@ export function ControlPanel({
   const rotationDegreesValid = (
     rotationDegreesInput.trim() !== ""
     && Number.isFinite(parsedRotationDegrees)
-    && Math.abs(parsedRotationDegrees) <= MAX_RELATIVE_ROTATION_DEG
   );
   const rotationCommandEnabled = rotationSectionActive
     && rotationDegreesValid
@@ -197,6 +194,13 @@ export function ControlPanel({
         && debug?.pose_type === 5
       )
     )
+  );
+  const blindGraspContinuousRotationAvailable = (
+    handSide === "right"
+    && ready
+    && !teaching
+    && debug?.controller_state === "PRE_GRASP_POSE"
+    && debug?.pose_type === 6
   );
   const rotationDirection = !rotationDegreesValid
     ? "SET ANGLE"
@@ -267,7 +271,7 @@ export function ControlPanel({
       return;
     }
     if (!rotationDegreesValid || parsedRotationDegrees === 0) {
-      onNotice(`Relative angle은 0이 아니고 ±${MAX_RELATIVE_ROTATION_DEG}° 이하여야 합니다.`, "error");
+      onNotice("Relative angle은 0이 아닌 유한한 값이어야 합니다.", "error");
       return;
     }
     report(
@@ -527,10 +531,8 @@ export function ControlPanel({
                   <input
                     id="rotation-angle-degrees"
                     className="number-input"
-                  type="number"
-                  step="1"
-                  min={-MAX_RELATIVE_ROTATION_DEG}
-                  max={MAX_RELATIVE_ROTATION_DEG}
+                    type="number"
+                    step="1"
                     inputMode="decimal"
                     value={rotationDegreesInput}
                     disabled={!rotationSectionActive}
@@ -550,7 +552,7 @@ export function ControlPanel({
               </div>
             </div>
             <p className="rotation-sign-hint">
-              Positive (+): CCW · Negative (−): CW · palm-normal axis (link_base −X) · max ±10°
+              Positive (+): CCW · Negative (−): CW · palm-normal axis (link_base −X)
             </p>
             <div className={`rotation-debug-grid ${rotationPhase !== "idle" ? "ready" : "idle"}`}>
               <div>
@@ -613,6 +615,19 @@ export function ControlPanel({
             {continuousRotationActive
               ? "Stop continuous rotation"
               : "Continuous rotation"}
+          </button>
+          <button
+            className="secondary-wide apply-button"
+            disabled={!blindGraspContinuousRotationAvailable}
+            title={blindGraspContinuousRotationAvailable
+              ? "Start five-finger blind grasping and rotate -10° about the fitted sphere center"
+              : "Available only in the right-hand Pre-rotation (Blind Grasping) pose"}
+            onClick={() => report(
+              onContinuousRotation(true),
+              "Continuous rotation (Blind Grasping) 시작 요청을 전송했습니다.",
+            )}
+          >
+            Continuous rotation (Blind Grasping)
           </button>
         </div>
 
