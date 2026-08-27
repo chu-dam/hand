@@ -49,6 +49,11 @@ export interface GraspDebugMessage {
   fingertip_positions: Point3[];
   geometric_centroid: Point3;
   virtual_centroid: Point3;
+  blind_sphere_estimate_valid?: boolean;
+  blind_sphere_center?: Point3;
+  blind_sphere_effective_radius_m?: number;
+  blind_sphere_fit_rms_error_m?: number;
+  blind_four_finger_polygon_area_m2?: number;
   relative_rotation_start_centroid?: Point3;
   relative_rotation_pivot?: Point3;
   relative_rotation_axis?: Point3;

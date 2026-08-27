@@ -8,6 +8,14 @@ geometry_msgs/Point[] fingertip_positions
 geometry_msgs/Point geometric_centroid
 geometry_msgs/Point virtual_centroid
 
+# Latest 75 mm sphere estimate sampled when fingers 1..4 return while the
+# pinky stays released. Effective radius exposes fingertip-pad/FK bias.
+bool blind_sphere_estimate_valid
+geometry_msgs/Point blind_sphere_center
+float64 blind_sphere_effective_radius_m
+float64 blind_sphere_fit_rms_error_m
+float64 blind_four_finger_polygon_area_m2
+
 # Relative rotation about the configured palm-normal axis. The current angle
 # is estimated from the fingertip contact constellation, not an object sensor.
 # The command-time thumb position is the pivot. Thumb rotation force is zero;

@@ -46,6 +46,7 @@ interface DebugOverlay {
   forces: THREE.ArrowHelper[];
   geometricCentroid: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
   virtualCentroid: THREE.Mesh<THREE.OctahedronGeometry, THREE.MeshBasicMaterial>;
+  estimatedSphere: THREE.Mesh<THREE.SphereGeometry, THREE.MeshPhongMaterial>;
 }
 
 function assetUrl(path: string): string {
@@ -62,6 +63,10 @@ function isFinitePoint(point: Point3 | undefined): point is Point3 {
       && Number.isFinite(point.y)
       && Number.isFinite(point.z),
   );
+}
+
+function millimeters(value: number): string {
+  return `${(value * 1000).toFixed(1)} mm`;
 }
 
 function applyJointState(robot: URDFRobot, state: JointStateMessage | null): number {
@@ -130,11 +135,27 @@ function createDebugOverlay(): DebugOverlay {
   virtualCentroid.visible = false;
   group.add(virtualCentroid);
 
+  const estimatedSphere = new THREE.Mesh(
+    new THREE.SphereGeometry(0.0375, 40, 28),
+    new THREE.MeshPhongMaterial({
+      color: 0xf59e0b,
+      transparent: true,
+      opacity: 0.32,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  estimatedSphere.name = "debug-estimated-75mm-sphere";
+  estimatedSphere.visible = false;
+  estimatedSphere.renderOrder = 3;
+  group.add(estimatedSphere);
+
   return {
     fingertips,
     forces,
     geometricCentroid,
     virtualCentroid,
+    estimatedSphere,
   };
 }
 
@@ -210,7 +231,11 @@ function createWorldAxes(): THREE.Group {
 function addOverlayToFrame(frame: THREE.Group, overlay: DebugOverlay) {
   overlay.fingertips.forEach((marker) => frame.add(marker));
   overlay.forces.forEach((arrow) => frame.add(arrow));
-  frame.add(overlay.geometricCentroid, overlay.virtualCentroid);
+  frame.add(
+    overlay.geometricCentroid,
+    overlay.virtualCentroid,
+    overlay.estimatedSphere,
+  );
 }
 
 function updateDebugOverlay(
@@ -267,6 +292,22 @@ function updateDebugOverlay(
   overlay.virtualCentroid.visible = showCentroids && isFinitePoint(virtualPoint);
   if (overlay.virtualCentroid.visible && virtualPoint) {
     overlay.virtualCentroid.position.set(virtualPoint.x, virtualPoint.y, virtualPoint.z);
+  }
+
+  const sphereCenter = debug?.blind_sphere_center;
+  const blindSphereMode = debug?.pose_type === 6;
+  overlay.estimatedSphere.visible = Boolean(
+    showWorldOverlay
+      && blindSphereMode
+      && debug?.blind_sphere_estimate_valid
+      && isFinitePoint(sphereCenter),
+  );
+  if (overlay.estimatedSphere.visible && sphereCenter) {
+    overlay.estimatedSphere.position.set(
+      sphereCenter.x,
+      sphereCenter.y,
+      sphereCenter.z,
+    );
   }
 }
 
@@ -621,6 +662,12 @@ export function HandScene3D({
 
   const frameMatches = !debug || debug.header.frame_id === "link_base";
   const live = viewer.status === "ready" && mappedJointCount === EXPECTED_JOINTS.size;
+  const blindSphereMode = debug?.pose_type === 6;
+  const sphereCenter = blindSphereMode
+    && debug?.blind_sphere_estimate_valid
+    && isFinitePoint(debug.blind_sphere_center)
+    ? debug.blind_sphere_center
+    : null;
 
   return (
     <section className="panel scene-panel">
@@ -661,6 +708,15 @@ export function HandScene3D({
 
       <div className="scene-wrap hand-scene-wrap">
         <div ref={mountRef} className="hand-canvas-mount" />
+
+        {blindSphereMode && (
+          <div className={`sphere-position-overlay ${sphereCenter ? "live" : "waiting"}`}>
+            <span>SPHERE · WRIST (link_base)</span>
+            <div><b>X</b><strong>{sphereCenter ? millimeters(sphereCenter.x) : "—"}</strong></div>
+            <div><b>Y</b><strong>{sphereCenter ? millimeters(sphereCenter.y) : "—"}</strong></div>
+            <div><b>Z</b><strong>{sphereCenter ? millimeters(sphereCenter.z) : "—"}</strong></div>
+          </div>
+        )}
 
         {viewer.status !== "ready" && (
           <div className={`model-state-overlay ${viewer.status}`} role="status">

@@ -17,11 +17,25 @@ grasp_real:
     continuous_rotation_index_ring_release_deg: 20.0
     continuous_rotation_ring_j2_release_deg: 30.0
     continuous_rotation_thumb_j2_release_deg: 20.0
-    continuous_rotation_release_sec: 0.20
-    continuous_rotation_move_sec: 0.30
+    continuous_rotation_release_sec: 0.18
+    continuous_rotation_move_sec: 0.28
     blind_rotation_grasp_settle_sec: 0.50
-    blind_rotation_sphere_radius_m: 0.0375
-    blind_rotation_sphere_fit_max_residual_m: 0.020
+    blind_finger_release_deg: 8.0
+    blind_middle_release_deg: 3.0
+    blind_pinky_release_deg: 10.0
+    blind_index_j1_target_rad: -0.8110
+    blind_thumb_j1_target_rad: 0.2436
+    blind_thumb_j2_target_rad: -1.5139
+    blind_thumb_j3_target_rad: 0.0359
+    blind_thumb_j4_target_rad: 0.8207
+    blind_sphere_lift_x_threshold_m: 0.098
+    blind_sphere_safe_center_x_m: 0.100
+    blind_sphere_safe_half_range_m: 0.012
+    blind_thumb_lift_j3_target_rad: -0.0852
+    blind_thumb_lift_j4_target_rad: 0.9840
+    blind_sphere_effective_radius_m: 0.0455
+    blind_sphere_fit_max_error_m: 0.008
+    blind_sphere_drop_confirm_samples: 3
 
     fric_tanh_k: 17.0
     fric_limit: 1.0

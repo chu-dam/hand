@@ -89,6 +89,7 @@ class GraspDebugTest(unittest.TestCase):
         self.assertEqual(message.pose_type, 1)
         self.assertFalse(message.teaching_mode)
         self.assertEqual(message.controller_state, "GROPED_GRASP")
+        self.assertFalse(message.blind_sphere_estimate_valid)
 
         np.testing.assert_allclose(
             [

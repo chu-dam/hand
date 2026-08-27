@@ -142,10 +142,16 @@ middle release starts. The sequence uses the Pre-rotation pose PD; pinky J1
 keeps its configured gain scale.
 
 From right-hand `pose_type=6`, the same command starts a five-finger blind
-grasp, waits `blind_rotation_grasp_settle_sec`, fits the configured 75 mm
-sphere, then tracks all five fingertip targets rotated by -10 degrees about
-the fixed fitted center using the existing Cartesian position-error/Jacobian-
-transpose controller. The ordinary five-finger grasp force remains active.
+grasp, waits `blind_rotation_grasp_settle_sec`, and releases middle alone for
+0.18 seconds with its fixed J1 offset, J2/J3 opened by 3 degrees, and J4 at its
+initial value. After a 0.28-second regrasp, index and ring release together for
+0.18 seconds and regrasp for 0.28 seconds. Thumb then releases together with
+middle and ring for 0.18 seconds: thumb uses J1=0.2436, J2=-1.5139, J3=0.1232,
+and J4=0.8207 rad; middle and ring open J2/J3 by 3 degrees from their current
+angles while keeping J1/J4 fixed. All three regrasp for 0.28 seconds. Pinky J1
+then opens by 10 degrees and stays released while fingers 1--4 return to
+`RIGHT_HAND_BLIND_GRASP_INITIAL_POSE` for 0.28 seconds. The sequence repeats
+from the middle-only release, regrasping pinky at the same instant.
 
 ## Relative task-space translation
 

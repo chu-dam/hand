@@ -9,6 +9,7 @@ from dg5f_grasp_control.grasp_real_node import GraspRealRunner
 from dg5f_grasp_control.hand_model import FINGER_JOINT_INDEX
 from dg5f_grasp_control.poses import (
     LEFT_POSE_TYPE_TARGETS,
+    RIGHT_HAND_BLIND_GRASP_INITIAL_POSE,
     RIGHT_HAND_BLIND_GRASP_PRE_ROTATION_POSE,
     RIGHT_HAND_CONTINUOUS_ROTATION_POSE,
     RIGHT_HAND_PRE_ROTATION_POSE,
@@ -42,11 +43,21 @@ class PoseSideTest(unittest.TestCase):
         np.testing.assert_allclose(
             RIGHT_HAND_BLIND_GRASP_PRE_ROTATION_POSE,
             [
-                0.6720, -1.1132, 0.2288, 0.3156,
-                -0.1105, 0.6432, 0.5466, 0.2972,
-                0.0922, 0.5243, 0.7561, 0.2082,
-                0.2087, 0.7514, 0.6196, 0.3023,
-                0.7922, 0.9118, 0.9467, 0.0593,
+                0.8426, -1.1301, -0.1223, 0.6910,
+                -0.4473, 0.8268, 0.5297, 0.2854,
+                0.0213, 0.5362, 0.7721, 0.2149,
+                0.4266, 0.8203, 0.6124, 0.2922,
+                0.7695, 1.1821, 1.0598, 0.0789,
+            ],
+        )
+        np.testing.assert_allclose(
+            RIGHT_HAND_BLIND_GRASP_INITIAL_POSE,
+            [
+                0.8531, -1.1109, -0.0679, 0.6922,
+                -0.4269, 0.8521, 0.5477, 0.2892,
+                0.0079, 0.5370, 0.7576, 0.2072,
+                0.4028, 0.8327, 0.6170, 0.3033,
+                0.7477, 1.1695, 1.0889, 0.0817,
             ],
         )
         self.assertEqual(RIGHT_HAND_CONTINUOUS_ROTATION_POSE.shape, (20,))

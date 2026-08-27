@@ -6,6 +6,7 @@ import numpy as np
 from dg5f_grasp_control.config import RuntimeConfig
 from dg5f_grasp_control.control_utils import pose_pd
 from dg5f_grasp_control.grasp_policy import (
+    ALPHA_DISTRIBUTION_LEGACY,
     ALPHA_DISTRIBUTION_THUMB_DISTANCE_PROPORTIONAL,
     BASE_JOINT_TAU_LIMIT,
     GraspPolicy,
@@ -24,6 +25,7 @@ from dg5f_grasp_control.kinematics import (
     tip_position,
 )
 from dg5f_grasp_control.poses import (
+    RIGHT_HAND_BLIND_GRASP_INITIAL_POSE,
     RIGHT_HAND_CONTINUOUS_ROTATION_POSE,
     get_pose_type_targets,
 )
@@ -48,6 +50,82 @@ CONTINUOUS_ROTATION_RELEASE_JOINTS = {
     4: ((1, -1.0), (2, 1.0)),
     5: ((0, -1.0),),
 }
+BLIND_RELEASE_PHASE_FINGERS = {
+    "blind_middle_release": (3,),
+    "blind_index_ring_release": (2, 4),
+    "blind_thumb_down": (1,),
+    "blind_thumb_release": (1, 3, 4),
+    "blind_pinky_release": (5,),
+    "blind_pose_rotation": (5,),
+}
+BLIND_SPHERE_PREVIOUS_CENTER_WEIGHT = 0.05
+BLIND_SPHERE_ROBUST_DELTA_M = 0.004
+
+
+def _estimate_sphere_from_points(
+    points,
+    effective_radius_m,
+    previous_center=None,
+):
+    points = np.asarray(points, dtype=np.float64)
+    if (
+        points.ndim != 2
+        or points.shape[0] < 4
+        or points.shape[1] != 3
+        or not np.all(np.isfinite(points))
+    ):
+        return None
+    matrix = 2.0 * (points[1:] - points[0])
+    if np.linalg.matrix_rank(matrix) < 3 or np.linalg.cond(matrix) > 1e6:
+        return None
+    rhs = np.sum(points[1:] ** 2, axis=1) - np.sum(points[0] ** 2)
+    algebraic_center = np.linalg.lstsq(matrix, rhs, rcond=None)[0]
+    radius = float(effective_radius_m)
+    if radius <= 0.0 or not np.isfinite(radius):
+        return None
+    has_previous = previous_center is not None and np.all(
+        np.isfinite(previous_center)
+    )
+    prior = (
+        np.asarray(previous_center, dtype=np.float64)
+        if has_previous
+        else algebraic_center
+    )
+    center = prior.copy()
+    prior_weight = BLIND_SPHERE_PREVIOUS_CENTER_WEIGHT if has_previous else 0.0
+    for _ in range(12):
+        offsets = center - points
+        distances = np.linalg.norm(offsets, axis=1)
+        if np.any(distances < 1e-9):
+            return None
+        residuals = distances - radius
+        jacobian = offsets / distances[:, None]
+        weights = np.minimum(
+            1.0,
+            BLIND_SPHERE_ROBUST_DELTA_M
+            / np.maximum(np.abs(residuals), 1e-9),
+        )
+        hessian = (
+            jacobian.T @ (weights[:, None] * jacobian)
+            + prior_weight * np.eye(3)
+        )
+        gradient = (
+            jacobian.T @ (weights * residuals)
+            + prior_weight * (center - prior)
+        )
+        step = np.linalg.lstsq(hessian, -gradient, rcond=None)[0]
+        step_norm = np.linalg.norm(step)
+        if step_norm > 0.01:
+            step *= 0.01 / step_norm
+        center += step
+        if np.linalg.norm(step) < 1e-8:
+            break
+    fit_rms_error = float(
+        np.sqrt(np.mean((np.linalg.norm(points - center, axis=1) - radius) ** 2))
+    )
+    if not np.all(np.isfinite(center)) or not np.isfinite(fit_rms_error):
+        return None
+    return center, fit_rms_error
 
 
 def _copy_finger_vectors(values: Dict[int, np.ndarray]) -> Dict[int, np.ndarray]:
@@ -159,6 +237,10 @@ class GraspController:
         self._log_fn = log
         self.hand_q = np.zeros(JOINT_COUNT, dtype=np.float64)
         self.pose_type_targets = get_pose_type_targets(cfg.hand_side)
+        self.blind_release_pose_targets = {
+            finger: self._build_blind_release_pose(finger)
+            for finger in range(1, 6)
+        }
         self.finger_avoidance_joint_limits = (
             get_finger_avoidance_joint_limits(cfg.hand_side)
         )
@@ -207,7 +289,6 @@ class GraspController:
         self.relative_rotation_target_rad = 0.0
         self.relative_rotation_started_at = None
         self.relative_rotation_pivot = np.zeros(3, dtype=np.float64)
-        self.relative_rotation_fixed_pivot = False
         self.relative_rotation_start_fingertips = {}
         self.relative_rotation_current_rad = 0.0
         self.relative_rotation_error_rad = 0.0
@@ -221,6 +302,13 @@ class GraspController:
         self.continuous_rotation_phase_started_at = None
         self.continuous_rotation_group_index = 0
         self.continuous_rotation_pose_target = None
+        self.blind_sphere_center = np.zeros(3, dtype=np.float64)
+        self.blind_sphere_effective_radius_m = 0.0
+        self.blind_sphere_fit_rms_error_m = 0.0
+        self.blind_four_finger_polygon_area_m2 = 0.0
+        self.blind_sphere_estimate_valid = False
+        self.blind_thumb_lift_pending = False
+        self.blind_sphere_below_x_count = 0
         # Relative translation stores each fingertip position at command time
         # and tracks the translated targets with Cartesian PD forces.
         self.relative_translation_phase = "idle"
@@ -287,7 +375,6 @@ class GraspController:
         self.relative_rotation_target_rad = 0.0
         self.relative_rotation_started_at = None
         self.relative_rotation_pivot[:] = 0.0
-        self.relative_rotation_fixed_pivot = False
         self.relative_rotation_start_fingertips = {}
         self.relative_rotation_current_rad = 0.0
         self.relative_rotation_error_rad = 0.0
@@ -308,6 +395,118 @@ class GraspController:
         self.continuous_rotation_phase = str(phase)
         self.continuous_rotation_phase_started_at = float(now)
         self._log(f"[CONTINUOUS_ROTATION] phase={phase}")
+
+    def _update_blind_sphere_geometry(self, now: float) -> bool:
+        if (
+            not self.continuous_rotation_active
+            or self.pose_type != 6
+            or self.state != "GROPED_GRASP"
+            or len(self.use_fingers) < 4
+        ):
+            return False
+        estimate_fingers = tuple(self.use_fingers)
+        points = np.asarray(
+            [tip_position(self.hand_q, finger) for finger in estimate_fingers],
+            dtype=np.float64,
+        )
+        if estimate_fingers == (1, 2, 3, 4):
+            area_m2 = 0.5 * np.linalg.norm(
+                np.sum(np.cross(points, np.roll(points, -1, axis=0)), axis=0)
+            )
+            self.blind_four_finger_polygon_area_m2 = float(area_m2)
+            self._log(
+                "[BLIND_ROTATION] four_finger_polygon_area="
+                f"{area_m2 * 1e6:.2f} mm^2"
+            )
+        estimate = _estimate_sphere_from_points(
+            points,
+            self.cfg.blind_sphere_effective_radius_m,
+            self.blind_sphere_center
+            if self.blind_sphere_estimate_valid
+            else None,
+        )
+        if estimate is None:
+            return False
+        center, fit_rms_error = estimate
+        if fit_rms_error > float(self.cfg.blind_sphere_fit_max_error_m):
+            return False
+        self.blind_sphere_center = center
+        self.blind_sphere_effective_radius_m = float(
+            self.cfg.blind_sphere_effective_radius_m
+        )
+        self.blind_sphere_fit_rms_error_m = fit_rms_error
+        self.blind_sphere_estimate_valid = True
+        if abs(
+            self.blind_sphere_center[0]
+            - float(self.cfg.blind_sphere_safe_center_x_m)
+        ) >= float(self.cfg.blind_sphere_safe_half_range_m):
+            self._log(
+                "[BLIND_SPHERE] X outside safe range "
+                f"({self.blind_sphere_center[0] * 1000.0:.2f} mm); "
+                "returning to blind pre-rotation pose"
+            )
+            self.blind_thumb_lift_pending = False
+            self.apply_pose_type(6, now)
+            return True
+        if self.blind_sphere_center[0] < float(
+            self.cfg.blind_sphere_lift_x_threshold_m
+        ):
+            if not self.blind_thumb_lift_pending:
+                self.blind_sphere_below_x_count += 1
+                if self.blind_sphere_below_x_count >= int(
+                    self.cfg.blind_sphere_drop_confirm_samples
+                ):
+                    self.blind_thumb_lift_pending = True
+                    self.blind_sphere_below_x_count = 0
+                    self._log(
+                        "[BLIND_SPHERE] confirmed X below threshold; "
+                        "thumb lift armed"
+                    )
+        else:
+            self.blind_sphere_below_x_count = 0
+        return False
+
+    def _build_blind_release_pose(self, finger: int) -> np.ndarray:
+        indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
+        target = RIGHT_HAND_BLIND_GRASP_INITIAL_POSE[indices].copy()
+        if finger == 1:
+            target[:] = [
+                self.cfg.blind_thumb_j1_target_rad,
+                self.cfg.blind_thumb_j2_target_rad,
+                self.cfg.blind_thumb_j3_target_rad,
+                self.cfg.blind_thumb_j4_target_rad,
+            ]
+        elif finger in (2, 3, 4):
+            index_j1 = FINGER_JOINT_INDEX[2][0]
+            target[0] += (
+                float(self.cfg.blind_index_j1_target_rad)
+                - RIGHT_HAND_BLIND_GRASP_INITIAL_POSE[index_j1]
+            )
+            if finger != 2:
+                release_deg = (
+                    self.cfg.blind_middle_release_deg
+                    if finger == 3
+                    else self.cfg.blind_finger_release_deg
+                )
+                target[1:3] -= np.deg2rad(
+                    float(release_deg)
+                )
+        else:
+            target[0] -= np.deg2rad(
+                float(self.cfg.blind_pinky_release_deg)
+            )
+        return target
+
+    def _start_blind_middle_release(self, now: float) -> None:
+        self.use_fingers = [1, 2, 4, 5]
+        self.policy = GraspPolicy(self.use_fingers, self.cfg)
+        self.active_finger_count = 4
+        self._reset_regular_force_balance_state()
+        target = RIGHT_HAND_BLIND_GRASP_INITIAL_POSE.copy()
+        middle = np.asarray(FINGER_JOINT_INDEX[3], dtype=int)
+        target[middle] = self.blind_release_pose_targets[3]
+        self.continuous_rotation_pose_target = target
+        self._set_continuous_rotation_phase("blind_middle_release", now)
 
     def _start_continuous_release(self, now: float) -> None:
         group = CONTINUOUS_ROTATION_GROUPS[
@@ -367,25 +566,107 @@ class GraspController:
         elapsed = float(now) - float(self.continuous_rotation_phase_started_at)
         if self.continuous_rotation_phase == "blind_grasp_settle":
             if elapsed >= float(self.cfg.blind_rotation_grasp_settle_sec):
-                points = np.array([
-                    tip_position(self.hand_q, finger)
-                    for finger in range(1, 6)
-                ])
-                try:
-                    center = self._fit_blind_rotation_sphere_center(points)
-                except (ValueError, np.linalg.LinAlgError) as exc:
-                    self.cancel_continuous_rotation()
-                    self._log(f"[BLIND_ROTATION] sphere fit failed: {exc}")
-                    return
-                self.cancel_continuous_rotation()
-                accepted = self.prepare_relative_rotation(
-                    np.deg2rad(-10.0),
+                self._start_blind_middle_release(now)
+            return
+        if self.continuous_rotation_phase == "blind_middle_release":
+            if elapsed >= float(self.cfg.continuous_rotation_release_sec):
+                self.apply_grasp_type(5, now, internal=True)
+                self._set_continuous_rotation_phase("blind_middle_regrasp", now)
+            return
+        if self.continuous_rotation_phase == "blind_middle_regrasp":
+            if elapsed >= float(self.cfg.continuous_rotation_move_sec):
+                self.use_fingers = [1, 3, 5]
+                self.policy = GraspPolicy(self.use_fingers, self.cfg)
+                self.active_finger_count = 3
+                self._reset_regular_force_balance_state()
+                target = RIGHT_HAND_BLIND_GRASP_INITIAL_POSE.copy()
+                for finger in (2, 4):
+                    indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
+                    target[indices] = self.blind_release_pose_targets[finger]
+                self.continuous_rotation_pose_target = target
+                self._set_continuous_rotation_phase(
+                    "blind_index_ring_release",
                     now,
-                    internal=True,
-                    fixed_pivot=center,
                 )
-                if not accepted:
-                    self._log("[BLIND_ROTATION] closed-loop rotation rejected")
+            return
+        if self.continuous_rotation_phase == "blind_index_ring_release":
+            if elapsed >= float(self.cfg.continuous_rotation_release_sec):
+                self.apply_grasp_type(5, now, internal=True)
+                self._set_continuous_rotation_phase(
+                    "blind_index_ring_regrasp",
+                    now,
+                )
+            return
+        if self.continuous_rotation_phase == "blind_index_ring_regrasp":
+            if elapsed >= float(self.cfg.continuous_rotation_move_sec):
+                self.use_fingers = [2, 3, 4, 5]
+                self.policy = GraspPolicy(self.use_fingers, self.cfg)
+                self.active_finger_count = 4
+                self._reset_regular_force_balance_state()
+                target = RIGHT_HAND_BLIND_GRASP_INITIAL_POSE.copy()
+                thumb = np.asarray(FINGER_JOINT_INDEX[1], dtype=int)
+                target[thumb] = self.blind_release_pose_targets[1]
+                self.continuous_rotation_pose_target = target
+                self._set_continuous_rotation_phase("blind_thumb_down", now)
+            return
+        if self.continuous_rotation_phase == "blind_thumb_down":
+            if elapsed >= float(self.cfg.continuous_rotation_release_sec):
+                if self.blind_thumb_lift_pending:
+                    self.use_fingers = [2, 5]
+                    self.policy = GraspPolicy(self.use_fingers, self.cfg)
+                    self.active_finger_count = 2
+                    self._reset_regular_force_balance_state()
+                    target = RIGHT_HAND_BLIND_GRASP_INITIAL_POSE.copy()
+                    thumb = np.asarray(FINGER_JOINT_INDEX[1], dtype=int)
+                    target[thumb] = self.blind_release_pose_targets[1]
+                    target[thumb[2]] = self.cfg.blind_thumb_lift_j3_target_rad
+                    target[thumb[3]] = self.cfg.blind_thumb_lift_j4_target_rad
+                    self.blind_thumb_lift_pending = False
+                    self._log(
+                        "[BLIND_SPHERE] X below threshold; "
+                        "using thumb lift release once"
+                    )
+                    for finger in (3, 4):
+                        indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
+                        target[indices] = self.hand_q[indices]
+                    self.continuous_rotation_pose_target = target
+                    self._set_continuous_rotation_phase(
+                        "blind_thumb_release",
+                        now,
+                    )
+                else:
+                    self.apply_grasp_type(5, now, internal=True)
+                    self._set_continuous_rotation_phase(
+                        "blind_thumb_regrasp",
+                        now,
+                    )
+            return
+        if self.continuous_rotation_phase == "blind_thumb_release":
+            if elapsed >= float(self.cfg.continuous_rotation_release_sec):
+                self.apply_grasp_type(5, now, internal=True)
+                self._set_continuous_rotation_phase("blind_thumb_regrasp", now)
+            return
+        if self.continuous_rotation_phase == "blind_thumb_regrasp":
+            if elapsed >= float(self.cfg.continuous_rotation_move_sec):
+                self.use_fingers = [1, 2, 3, 4]
+                self.policy = GraspPolicy(self.use_fingers, self.cfg)
+                self.active_finger_count = 4
+                self._reset_regular_force_balance_state()
+                target = RIGHT_HAND_BLIND_GRASP_INITIAL_POSE.copy()
+                pinky = np.asarray(FINGER_JOINT_INDEX[5], dtype=int)
+                target[pinky] = self.blind_release_pose_targets[5]
+                self.continuous_rotation_pose_target = target
+                self._set_continuous_rotation_phase("blind_pinky_release", now)
+            return
+        if self.continuous_rotation_phase == "blind_pinky_release":
+            if elapsed >= float(self.cfg.continuous_rotation_release_sec):
+                self._set_continuous_rotation_phase("blind_pose_rotation", now)
+            return
+        if self.continuous_rotation_phase == "blind_pose_rotation":
+            if elapsed >= float(self.cfg.continuous_rotation_move_sec):
+                if self._update_blind_sphere_geometry(now):
+                    return
+                self._start_blind_middle_release(now)
             return
         if self.continuous_rotation_phase.startswith("continuous_release_"):
             if elapsed >= float(self.cfg.continuous_rotation_release_sec):
@@ -408,6 +689,9 @@ class GraspController:
             and self.state == "PRE_GRASP_POSE"
             and self.pose_type == 6
         ):
+            self.blind_sphere_estimate_valid = False
+            self.blind_thumb_lift_pending = False
+            self.blind_sphere_below_x_count = 0
             self.apply_grasp_type(5, now, internal=True)
             self.continuous_rotation_active = True
             self._set_continuous_rotation_phase("blind_grasp_settle", now)
@@ -427,61 +711,6 @@ class GraspController:
         self.continuous_rotation_pose_target = self.pose_type_targets[5].copy()
         self._start_continuous_release(now)
         return True
-
-    def _fit_blind_rotation_sphere_center(
-        self,
-        points: np.ndarray,
-    ) -> np.ndarray:
-        points = np.asarray(points, dtype=np.float64)
-        radius = float(self.cfg.blind_rotation_sphere_radius_m)
-        if (
-            points.shape != (5, 3)
-            or not np.all(np.isfinite(points))
-            or not np.isfinite(radius)
-            or radius <= 0.0
-        ):
-            raise ValueError("blind rotation requires five finite contacts and radius > 0")
-
-        design = np.column_stack((2.0 * points, np.ones(5)))
-        center = np.linalg.lstsq(
-            design,
-            np.sum(points * points, axis=1),
-            rcond=None,
-        )[0][:3]
-        for _ in range(8):
-            delta = center - points
-            distances = np.linalg.norm(delta, axis=1)
-            if np.any(distances <= 1e-9):
-                raise ValueError("blind rotation sphere fit is degenerate")
-            residual = distances - radius
-            jacobian = delta / distances[:, None]
-            step = np.linalg.lstsq(jacobian, -residual, rcond=None)[0]
-            center += step
-            if float(np.linalg.norm(step)) <= 1e-9:
-                break
-        if not np.all(np.isfinite(center)):
-            raise ValueError("blind rotation sphere center is not finite")
-        residual = np.abs(np.linalg.norm(points - center, axis=1) - radius)
-        maximum_residual = float(np.max(residual))
-        residual_limit = float(
-            self.cfg.blind_rotation_sphere_fit_max_residual_m
-        )
-        if (
-            not np.isfinite(residual_limit)
-            or residual_limit < 0.0
-            or maximum_residual > residual_limit
-        ):
-            raise ValueError(
-                "sphere fit residual exceeds limit "
-                f"({1000.0 * maximum_residual:.2f} mm > "
-                f"{1000.0 * residual_limit:.2f} mm)"
-            )
-        self._log(
-            "[BLIND_ROTATION] sphere center="
-            f"{np.round(center, 4).tolist()} | "
-            f"residual_max_mm={1000.0 * maximum_residual:.2f}"
-        )
-        return center
 
     def stop_continuous_rotation(self, now: float) -> None:
         self.cancel_continuous_rotation()
@@ -619,7 +848,6 @@ class GraspController:
         now: float,
         *,
         internal: bool = False,
-        fixed_pivot: np.ndarray | None = None,
     ) -> bool:
         """Start closed-loop rotation relative to the contact configuration."""
 
@@ -689,20 +917,11 @@ class GraspController:
         if not np.isfinite(axis_norm) or axis_norm <= 1e-12:
             raise ValueError("rotation palm-normal axis must be finite and non-zero")
         axis /= axis_norm
-        if fixed_pivot is not None:
-            fixed_pivot = np.asarray(fixed_pivot, dtype=np.float64)
-            if fixed_pivot.shape != (3,) or not np.all(np.isfinite(fixed_pivot)):
-                raise ValueError("fixed rotation pivot must be a finite 3-vector")
 
         self.cancel_relative_translation()
         self.cancel_relative_rotation()
         self.relative_rotation_target_rad = angle_rad
-        self.relative_rotation_fixed_pivot = fixed_pivot is not None
-        self.relative_rotation_pivot = (
-            fixed_pivot.copy()
-            if fixed_pivot is not None
-            else start_fingertips[1].copy()
-        )
+        self.relative_rotation_pivot = start_fingertips[1].copy()
         self.relative_rotation_start_fingertips = start_fingertips
         self.relative_rotation_current_rad = 0.0
         self.relative_rotation_error_rad = angle_rad
@@ -716,8 +935,7 @@ class GraspController:
         self._log(
             "[RELATIVE_ROTATION] closed-loop contact rotation started "
             f"target_delta_deg={np.degrees(angle_rad):.3f}, "
-            f"axis={np.round(axis, 4).tolist()}, "
-            f"pivot={'sphere_center' if fixed_pivot is not None else 'thumb'}"
+            f"axis={np.round(axis, 4).tolist()}"
         )
         return True
 
@@ -854,16 +1072,12 @@ class GraspController:
             float(self.cfg.relative_rotation_radius_min),
             1e-6,
         )
-        current_pivot = (
-            self.relative_rotation_pivot
-            if self.relative_rotation_fixed_pivot
-            else tip_positions.get(1)
-        )
+        current_pivot = tip_positions.get(1)
         if current_pivot is None:
             raise ValueError("thumb pivot is unavailable")
         current_pivot = np.asarray(current_pivot, dtype=np.float64)
         for finger, start_position in self.relative_rotation_start_fingertips.items():
-            if finger == 1 and not self.relative_rotation_fixed_pivot:
+            if finger == 1:
                 continue
             current_position = tip_positions.get(finger)
             if current_position is None:
@@ -913,7 +1127,7 @@ class GraspController:
         now: float,
         qdot: np.ndarray | None = None,
     ) -> Dict[int, np.ndarray]:
-        """Track fingertip targets about the saved rotation pivot."""
+        """Track non-thumb fingertip targets about the thumb pivot."""
 
         rotation_forces = self._zero_translation_forces(tip_positions)
         self.relative_rotation_command_moment = 0.0
@@ -1080,11 +1294,7 @@ class GraspController:
 
         axis = np.asarray(self.relative_rotation_axis, dtype=np.float64)
         start_pivot = self.relative_rotation_pivot
-        current_pivot = (
-            start_pivot
-            if self.relative_rotation_fixed_pivot
-            else tip_positions[1]
-        )
+        current_pivot = tip_positions[1]
         fingertip_velocities = {}
         for finger in expected_fingers:
             indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
@@ -1096,14 +1306,12 @@ class GraspController:
                 )
                 @ qdot[indices]
             )
-        pivot_velocity = (
-            np.zeros(3, dtype=np.float64)
-            if self.relative_rotation_fixed_pivot
-            else fingertip_velocities[1]
-        )
-        driven_fingers = list(self.relative_rotation_start_fingertips)
-        if not self.relative_rotation_fixed_pivot:
-            driven_fingers.remove(1)
+        thumb_velocity = fingertip_velocities[1]
+        driven_fingers = [
+            finger
+            for finger in self.relative_rotation_start_fingertips
+            if finger != 1
+        ]
         if not driven_fingers:
             self.relative_rotation_phase = "rotation_error"
             self._log("[RELATIVE_ROTATION] stopped: no non-thumb driven finger")
@@ -1113,7 +1321,7 @@ class GraspController:
         for finger in driven_fingers:
             radius = tip_positions[finger] - current_pivot
             planar_radius = radius - np.dot(radius, axis) * axis
-            relative_velocity = fingertip_velocities[finger] - pivot_velocity
+            relative_velocity = fingertip_velocities[finger] - thumb_velocity
             angular_numerator += float(
                 np.dot(axis, np.cross(planar_radius, relative_velocity))
             )
@@ -1174,17 +1382,16 @@ class GraspController:
                 f"{np.degrees(self.relative_rotation_current_rad):.3f}"
             )
 
-        # Generic rotation leaves the thumb on ordinary grasp force. Blind
-        # sphere rotation drives all five fingertips about the fitted center.
-        if not self.relative_rotation_fixed_pivot:
-            rotation_forces[1][:] = 0.0
+        # Thumb receives only the ordinary grasp force. Every other active
+        # finger tracks a target rotated about the command-time thumb contact.
+        rotation_forces[1][:] = 0.0
         for finger in driven_fingers:
             start_position = self.relative_rotation_start_fingertips[finger]
             start_radius = start_position - start_pivot
             rho = float(np.linalg.norm(start_radius))
             target_position = current_pivot + reference_rotation @ start_radius
             target_velocity = (
-                pivot_velocity
+                thumb_velocity
                 + reference_angular_velocity
                 * np.cross(axis, reference_rotation @ start_radius)
             )
@@ -2816,6 +3023,8 @@ class GraspController:
                         self.hand_q,
                         alpha_distribution_mode=(
                             ALPHA_DISTRIBUTION_THUMB_DISTANCE_PROPORTIONAL
+                            if 1 in self.use_fingers
+                            else ALPHA_DISTRIBUTION_LEGACY
                         ),
                     )
                 except ValueError as exc:
@@ -2871,15 +3080,11 @@ class GraspController:
                     )
                     if self.relative_rotation_phase == "rotating":
                         relative_rotation_control_mode = (
-                            "cartesian_sphere_center_jacobian_transpose"
-                            if self.relative_rotation_fixed_pivot
-                            else "cartesian_thumb_pivot_jacobian_transpose"
+                            "cartesian_thumb_pivot_jacobian_transpose"
                         )
                     else:
                         relative_rotation_control_mode = (
-                            "cartesian_sphere_center_hold"
-                            if self.relative_rotation_fixed_pivot
-                            else "cartesian_thumb_pivot_hold"
+                            "cartesian_thumb_pivot_hold"
                         )
                 translation_forces.update(
                     self._calc_relative_translation_forces(
@@ -2954,6 +3159,39 @@ class GraspController:
                 qdot,
                 collision_avoidance_enabled=regular_grasp,
             )
+            released_fingers = BLIND_RELEASE_PHASE_FINGERS.get(
+                self.continuous_rotation_phase,
+                (),
+            )
+            for released_finger in released_fingers:
+                indices = np.asarray(
+                    FINGER_JOINT_INDEX[released_finger],
+                    dtype=int,
+                )
+                target = self.continuous_rotation_pose_target[indices]
+                inactive_pd[indices], _ = pose_pd(
+                    target,
+                    self.hand_q[indices],
+                    qdot[indices],
+                    kp=self.cfg.blind_grasp_pre_rotation_pose_kp,
+                    kd=self.cfg.blind_grasp_pre_rotation_pose_kd,
+                    limit=self.cfg.pre_rotation_pose_pd_limit,
+                )
+                self.inactive_pd_target[indices] = target
+            if self.continuous_rotation_phase == "blind_pose_rotation":
+                controlled_indices = np.arange(0, JOINT_COUNT - 4)
+                pose_tau, _ = pose_pd(
+                    RIGHT_HAND_BLIND_GRASP_INITIAL_POSE[controlled_indices],
+                    self.hand_q[controlled_indices],
+                    qdot[controlled_indices],
+                    kp=self.cfg.blind_grasp_pre_rotation_pose_kp,
+                    kd=self.cfg.blind_grasp_pre_rotation_pose_kd,
+                    limit=self.cfg.pre_rotation_pose_pd_limit,
+                )
+                inactive_pd[controlled_indices] += pose_tau
+                self.inactive_pd_target[controlled_indices] = (
+                    RIGHT_HAND_BLIND_GRASP_INITIAL_POSE[controlled_indices]
+                )
             tau = grasp_tau + inactive_pd
 
         elif self.state == "ENVELOP_GRASP":

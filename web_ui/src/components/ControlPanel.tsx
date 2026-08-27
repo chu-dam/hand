@@ -620,14 +620,14 @@ export function ControlPanel({
             className="secondary-wide apply-button"
             disabled={!blindGraspContinuousRotationAvailable}
             title={blindGraspContinuousRotationAvailable
-              ? "Start five-finger blind grasping and rotate -10° about the fitted sphere center"
+              ? "Run middle, index+ring, thumb, then pinky release sequence"
               : "Available only in the right-hand Pre-rotation (Blind Grasping) pose"}
             onClick={() => report(
               onContinuousRotation(true),
-              "Continuous rotation (Blind Grasping) 시작 요청을 전송했습니다.",
+              "Blind regrasp sequence 시작 요청을 전송했습니다.",
             )}
           >
-            Continuous rotation (Blind Grasping)
+            Blind regrasp sequence
           </button>
         </div>
 
