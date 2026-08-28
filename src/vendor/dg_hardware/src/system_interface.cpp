@@ -203,6 +203,11 @@ hardware_interface::SystemInterface::CallbackReturn SystemInterface::on_init(
   // Create ROS2 node for services and publishers
   node_ = rclcpp::Node::make_shared("delto_hardware_interface_node");
 
+  if (fingertip_sensor_enabled_) {
+    tactile_contact_publisher_ = node_->create_publisher<std_msgs::msg::Float64MultiArray>(
+        "/dg5f_s_" + hand_type_ + "/tactile_contacts", 10);
+  }
+
   // Create F/T sensor offset service if F/T sensor
   if (isFTSensor(device_sensor_type_) && fingertip_sensor_enabled_) {
     ft_offset_service_ = node_->create_service<std_srvs::srv::Trigger>(
@@ -729,6 +734,21 @@ SystemInterface::return_type SystemInterface::read(
         fingertip_torque_y_[finger] = received_data.fingertip_sensor[base + 4];
         fingertip_torque_z_[finger] = received_data.fingertip_sensor[base + 5];
       }
+    }
+
+    if (tactile_contact_publisher_ &&
+        received_data.fingertip_contacts.size() == num_fingers_ &&
+        (last_tactile_publish_seconds_ < 0.0 ||
+         time.seconds() - last_tactile_publish_seconds_ >= 0.05)) {
+      std_msgs::msg::Float64MultiArray message;
+      message.data.reserve(num_fingers_ * 5);
+      for (const auto& contact : received_data.fingertip_contacts) {
+        message.data.insert(message.data.end(), {
+            contact.x_mm, contact.y_mm,
+            contact.fx_n, contact.fy_n, contact.fz_n});
+      }
+      tactile_contact_publisher_->publish(message);
+      last_tactile_publish_seconds_ = time.seconds();
     }
 
     // Publish tactile image data

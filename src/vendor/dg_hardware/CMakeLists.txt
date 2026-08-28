@@ -15,6 +15,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(delto_tcp_comm REQUIRED)
 
 # Select architecture-specific library
@@ -51,6 +52,7 @@ ament_target_dependencies(${PROJECT_NAME}
   rclcpp_lifecycle
   std_srvs
   sensor_msgs
+  std_msgs
   delto_tcp_comm
 )
 
@@ -90,6 +92,7 @@ ament_export_dependencies(
   rclcpp_lifecycle
   std_srvs
   sensor_msgs
+  std_msgs
   delto_tcp_comm
 )
 

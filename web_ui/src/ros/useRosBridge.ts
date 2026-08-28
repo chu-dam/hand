@@ -10,6 +10,7 @@ import type {
   Point3,
   RosConnectionStatus,
   RotationMatrix3,
+  TactileSample,
   Vector3StampedMessage,
 } from "./types";
 
@@ -26,6 +27,7 @@ function topicsForHand(side: HandSide) {
     relativeRotationDegrees: `${prefix}/relative_rotation_deg_cmd`,
     continuousRotation: `${prefix}/continuous_rotation_cmd`,
     relativeTranslation: `${prefix}/relative_translation_cmd`,
+    tactile: `/dg5f_s_${side}/tactile_contacts`,
   };
 }
 
@@ -94,6 +96,8 @@ export function useRosBridge(url: string, handSide: HandSide) {
   const [lastJointAt, setLastJointAt] = useState<number | null>(null);
   const [lastDebugAt, setLastDebugAt] = useState<number | null>(null);
   const [lastRotationAt, setLastRotationAt] = useState<number | null>(null);
+  const [tactileSamples, setTactileSamples] = useState<TactileSample[]>([]);
+  const [lastTactileAt, setLastTactileAt] = useState<number | null>(null);
   const [attempt, setAttempt] = useState(0);
 
   const activeRos = useRef<Ros | null>(null);
@@ -114,6 +118,8 @@ export function useRosBridge(url: string, handSide: HandSide) {
       setLastJointAt(null);
       setLastDebugAt(null);
       setLastRotationAt(null);
+      setTactileSamples([]);
+      setLastTactileAt(null);
     };
     const scheduleReconnect = () => {
       if (disposed || reconnectTimer !== undefined) return;
@@ -145,6 +151,14 @@ export function useRosBridge(url: string, handSide: HandSide) {
       name: topics.rotation,
       messageType: "std_msgs/msg/Float64MultiArray",
       throttle_rate: ROTATION_RENDER_PERIOD_MS,
+      queue_length: 1,
+      reconnect_on_close: false,
+    });
+    const tactileTopic = new Topic<Float64MultiArrayMessage>({
+      ros,
+      name: topics.tactile,
+      messageType: "std_msgs/msg/Float64MultiArray",
+      throttle_rate: 50,
       queue_length: 1,
       reconnect_on_close: false,
     });
@@ -194,6 +208,20 @@ export function useRosBridge(url: string, handSide: HandSide) {
       setHandToWorldRotation(rotation);
       setLastRotationAt(Date.now());
     };
+    const onTactile = (message: Float64MultiArrayMessage) => {
+      if (disposed || message.data.length < 25 || !message.data.slice(0, 25).every(Number.isFinite)) return;
+      setTactileSamples(Array.from({ length: 5 }, (_, finger) => {
+        const base = finger * 5;
+        return {
+          x: message.data[base],
+          y: message.data[base + 1],
+          fx: message.data[base + 2],
+          fy: message.data[base + 3],
+          fz: message.data[base + 4],
+        };
+      }));
+      setLastTactileAt(Date.now());
+    };
 
     const onConnection = () => {
       if (disposed) {
@@ -205,6 +233,7 @@ export function useRosBridge(url: string, handSide: HandSide) {
       jointTopic.subscribe(onJointState);
       debugTopic.subscribe(onDebug);
       rotationTopic.subscribe(onRotationMatrix);
+      tactileTopic.subscribe(onTactile);
     };
     const onError = (event: unknown) => {
       if (disposed) return;
@@ -240,6 +269,7 @@ export function useRosBridge(url: string, handSide: HandSide) {
       jointTopic.unsubscribe(onJointState);
       debugTopic.unsubscribe(onDebug);
       rotationTopic.unsubscribe(onRotationMatrix);
+      tactileTopic.unsubscribe(onTactile);
       if (activeRos.current === ros) activeRos.current = null;
       publishers.current = { ...EMPTY_PUBLISHERS };
       ros.close();
@@ -312,6 +342,8 @@ export function useRosBridge(url: string, handSide: HandSide) {
     lastJointAt,
     lastDebugAt,
     lastRotationAt,
+    tactileSamples,
+    lastTactileAt,
     reconnect,
     setGraspType,
     setPoseType,

@@ -30,6 +30,14 @@ export interface Float64MultiArrayMessage {
   };
 }
 
+export interface TactileSample {
+  x: number;
+  y: number;
+  fx: number;
+  fy: number;
+  fz: number;
+}
+
 export interface Vector3StampedMessage {
   header: RosHeader;
   vector: Point3;

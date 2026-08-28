@@ -319,6 +319,109 @@ h1 {
 
 .compact-head { min-height: 62px; }
 
+.tactile-status {
+  padding: 7px 11px;
+  border-radius: 6px;
+  background: var(--amber-soft);
+  color: #8a6108;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+.tactile-status.live { background: var(--green-soft); color: var(--green); }
+
+.tactile-sensor-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+  padding: 12px;
+}
+
+.tactile-finger-card {
+  grid-column: span 2;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.tactile-finger-card:nth-child(n + 4) { grid-column: span 3; }
+
+.tactile-finger-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tactile-finger-card > header strong { font-size: 11px; }
+.tactile-finger-card > header span { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 8px; font-weight: 800; }
+
+.tactile-viewer {
+  position: relative;
+  min-height: 210px;
+  overflow: hidden;
+  background: #f5f8f9;
+}
+
+.tactile-viewer canvas { display: block; width: 100%; height: 100%; }
+
+.tactile-model-state {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 1;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  font-weight: 800;
+  pointer-events: none;
+}
+
+.tactile-axis-legend {
+  position: absolute;
+  right: 9px;
+  bottom: 8px;
+  z-index: 1;
+  display: flex;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.tactile-axis-legend b {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  font-weight: 900;
+}
+
+.tactile-axis-legend b:nth-child(1) { color: #c84b42; }
+.tactile-axis-legend b:nth-child(2) { color: #0b8f8f; }
+.tactile-axis-legend b:nth-child(3) { color: #5965bd; }
+
+.tactile-value-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-top: 1px solid var(--line); }
+
+.tactile-value {
+  display: grid;
+  justify-items: center;
+  min-width: 0;
+  padding: 8px 3px;
+  border-right: 1px solid var(--line);
+}
+
+.tactile-value:last-child { border-right: 0; }
+.tactile-value span { color: var(--muted); font-size: 8px; font-weight: 800; }
+.tactile-value strong { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.tactile-value small { color: var(--muted); font-size: 7px; }
+.tactile-value-x strong { color: var(--red); }
+.tactile-value-y strong { color: var(--teal); }
+.tactile-value-fx strong { color: #c84b42; }
+.tactile-value-fy strong { color: #0b8f8f; }
+.tactile-value-fz strong { color: #5965bd; }
+
 .scale-control {
   display: grid;
   grid-template-columns: auto 130px auto;
@@ -1419,6 +1522,8 @@ input[type="range"] { accent-color: var(--teal); }
   .control-panel { position: static; }
   .control-column { order: -1; }
   .finger-summary-grid { grid-template-columns: repeat(3, 1fr); }
+  .tactile-finger-card,
+  .tactile-finger-card:nth-child(n + 4) { grid-column: span 3; }
 }
 
 @media (max-width: 760px) {
@@ -1440,6 +1545,9 @@ input[type="range"] { accent-color: var(--teal); }
   .force-chart-grid { grid-template-columns: 1fr; }
   .force-history-footer { align-items: flex-start; flex-direction: column; }
   .force-history-note { text-align: left; }
+  .tactile-sensor-grid { grid-template-columns: 1fr; }
+  .tactile-finger-card,
+  .tactile-finger-card:nth-child(n + 4) { grid-column: span 1; }
   .finger-summary-grid { grid-template-columns: repeat(2, 1fr); }
   .grasp-grid { grid-template-columns: repeat(2, 1fr); }
   .joint-table th,

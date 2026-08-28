@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { ColladaLoader } from "three/examples/jsm/loaders/ColladaLoader.js";
+import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import URDFLoader, { type URDFRobot } from "urdf-loader";
 
 import {
@@ -567,7 +568,20 @@ export function HandScene3D({
     loader.packages = { [MODEL_PACKAGE]: assetUrl(MODEL_ROOT) };
     loader.parseVisual = true;
     loader.parseCollision = false;
-    loader.loadMeshCb = (path, loadingManager, _material, done) => {
+    loader.loadMeshCb = (path, loadingManager, material, done) => {
+      if (/\.stl(?:$|\?)/i.test(path)) {
+        new STLLoader(loadingManager).load(
+          path,
+          (geometry) => done(new THREE.Mesh(geometry, material)),
+          undefined,
+          (error) => done(
+            new THREE.Group(),
+            new Error(errorText(error)),
+          ),
+        );
+        return;
+      }
+
       const fileLoader = new THREE.FileLoader(loadingManager);
       fileLoader.setResponseType("text");
       fileLoader.load(

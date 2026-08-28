@@ -46,6 +46,7 @@
 #include "std_srvs/srv/trigger.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 #include "sensor_msgs/msg/image.hpp"
+#include "std_msgs/msg/float64_multi_array.hpp"
 
 #include "delto_tcp_comm/delto_developer_TCP.hpp"
 #include "delto_hardware/delto_gripper_helper.hpp"
@@ -223,6 +224,8 @@ class SystemInterface : public hardware_interface::SystemInterface {
 
   // Tactile image publishers (per finger)
   std::vector<rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr> tactile_publishers_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr tactile_contact_publisher_;
+  double last_tactile_publish_seconds_ = -1.0;
 };
 
 }  // namespace delto_hardware

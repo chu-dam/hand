@@ -75,6 +75,15 @@ enum class SensorType : uint8_t {
   TACTILE_S = 0x05,   // 3x6, 2byte/cell, 36byte/finger
 };
 
+struct FingertipContact {
+  double x_mm;
+  double y_mm;
+  double fx_n;
+  double fy_n;
+  double fz_n;
+  uint16_t status;
+};
+
 // ============================================================================
 // Data Structures
 // ============================================================================
@@ -85,6 +94,7 @@ struct DeltoReceivedData {
   std::vector<double> velocity;          // rad/s
   std::vector<bool> gpio;                // GPIO states (4 elements)
   std::vector<double> fingertip_sensor;  // F/T sensor data (N fingers × 6 axes)
+  std::vector<FingertipContact> fingertip_contacts;
   std::vector<std::vector<uint8_t>> tactile_m;   // Tactile M: per finger, 3x5=15 bytes (uint8)
   std::vector<std::vector<uint16_t>> tactile_s;  // Tactile S: per finger, 3x6=18 values (uint16)
 };
@@ -175,6 +185,7 @@ class Communication {
   int GetBytePerMotor(uint16_t model);
   int GetFingerCount(uint16_t model);
   int GetSensorBytesPerFinger() const;
+  bool UsesContactSensor() const;
   int16_t CalculateExpectedResponseLength();
   bool SendAll(const uint8_t* data, std::size_t len);
   bool RecvAll(uint8_t* data, std::size_t len, int timeout_ms = 500);

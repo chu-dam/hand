@@ -111,7 +111,15 @@ bool Communication::SupportsExtendedFeatures() const {
   return model_ != static_cast<uint16_t>(ModelType::DG3F_B);
 }
 
+bool Communication::UsesContactSensor() const {
+  return actual_model_ == static_cast<uint16_t>(ModelType::DG5F_L_S) ||
+         actual_model_ == static_cast<uint16_t>(ModelType::DG5F_R_S) ||
+         actual_model_ == static_cast<uint16_t>(ModelType::DG5F_L_S15) ||
+         actual_model_ == static_cast<uint16_t>(ModelType::DG5F_R_S15);
+}
+
 int Communication::GetSensorBytesPerFinger() const {
+  if (UsesContactSensor()) return 12;
   switch (sensor_type_) {
     case SensorType::FT_6AXIS:  return 12;
     case SensorType::FT_3AXIS:  return 12;
@@ -518,7 +526,25 @@ DeltoReceivedData Communication::GetData() {
     size_t sensor_base = HEADER_SIZE + motor_count_ * byte_per_motor_;
     int bytes_per_finger = GetSensorBytesPerFinger();
 
-    switch (sensor_type_) {
+    if (UsesContactSensor()) {
+      received_data.fingertip_contacts.reserve(finger_count_);
+      for (int finger = 0; finger < finger_count_; finger++) {
+        const size_t offset = sensor_base + finger * bytes_per_finger;
+        const auto raw = [&](size_t index) {
+          return CombineMsg(response[offset + index], response[offset + index + 1]);
+        };
+        received_data.fingertip_contacts.push_back({
+            raw(0) * 0.01,
+            raw(2) * 0.01,
+            raw(4) * 0.001,
+            raw(6) * 0.001,
+            raw(8) * 0.001,
+            static_cast<uint16_t>(
+                (static_cast<uint16_t>(response[offset + 10]) << 8) |
+                static_cast<uint16_t>(response[offset + 11])),
+        });
+      }
+    } else switch (sensor_type_) {
       case SensorType::FT_6AXIS:
       case SensorType::FT_3AXIS:
       case SensorType::FT_4AXIS: {

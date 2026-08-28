@@ -165,31 +165,31 @@
   </joint>
   <link name="link_1_tip">
     <inertial>
-      <origin xyz="0.0078849577623336 -0.000453882894762198 6.84457684425877E-07" rpy="0 0 0" />
-      <mass value="0.00365660774514007" />
+      <origin xyz="0.0146 0 0" rpy="0 0 0" />
+      <mass value="0.016" />
       <inertia
-        ixx="1.62435137332247E-07"
-        ixy="6.70016237791936E-09"
-        ixz="3.20696803874183E-11"
-        iyy="1.60489761603655E-07"
-        iyz="-4.06107487479728E-11"
-        izz="1.29182278290644E-07" />
+        ixx="1.05890207E-06"
+        ixy="0"
+        ixz="0"
+        iyy="1.75893333E-06"
+        iyz="0"
+        izz="1.57367540E-06" />
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/link_1_tip.dae" />
+        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/tactile_tip.STL" />
       </geometry>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/link_1_tip.STL" />
+        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/tactile_tip.STL" />
       </geometry>
     </collision>
   </link>
   <joint name="joint_1_tip" type="fixed">
-    <origin xyz="0.0289 0 0" rpy="0 0 0" />
+    <origin xyz="0.0259 0 0" rpy="0 0 0" />
     <parent link="link_1_4" />
     <child link="link_1_tip" />
     <axis xyz="0 0 0" />
@@ -325,31 +325,31 @@
   </joint>
   <link name="link_2_tip">
     <inertial>
-      <origin xyz="0.007885 0.00045388 -6.8446E-07" rpy="0 0 0" />
-      <mass value="0.0036566" />
+      <origin xyz="0.0146 0 0" rpy="0 0 0" />
+      <mass value="0.016" />
       <inertia
-        ixx="1.6244E-07"
-        ixy="-6.7002E-09"
-        ixz="-3.207E-11"
-        iyy="1.6049E-07"
-        iyz="-4.0611E-11"
-        izz="1.2918E-07" />
+        ixx="1.05890207E-06"
+        ixy="0"
+        ixz="0"
+        iyy="1.75893333E-06"
+        iyz="0"
+        izz="1.57367540E-06" />
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/link_2_tip.dae" />
+        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/tactile_tip.STL" />
       </geometry>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/link_2_tip.STL" />
+        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/tactile_tip.STL" />
       </geometry>
     </collision>
   </link>
   <joint name="joint_2_tip" type="fixed">
-    <origin xyz="0.018 0 0" rpy="0 0 0" />
+    <origin xyz="0.015 0 0" rpy="0 0 0" />
     <parent link="link_2_4" />
     <child link="link_2_tip" />
     <axis xyz="0 0 0" />
@@ -485,31 +485,31 @@
   </joint>
   <link name="link_3_tip">
     <inertial>
-      <origin xyz="0.00788495776233353 0.000453882894762182 -6.84457684307048E-07" rpy="0 0 0" />
-      <mass value="0.00365660774514011" />
+      <origin xyz="0.0146 0 0" rpy="0 0 0" />
+      <mass value="0.016" />
       <inertia
-        ixx="1.6243513733225E-07"
-        ixy="-6.70016237792099E-09"
-        ixz="-3.20696803863029E-11"
-        iyy="1.60489761603658E-07"
-        iyz="-4.06107487466726E-11"
-        izz="1.29182278290646E-07" />
+        ixx="1.05890207E-06"
+        ixy="0"
+        ixz="0"
+        iyy="1.75893333E-06"
+        iyz="0"
+        izz="1.57367540E-06" />
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/link_3_tip.dae" />
+        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/tactile_tip.STL" />
       </geometry>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/link_3_tip.STL" />
+        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/tactile_tip.STL" />
       </geometry>
     </collision>
   </link>
   <joint name="joint_3_tip" type="fixed">
-    <origin xyz="0.018 0 0" rpy="0 0 0" />
+    <origin xyz="0.015 0 0" rpy="0 0 0" />
     <parent link="link_3_4" />
     <child link="link_3_tip" />
     <axis xyz="0 0 0" />
@@ -645,31 +645,31 @@
   </joint>
   <link name="link_4_tip">
     <inertial>
-      <origin xyz="0.00788495776233367 0.000453882894762173 -6.84457684422407E-07" rpy="0 0 0" />
-      <mass value="0.0036566077451401" />
+      <origin xyz="0.0146 0 0" rpy="0 0 0" />
+      <mass value="0.016" />
       <inertia
-        ixx="1.62435137332247E-07"
-        ixy="-6.7001623779204E-09"
-        ixz="-3.20696803860819E-11"
-        iyy="1.60489761603657E-07"
-        iyz="-4.06107487466366E-11"
-        izz="1.29182278290647E-07" />
+        ixx="1.05890207E-06"
+        ixy="0"
+        ixz="0"
+        iyy="1.75893333E-06"
+        iyz="0"
+        izz="1.57367540E-06" />
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/link_4_tip.dae" />
+        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/tactile_tip.STL" />
       </geometry>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/link_4_tip.STL" />
+        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/tactile_tip.STL" />
       </geometry>
     </collision>
   </link>
   <joint name="joint_4_tip" type="fixed">
-    <origin xyz="0.018 0 0" rpy="0 0 0" />
+    <origin xyz="0.015 0 0" rpy="0 0 0" />
     <parent link="link_4_4" />
     <child link="link_4_tip" />
     <axis xyz="0 0 0" />
@@ -805,31 +805,31 @@
   </joint>
   <link name="link_5_tip">
     <inertial>
-      <origin xyz="0.00788495776233364 0.000453882894762198 -6.84457684460571E-07" rpy="0 0 0" />
-      <mass value="0.00365660774514004" />
+      <origin xyz="0.0146 0 0" rpy="0 0 0" />
+      <mass value="0.016" />
       <inertia
-        ixx="1.62435137332245E-07"
-        ixy="-6.70016237791913E-09"
-        ixz="-3.20696803888603E-11"
-        iyy="1.60489761603653E-07"
-        iyz="-4.06107487486814E-11"
-        izz="1.29182278290642E-07" />
+        ixx="1.05890207E-06"
+        ixy="0"
+        ixz="0"
+        iyy="1.75893333E-06"
+        iyz="0"
+        izz="1.57367540E-06" />
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/link_5_tip.dae" />
+        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/tactile_tip.STL" />
       </geometry>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/link_5_tip.STL" />
+        <mesh filename="package://dg5f_s_description/meshes/dg5fs_right/tactile_tip.STL" />
       </geometry>
     </collision>
   </link>
   <joint name="joint_5_tip" type="fixed">
-    <origin xyz="0.0289 0 0" rpy="0 0 0" />
+    <origin xyz="0.0259 0 0" rpy="0 0 0" />
     <parent link="link_5_4" />
     <child link="link_5_tip" />
     <axis xyz="0 0 0" />

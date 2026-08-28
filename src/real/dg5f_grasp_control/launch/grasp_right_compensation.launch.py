@@ -34,7 +34,10 @@ def generate_launch_description():
         DeclareLaunchArgument("fric_scale", default_value="0.0"),
         DeclareLaunchArgument("hand_limit", default_value="0.3"),
         DeclareLaunchArgument("start_teaching_mode", default_value="true"),
-        IncludeLaunchDescription(PythonLaunchDescriptionSource([effort_launch])),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource([effort_launch]),
+            launch_arguments={"fingertip_sensor": "true"}.items(),
+        ),
         Node(
             package="dg5f_grasp_control",
             executable="grasp_real",
