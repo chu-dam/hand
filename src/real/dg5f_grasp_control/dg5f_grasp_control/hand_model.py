@@ -45,6 +45,10 @@ RIGHT_FINGER_AVOIDANCE_JOINT_LIMITS = {
     finger: (-upper, -lower)
     for finger, (lower, upper) in LEFT_FINGER_AVOIDANCE_JOINT_LIMITS.items()
 }
+RIGHT_FINGER_AVOIDANCE_JOINT_LIMITS[1] = (
+    -0.2792526803190927,
+    0.9250245035569946,
+)
 
 
 def get_finger_avoidance_joint_limits(hand_side):

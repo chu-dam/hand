@@ -636,7 +636,7 @@ export function ControlPanel({
             <button
               className="blind-direction-button"
               type="button"
-              disabled={!blindGraspContinuousRotationAvailable && !continuousRotationActive}
+              disabled={!continuousRotationActive || debug?.pose_type !== 6}
               title="Toggle rotation direction"
               aria-label="Toggle rotation direction"
               onClick={() => onBlindDirectionToggle()}

@@ -45,6 +45,7 @@ class RuntimeConfig:
     continuous_rotation_release_sec: float = 0.18
     continuous_rotation_move_sec: float = 0.28
     blind_rotation_grasp_settle_sec: float = 0.50
+    blind_reverse_phase_sec: float = 0.5
     blind_finger_release_deg: float = 6.0
     blind_middle_release_deg: float = 3.0
     blind_pinky_release_deg: float = 10.0
@@ -53,6 +54,11 @@ class RuntimeConfig:
     blind_thumb_j2_target_rad: float = -1.5139
     blind_thumb_j3_target_rad: float = 0.0359
     blind_thumb_j4_target_rad: float = 0.8207
+    blind_reverse_thumb_j1_target_rad: float = 0.7660
+    blind_reverse_thumb_j2_target_rad: float = -1.1010
+    blind_reverse_thumb_j3_target_rad: float = -0.2536
+    blind_reverse_thumb_j4_target_rad: float = 0.6646
+    blind_reverse_pinky_release_deg: float = 15.0
     blind_sphere_lift_x_threshold_m: float = 0.098
     blind_sphere_safe_center_x_m: float = 0.100
     blind_sphere_safe_half_range_m: float = 0.012
