@@ -186,6 +186,8 @@ export function App() {
             handSide={selectedHand}
             jointState={ros.jointState}
             debug={ros.debug}
+            tactileSamples={ros.tactileSamples}
+            tactileContactPoints={ros.tactileContactPoints}
             handToWorldRotation={ros.handToWorldRotation}
             orientationFromTopic={ros.lastRotationAt !== null}
           />
@@ -214,6 +216,7 @@ export function App() {
           onRelativeTranslation={ros.setRelativeTranslationWorld}
           onRelativeRotation={ros.setRelativeRotationDegrees}
           onContinuousRotation={ros.setContinuousRotation}
+          onBlindDirectionToggle={ros.toggleBlindDirection}
           handToWorldRotation={ros.handToWorldRotation}
           onNotice={pushNotice}
         />

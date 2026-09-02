@@ -119,6 +119,7 @@ interface ControlPanelProps {
   onRelativeTranslation: (deltaWorldMeters: Point3) => boolean;
   onRelativeRotation: (degrees: number) => boolean;
   onContinuousRotation: (enable: boolean) => boolean;
+  onBlindDirectionToggle: () => boolean;
   handToWorldRotation: RotationMatrix3;
   onNotice: (message: string, tone?: "ok" | "warning" | "error") => void;
 }
@@ -136,6 +137,7 @@ export function ControlPanel({
   onRelativeTranslation,
   onRelativeRotation,
   onContinuousRotation,
+  onBlindDirectionToggle,
   handToWorldRotation,
   onNotice,
 }: ControlPanelProps) {
@@ -146,7 +148,8 @@ export function ControlPanel({
   const [matrix, setMatrix] = useState([...IDENTITY_MATRIX]);
   const teaching = Boolean(debug?.teaching_mode);
   const continuousRotationActive = (
-    debug?.controller_phase?.startsWith("continuous_") === true
+    (debug?.controller_phase?.startsWith("continuous_") === true
+      || debug?.controller_phase?.startsWith("blind_") === true)
     && debug.controller_phase !== "continuous_error"
   );
   const commandDisabled = !ready || teaching;
@@ -616,19 +619,31 @@ export function ControlPanel({
               ? "Stop continuous rotation"
               : "Continuous rotation"}
           </button>
-          <button
-            className="secondary-wide apply-button"
-            disabled={!blindGraspContinuousRotationAvailable}
-            title={blindGraspContinuousRotationAvailable
-              ? "Run middle, index+ring, thumb, then pinky release sequence"
-              : "Available only in the right-hand Pre-rotation (Blind Grasping) pose"}
-            onClick={() => report(
-              onContinuousRotation(true),
-              "Blind regrasp sequence 시작 요청을 전송했습니다.",
-            )}
-          >
-            Blind regrasp sequence
-          </button>
+          <div className="blind-regrasp-row">
+            <button
+              className="secondary-wide apply-button"
+              disabled={!blindGraspContinuousRotationAvailable}
+              title={blindGraspContinuousRotationAvailable
+                ? "Run middle, index+ring, thumb, then pinky release sequence"
+                : "Available only in the right-hand Pre-rotation (Blind Grasping) pose"}
+              onClick={() => report(
+                onContinuousRotation(true),
+                "Blind regrasp sequence 시작 요청을 전송했습니다.",
+              )}
+            >
+              Blind regrasp sequence
+            </button>
+            <button
+              className="blind-direction-button"
+              type="button"
+              disabled={!blindGraspContinuousRotationAvailable && !continuousRotationActive}
+              title="Toggle rotation direction"
+              aria-label="Toggle rotation direction"
+              onClick={() => onBlindDirectionToggle()}
+            >
+              ↔
+            </button>
+          </div>
         </div>
 
         <div className="control-section">

@@ -33,7 +33,7 @@ grasp_real:
     blind_sphere_safe_half_range_m: 0.012
     blind_thumb_lift_j3_target_rad: -0.0852
     blind_thumb_lift_j4_target_rad: 0.9840
-    blind_sphere_effective_radius_m: 0.0455
+    blind_sphere_effective_radius_m: 0.0375
     blind_sphere_fit_max_error_m: 0.008
     blind_sphere_drop_confirm_samples: 3
 

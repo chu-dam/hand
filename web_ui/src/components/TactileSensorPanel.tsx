@@ -64,7 +64,16 @@ function TactileTipCard({ finger, index, sample }: {
     camera.position.set(0.045, 0.07, 0.035);
     camera.up.set(0, 0, 1);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    // A browser can refuse an additional WebGL context (especially during
+    // React StrictMode's development remount). Keep one failed card from
+    // unmounting the entire console.
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+    } catch {
+      setModelState("error");
+      return;
+    }
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     mount.appendChild(renderer.domElement);

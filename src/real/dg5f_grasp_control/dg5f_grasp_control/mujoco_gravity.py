@@ -59,3 +59,17 @@ class MujocoGravityCompensator:
         mujoco.mj_rne(self.model, self.data, 0, self.G)
 
         return self.G[self.dadr].copy()
+
+    def tactile_link_pose(self, q, finger):
+        """Return the URDF/MuJoCo pose of the last non-tip finger link."""
+        self.data.qpos[:] = 0.0
+        self.data.qpos[self.qadr] = q
+        mujoco.mj_forward(self.model, self.data)
+        name = f"link_{int(finger)}_4"
+        body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, name)
+        if body_id < 0:
+            return None
+        return (
+            self.data.xpos[body_id].copy(),
+            self.data.xmat[body_id].reshape(3, 3).copy(),
+        )

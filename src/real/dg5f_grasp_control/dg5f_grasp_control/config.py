@@ -6,6 +6,7 @@ class RuntimeConfig:
     hand_side: str = "left"
     start_teaching_mode: bool = False
     joint_state_topic: str = "/dg5f_s_left/joint_states"
+    tactile_topic: str = ""
     effort_topic: str = "/dg5f_s_left/effort_controller/commands"
     command_topic: str = "/grasp_type"
     pose_topic: str = "/pose_type"
@@ -57,7 +58,7 @@ class RuntimeConfig:
     blind_sphere_safe_half_range_m: float = 0.012
     blind_thumb_lift_j3_target_rad: float = -0.0852
     blind_thumb_lift_j4_target_rad: float = 0.9840
-    blind_sphere_effective_radius_m: float = 0.0455
+    blind_sphere_effective_radius_m: float = 0.0375
     blind_sphere_fit_max_error_m: float = 0.008
     blind_sphere_drop_confirm_samples: int = 3
 

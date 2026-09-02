@@ -26,8 +26,10 @@ function topicsForHand(side: HandSide) {
     rotation: `${prefix}/rotation_matrix_cmd`,
     relativeRotationDegrees: `${prefix}/relative_rotation_deg_cmd`,
     continuousRotation: `${prefix}/continuous_rotation_cmd`,
+    blindDirectionToggle: `${prefix}/blind_direction_toggle`,
     relativeTranslation: `${prefix}/relative_translation_cmd`,
     tactile: `/dg5f_s_${side}/tactile_contacts`,
+    tactileContactPoints: `${prefix}/tactile_contact_points`,
   };
 }
 
@@ -54,6 +56,7 @@ interface Publishers {
   rotation: CommandTopic | null;
   relativeRotationDegrees: CommandTopic | null;
   continuousRotation: CommandTopic | null;
+  blindDirectionToggle: CommandTopic | null;
   relativeTranslation: RelativeTranslationTopic | null;
 }
 
@@ -65,6 +68,7 @@ const EMPTY_PUBLISHERS: Publishers = {
   rotation: null,
   relativeRotationDegrees: null,
   continuousRotation: null,
+  blindDirectionToggle: null,
   relativeTranslation: null,
 };
 
@@ -97,6 +101,7 @@ export function useRosBridge(url: string, handSide: HandSide) {
   const [lastDebugAt, setLastDebugAt] = useState<number | null>(null);
   const [lastRotationAt, setLastRotationAt] = useState<number | null>(null);
   const [tactileSamples, setTactileSamples] = useState<TactileSample[]>([]);
+  const [tactileContactPoints, setTactileContactPoints] = useState<Point3[]>([]);
   const [lastTactileAt, setLastTactileAt] = useState<number | null>(null);
   const [attempt, setAttempt] = useState(0);
 
@@ -120,6 +125,7 @@ export function useRosBridge(url: string, handSide: HandSide) {
       setLastRotationAt(null);
       setTactileSamples([]);
       setLastTactileAt(null);
+      setTactileContactPoints([]);
     };
     const scheduleReconnect = () => {
       if (disposed || reconnectTimer !== undefined) return;
@@ -179,6 +185,7 @@ export function useRosBridge(url: string, handSide: HandSide) {
       rotation: commandTopic(topics.rotation, "std_msgs/msg/Float64MultiArray"),
       relativeRotationDegrees: commandTopic(topics.relativeRotationDegrees, "std_msgs/msg/Float64"),
       continuousRotation: commandTopic(topics.continuousRotation, "std_msgs/msg/Bool"),
+      blindDirectionToggle: commandTopic(topics.blindDirectionToggle, "std_msgs/msg/Int32"),
       relativeTranslation: new Topic<Vector3StampedMessage>({
         ros,
         name: topics.relativeTranslation,
@@ -222,6 +229,11 @@ export function useRosBridge(url: string, handSide: HandSide) {
       }));
       setLastTactileAt(Date.now());
     };
+    const tactileContactTopic = new Topic<Float64MultiArrayMessage>({ ros, name: topics.tactileContactPoints, messageType: "std_msgs/msg/Float64MultiArray" });
+    const onTactileContactPoints = (message: Float64MultiArrayMessage) => {
+      if (message.data.length < 15) return;
+      setTactileContactPoints(Array.from({ length: 5 }, (_, i) => ({ x: message.data[i * 3], y: message.data[i * 3 + 1], z: message.data[i * 3 + 2] })));
+    };
 
     const onConnection = () => {
       if (disposed) {
@@ -234,6 +246,7 @@ export function useRosBridge(url: string, handSide: HandSide) {
       debugTopic.subscribe(onDebug);
       rotationTopic.subscribe(onRotationMatrix);
       tactileTopic.subscribe(onTactile);
+      tactileContactTopic.subscribe(onTactileContactPoints);
     };
     const onError = (event: unknown) => {
       if (disposed) return;
@@ -270,6 +283,7 @@ export function useRosBridge(url: string, handSide: HandSide) {
       debugTopic.unsubscribe(onDebug);
       rotationTopic.unsubscribe(onRotationMatrix);
       tactileTopic.unsubscribe(onTactile);
+      tactileContactTopic.unsubscribe(onTactileContactPoints);
       if (activeRos.current === ros) activeRos.current = null;
       publishers.current = { ...EMPTY_PUBLISHERS };
       ros.close();
@@ -314,6 +328,7 @@ export function useRosBridge(url: string, handSide: HandSide) {
     (value: boolean) => publish(publishers.current.continuousRotation, { data: value }),
     [publish],
   );
+  const toggleBlindDirection = useCallback(() => publish(publishers.current.blindDirectionToggle, { data: 1 }), [publish]);
   const setRelativeTranslationWorld = useCallback((deltaMeters: Point3): boolean => {
     const ros = activeRos.current;
     const topic = publishers.current.relativeTranslation;
@@ -343,6 +358,7 @@ export function useRosBridge(url: string, handSide: HandSide) {
     lastDebugAt,
     lastRotationAt,
     tactileSamples,
+    tactileContactPoints,
     lastTactileAt,
     reconnect,
     setGraspType,
@@ -352,6 +368,7 @@ export function useRosBridge(url: string, handSide: HandSide) {
     setRotationMatrix,
     setRelativeRotationDegrees,
     setContinuousRotation,
+    toggleBlindDirection,
     setRelativeTranslationWorld,
   };
 }

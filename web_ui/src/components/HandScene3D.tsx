@@ -12,6 +12,7 @@ import {
   type JointStateMessage,
   type Point3,
   type RotationMatrix3,
+  type TactileSample,
 } from "../ros/types";
 
 const EXPECTED_JOINTS = new Set(
@@ -38,6 +39,8 @@ interface HandScene3DProps {
   handSide: HandSide;
   jointState: JointStateMessage | null;
   debug: GraspDebugMessage | null;
+  tactileSamples: TactileSample[];
+  tactileContactPoints: Point3[];
   handToWorldRotation: RotationMatrix3;
   orientationFromTopic: boolean;
 }
@@ -95,8 +98,12 @@ function createDebugOverlay(): DebugOverlay {
 
   const fingertips = FINGER_COLORS.map((color, index) => {
     const marker = new THREE.Mesh(
-      new THREE.SphereGeometry(0.0038, 18, 12),
-      new THREE.MeshBasicMaterial({ color }),
+      new THREE.SphereGeometry(0.0025, 18, 12),
+      new THREE.MeshBasicMaterial({
+        color,
+        depthTest: false,
+        depthWrite: false,
+      }),
     );
     marker.name = `debug-fingertip-${index + 1}`;
     marker.visible = false;
@@ -242,16 +249,47 @@ function addOverlayToFrame(frame: THREE.Group, overlay: DebugOverlay) {
 function updateDebugOverlay(
   overlay: DebugOverlay,
   debug: GraspDebugMessage | null,
+  tactileSamples: TactileSample[],
   forceScaleMillimeters: number,
   worldOrientationAvailable: boolean,
+  robot: URDFRobot | null = null,
+  handFrame: THREE.Group | null = null,
 ) {
   const frameMatches = debug?.header.frame_id === "link_base";
   const showWorldOverlay = frameMatches && worldOrientationAvailable;
 
   overlay.fingertips.forEach((marker, index) => {
     const point = debug?.fingertip_positions[index];
-    marker.visible = showWorldOverlay && isFinitePoint(point);
-    if (marker.visible && point) marker.position.set(point.x, point.y, point.z);
+    const sample = tactileSamples[index];
+    const hasContact = sample && (Math.abs(sample.x) > 1e-6 || Math.abs(sample.y) > 1e-6);
+    marker.visible = showWorldOverlay && isFinitePoint(point) && Boolean(hasContact);
+    if (marker.visible && point) {
+      const tipLink = robot?.links[`link_${index + 1}_tip`];
+      if (tipLink && handFrame && sample) {
+        // Sensor x/y are tip-local coordinates; raycast the actual tip mesh
+        // to determine the remaining coordinate on its curved surface.
+        const tipMeshes: THREE.Mesh[] = [];
+        tipLink.traverse((object) => {
+          if (object instanceof THREE.Mesh) tipMeshes.push(object);
+        });
+        tipLink.updateMatrixWorld(true);
+        const tipLocal = new THREE.Vector3(sample.y * 0.001, 0.1, sample.x * 0.001);
+        const worldPoint = tipLink.localToWorld(tipLocal.clone());
+        const worldDirection = tipLink
+          .localToWorld(new THREE.Vector3(tipLocal.x, -0.1, tipLocal.z))
+          .sub(worldPoint)
+          .normalize();
+        const raycaster = new THREE.Raycaster(worldPoint, worldDirection);
+        const hit = raycaster.intersectObjects(tipMeshes, true)[0];
+        if (hit) {
+          marker.position.copy(handFrame.worldToLocal(hit.point.clone()));
+        } else {
+          marker.position.set(point.x, point.y, point.z);
+        }
+      } else {
+        marker.position.set(point.x, point.y, point.z);
+      }
+    }
   });
 
   overlay.forces.forEach((arrow, index) => {
@@ -337,6 +375,7 @@ export function HandScene3D({
   handSide,
   jointState,
   debug,
+  tactileSamples,
   handToWorldRotation,
   orientationFromTopic,
 }: HandScene3DProps) {
@@ -346,6 +385,7 @@ export function HandScene3D({
   const overlayRef = useRef<DebugOverlay | null>(null);
   const latestJointState = useRef(jointState);
   const latestDebug = useRef(debug);
+  const latestTactile = useRef(tactileSamples);
   const latestHandToWorldRotation = useRef(handToWorldRotation);
   const latestForceScale = useRef(16);
   const renderRef = useRef<() => void>(() => undefined);
@@ -384,8 +424,11 @@ export function HandScene3D({
       updateDebugOverlay(
         overlay,
         latestDebug.current,
+        latestTactile.current,
         latestForceScale.current,
         true,
+        robotRef.current,
+        handFrameRef.current,
       );
     }
     renderRef.current();
@@ -393,12 +436,21 @@ export function HandScene3D({
 
   useEffect(() => {
     latestDebug.current = debug;
+    latestTactile.current = tactileSamples;
     latestForceScale.current = forceScale;
     const overlay = overlayRef.current;
     if (!overlay) return;
-    updateDebugOverlay(overlay, debug, forceScale, true);
+    updateDebugOverlay(
+      overlay,
+      debug,
+      tactileSamples,
+      forceScale,
+      true,
+      robotRef.current,
+      handFrameRef.current,
+    );
     renderRef.current();
-  }, [debug, forceScale, handToWorldRotation]);
+  }, [debug, tactileSamples, forceScale, handToWorldRotation]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -477,8 +529,11 @@ export function HandScene3D({
     updateDebugOverlay(
       overlay,
       latestDebug.current,
+      latestTactile.current,
       latestForceScale.current,
       true,
+      robotRef.current,
+      handFrame,
     );
 
     const render = () => renderer.render(scene, camera);
@@ -645,6 +700,15 @@ export function HandScene3D({
         });
         handFrame.add(robot);
         applyJointState(robot, latestJointState.current);
+        updateDebugOverlay(
+          overlay,
+          latestDebug.current,
+          latestTactile.current,
+          latestForceScale.current,
+          true,
+          robot,
+          handFrame,
+        );
         render();
       },
       undefined,

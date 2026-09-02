@@ -86,10 +86,25 @@ class GraspRealRunner:
 
         self.controller = GraspController(cfg, log=print)
         self.gravity_comp = MujocoGravityCompensator(model_xml_path)
+        self.controller.set_tactile_link_pose_provider(
+            self.gravity_comp.tactile_link_pose
+        )
 
         self.pub = node.create_publisher(Float64MultiArray, cfg.effort_topic, 10)
         self.debug_pub = node.create_publisher(GraspDebug, cfg.debug_topic, 10)
+        self.tactile_contact_pub = node.create_publisher(
+            Float64MultiArray,
+            f"/dg5f_grasp_control/{cfg.hand_side}/tactile_contact_points",
+            10,
+        )
         node.create_subscription(JointState, cfg.joint_state_topic, self.joint_cb, 10)
+        tactile_topic = cfg.tactile_topic or f"/dg5f_s_{cfg.hand_side}/tactile_contacts"
+        node.create_subscription(
+            Float64MultiArray,
+            tactile_topic,
+            self.tactile_cb,
+            10,
+        )
         node.create_subscription(Int32, cfg.command_topic, self.command_cb, 10)
         node.create_subscription(Int32, cfg.pose_topic, self.pose_type_cb, 10)
         node.create_subscription(Float64, cfg.alpha1_topic, self.alpha1_cb, 10)
@@ -115,6 +130,12 @@ class GraspRealRunner:
             Bool,
             cfg.continuous_rotation_topic,
             self.continuous_rotation_cb,
+            10,
+        )
+        node.create_subscription(
+            Int32,
+            f"/dg5f_grasp_control/{cfg.hand_side}/blind_direction_toggle",
+            self.blind_direction_toggle_cb,
             10,
         )
         node.create_subscription(
@@ -159,6 +180,12 @@ class GraspRealRunner:
         self.hand_q = new_q
         self.got_state = True
         self.last_joint_state_time = now
+
+    def tactile_cb(self, msg):
+        data = np.asarray(msg.data, dtype=np.float64)
+        if data.size < 25 or not np.all(np.isfinite(data[:25])):
+            return
+        self.controller.set_tactile_contacts(data[:25].reshape(5, 5))
 
     def command_cb(self, msg):
         if self.teaching_mode or self.pending_teaching_mode is True:
@@ -208,6 +235,10 @@ class GraspRealRunner:
             )
             return
         self.pending_continuous_rotation = enable
+
+    def blind_direction_toggle_cb(self, msg):
+        if int(msg.data):
+            self.controller.request_blind_direction_change()
 
     def alpha1_cb(self, msg):
         if self.controller.continuous_rotation_active:
@@ -544,6 +575,15 @@ class GraspRealRunner:
             controller_phase=controller_phase,
         )
         self.debug_pub.publish(message)
+        points = Float64MultiArray()
+        points.data = [
+            float(v)
+            for finger in range(1, 6)
+            for v in self.controller.tactile_contact_points.get(
+                finger, np.zeros(3, dtype=np.float64)
+            )
+        ]
+        self.tactile_contact_pub.publish(points)
 
     def _print_status(self, output, gravity, friction, effort, qdot):
         if output.state == "GROPED_GRASP":

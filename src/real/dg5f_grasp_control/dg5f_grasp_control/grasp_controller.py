@@ -31,6 +31,15 @@ from dg5f_grasp_control.poses import (
 )
 
 FINGER_SWITCH_VIA_THREE_DELAY = 0.5
+# Offset from the old FK reference point to the old tip interior reference,
+# plus the requested 3 mm reduction for the replacement tactile tip.
+TACTILE_TIP_CORRECTION_M = {
+    1: 0.0059 + 0.0030,
+    2: 0.00478 + 0.0030,
+    3: 0.0059 + 0.0030,
+    4: 0.0059 + 0.0030,
+    5: 0.0059 + 0.0030,
+}
 
 ENVELOP_FINGER_ORDER = [2, 3, 4, 5]
 ENVELOP_FINGER_TORQUE_LOCAL_JOINTS = [1, 2, 3]
@@ -76,7 +85,10 @@ def _estimate_sphere_from_points(
     ):
         return None
     matrix = 2.0 * (points[1:] - points[0])
-    if np.linalg.matrix_rank(matrix) < 3 or np.linalg.cond(matrix) > 1e6:
+    # Fingertips are often nearly coplanar; rank 2 is still usable with a
+    # fixed sphere radius. Reject only collinear layouts.
+    rank = np.linalg.matrix_rank(matrix)
+    if rank < 2 or (rank >= 3 and np.linalg.cond(matrix) > 1e6):
         return None
     rhs = np.sum(points[1:] ** 2, axis=1) - np.sum(points[0] ** 2)
     algebraic_center = np.linalg.lstsq(matrix, rhs, rcond=None)[0]
@@ -86,11 +98,7 @@ def _estimate_sphere_from_points(
     has_previous = previous_center is not None and np.all(
         np.isfinite(previous_center)
     )
-    prior = (
-        np.asarray(previous_center, dtype=np.float64)
-        if has_previous
-        else algebraic_center
-    )
+    prior = np.asarray(previous_center, dtype=np.float64) if has_previous else algebraic_center
     center = prior.copy()
     prior_weight = BLIND_SPHERE_PREVIOUS_CENTER_WEIGHT if has_previous else 0.0
     for _ in range(12):
@@ -302,13 +310,19 @@ class GraspController:
         self.continuous_rotation_phase_started_at = None
         self.continuous_rotation_group_index = 0
         self.continuous_rotation_pose_target = None
+        self.blind_direction_change_pending = False
+        self.blind_rotation_direction = 1
         self.blind_sphere_center = np.zeros(3, dtype=np.float64)
         self.blind_sphere_effective_radius_m = 0.0
         self.blind_sphere_fit_rms_error_m = 0.0
         self.blind_four_finger_polygon_area_m2 = 0.0
         self.blind_sphere_estimate_valid = False
+        self.blind_sphere_last_update_at = -float("inf")
         self.blind_thumb_lift_pending = False
         self.blind_sphere_below_x_count = 0
+        self.tactile_contacts = np.zeros((5, 5), dtype=np.float64)
+        self.tactile_contact_points = {}
+        self.tactile_link_pose_provider = None
         # Relative translation stores each fingertip position at command time
         # and tracks the translated targets with Cartesian PD forces.
         self.relative_translation_phase = "idle"
@@ -384,12 +398,23 @@ class GraspController:
         self.relative_rotation_last_wrapped_angle = None
         self.relative_rotation_reference_progress = 0.0
 
+    def set_tactile_contacts(self, contacts) -> None:
+        values = np.asarray(contacts, dtype=np.float64)
+        if values.shape == (5, 5) and np.all(np.isfinite(values)):
+            self.tactile_contacts = values.copy()
+
+    def set_tactile_link_pose_provider(self, provider) -> None:
+        self.tactile_link_pose_provider = provider
+
     def cancel_continuous_rotation(self) -> None:
         self.continuous_rotation_active = False
         self.continuous_rotation_phase = "idle"
         self.continuous_rotation_phase_started_at = None
         self.continuous_rotation_group_index = 0
         self.continuous_rotation_pose_target = None
+
+    def request_blind_direction_change(self) -> None:
+        self.blind_direction_change_pending = True
 
     def _set_continuous_rotation_phase(self, phase: str, now: float) -> None:
         self.continuous_rotation_phase = str(phase)
@@ -404,11 +429,38 @@ class GraspController:
             or len(self.use_fingers) < 4
         ):
             return False
-        estimate_fingers = tuple(self.use_fingers)
-        points = np.asarray(
-            [tip_position(self.hand_q, finger) for finger in estimate_fingers],
-            dtype=np.float64,
-        )
+        contact_points = {}
+        for finger in self.use_fingers:
+            sample = self.tactile_contacts[finger - 1]
+            if abs(sample[0]) <= 1e-6 and abs(sample[1]) <= 1e-6:
+                continue
+            local = np.array(
+                [
+                    -TACTILE_TIP_CORRECTION_M[finger] + sample[1] * 0.001,
+                    0.0,
+                    sample[0] * 0.001,
+                ],
+                dtype=np.float64,
+            )
+            try:
+                pose = (
+                    self.tactile_link_pose_provider(self.hand_q, finger)
+                    if self.tactile_link_pose_provider is not None
+                    else None
+                )
+            except Exception:
+                pose = None
+            if pose is None:
+                contact_points[finger] = tip_position(self.hand_q, finger) + local
+            else:
+                link_position, link_rotation = pose
+                contact_points[finger] = link_position + link_rotation @ local
+        self.tactile_contact_points = contact_points
+        if len(contact_points) < 4:
+            self._log(f"[BLIND_SPHERE] fit skipped: valid_contacts={len(contact_points)}/4")
+            return False
+        estimate_fingers = tuple(contact_points)
+        points = np.asarray(list(contact_points.values()), dtype=np.float64)
         if estimate_fingers == (1, 2, 3, 4):
             area_m2 = 0.5 * np.linalg.norm(
                 np.sum(np.cross(points, np.roll(points, -1, axis=0)), axis=0)
@@ -426,9 +478,15 @@ class GraspController:
             else None,
         )
         if estimate is None:
+            self._log("[BLIND_SPHERE] fit failed: contact geometry is degenerate")
             return False
         center, fit_rms_error = estimate
         if fit_rms_error > float(self.cfg.blind_sphere_fit_max_error_m):
+            self._log(
+                "[BLIND_SPHERE] fit rejected: "
+                f"rms={fit_rms_error * 1000.0:.2f}mm > "
+                f"{self.cfg.blind_sphere_fit_max_error_m * 1000.0:.2f}mm"
+            )
             return False
         self.blind_sphere_center = center
         self.blind_sphere_effective_radius_m = float(
@@ -436,35 +494,9 @@ class GraspController:
         )
         self.blind_sphere_fit_rms_error_m = fit_rms_error
         self.blind_sphere_estimate_valid = True
-        if abs(
-            self.blind_sphere_center[0]
-            - float(self.cfg.blind_sphere_safe_center_x_m)
-        ) >= float(self.cfg.blind_sphere_safe_half_range_m):
-            self._log(
-                "[BLIND_SPHERE] X outside safe range "
-                f"({self.blind_sphere_center[0] * 1000.0:.2f} mm); "
-                "returning to blind pre-rotation pose"
-            )
-            self.blind_thumb_lift_pending = False
-            self.apply_pose_type(6, now)
-            return True
-        if self.blind_sphere_center[0] < float(
-            self.cfg.blind_sphere_lift_x_threshold_m
-        ):
-            if not self.blind_thumb_lift_pending:
-                self.blind_sphere_below_x_count += 1
-                if self.blind_sphere_below_x_count >= int(
-                    self.cfg.blind_sphere_drop_confirm_samples
-                ):
-                    self.blind_thumb_lift_pending = True
-                    self.blind_sphere_below_x_count = 0
-                    self._log(
-                        "[BLIND_SPHERE] confirmed X below threshold; "
-                        "thumb lift armed"
-                    )
-        else:
-            self.blind_sphere_below_x_count = 0
-        return False
+        # Sphere position is visualization/diagnostic only for now.  Do not
+        # trigger pose recovery or thumb-lift motions from its X coordinate.
+        return True
 
     def _build_blind_release_pose(self, finger: int) -> np.ndarray:
         indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
@@ -488,13 +520,9 @@ class GraspController:
                     if finger == 3
                     else self.cfg.blind_finger_release_deg
                 )
-                target[1:3] -= np.deg2rad(
-                    float(release_deg)
-                )
+                target[1:3] -= np.deg2rad(float(release_deg))
         else:
-            target[0] -= np.deg2rad(
-                float(self.cfg.blind_pinky_release_deg)
-            )
+            target[0] -= np.deg2rad(float(self.cfg.blind_pinky_release_deg))
         return target
 
     def _start_blind_middle_release(self, now: float) -> None:
@@ -664,7 +692,12 @@ class GraspController:
             return
         if self.continuous_rotation_phase == "blind_pose_rotation":
             if elapsed >= float(self.cfg.continuous_rotation_move_sec):
-                if self._update_blind_sphere_geometry(now):
+                if self.blind_direction_change_pending:
+                    self.blind_direction_change_pending = False
+                    self.blind_rotation_direction *= -1
+                    self.apply_grasp_type(5, now, internal=True)
+                    self.cancel_continuous_rotation()
+                    self._log("[BLIND_ROTATION] direction change queued; holding grasp")
                     return
                 self._start_blind_middle_release(now)
             return
