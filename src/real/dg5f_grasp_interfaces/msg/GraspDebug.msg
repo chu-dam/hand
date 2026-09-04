@@ -8,8 +8,7 @@ geometry_msgs/Point[] fingertip_positions
 geometry_msgs/Point geometric_centroid
 geometry_msgs/Point virtual_centroid
 
-# Latest 75 mm sphere estimate sampled when fingers 1..4 return while the
-# pinky stays released. Effective radius exposes fingertip-pad/FK bias.
+# Latest 75 mm sphere estimate from four or more tactile FK contact points.
 bool blind_sphere_estimate_valid
 geometry_msgs/Point blind_sphere_center
 float64 blind_sphere_effective_radius_m

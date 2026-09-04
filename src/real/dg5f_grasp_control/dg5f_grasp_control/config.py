@@ -19,7 +19,6 @@ class RuntimeConfig:
     debug_topic: str = "/dg5f_grasp_control/debug"
     debug_frame_id: str = "link_base"
     debug_publish_hz: float = 20.0
-
     dt: float = 0.005
     hand_limit: float = 7.5
     log_dt: float = 0.25
@@ -31,7 +30,7 @@ class RuntimeConfig:
     pose_pd_limit: float = 0.25
     pre_rotation_pose_kp: float = 0.60
     pre_rotation_pose_kd: float = 0.085
-    pre_rotation_pose_pd_limit: float = 0.30
+    pre_rotation_pose_pd_limit: float = 0.50
     pre_rotation_pinky_j1_kp: float = 1.00
     pre_rotation_pinky_j1_kd: float = 0.09
     pre_rotation_pinky_j1_tau_limit: float = 0.60
@@ -45,19 +44,21 @@ class RuntimeConfig:
     continuous_rotation_release_sec: float = 0.18
     continuous_rotation_move_sec: float = 0.28
     blind_rotation_grasp_settle_sec: float = 0.50
-    blind_reverse_phase_sec: float = 0.5
+    blind_reverse_pinky_regrasp_sec: float = 0.15
     blind_finger_release_deg: float = 6.0
     blind_middle_release_deg: float = 3.0
     blind_pinky_release_deg: float = 10.0
     blind_index_j1_target_rad: float = -0.8110
-    blind_thumb_j1_target_rad: float = 0.2436
-    blind_thumb_j2_target_rad: float = -1.5139
-    blind_thumb_j3_target_rad: float = 0.0359
-    blind_thumb_j4_target_rad: float = 0.8207
-    blind_reverse_thumb_j1_target_rad: float = 0.7660
-    blind_reverse_thumb_j2_target_rad: float = -1.1010
-    blind_reverse_thumb_j3_target_rad: float = -0.2536
-    blind_reverse_thumb_j4_target_rad: float = 0.6646
+    blind_thumb_j1_target_rad: float = 0.2417
+    blind_thumb_j2_target_rad: float = -1.5818
+    blind_thumb_j3_target_rad: float = -0.2758
+    blind_thumb_j4_target_rad: float = 1.3308
+    blind_reverse_thumb_j1_target_rad: float = 0.7187
+    blind_reverse_thumb_j2_target_rad: float = -1.0914
+    blind_reverse_thumb_j3_target_rad: float = -0.5070
+    blind_reverse_thumb_j4_target_rad: float = 1.3254
+    blind_thumb_area_threshold_m2: float = 0.002550
+    blind_thumb_low_area_j4_target_rad: float = 1.3308
     blind_reverse_pinky_release_deg: float = 15.0
     blind_sphere_lift_x_threshold_m: float = 0.098
     blind_sphere_safe_center_x_m: float = 0.100

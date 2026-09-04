@@ -205,6 +205,16 @@ export function ControlPanel({
     && debug?.controller_state === "PRE_GRASP_POSE"
     && debug?.pose_type === 6
   );
+  const blindDirectionAvailable = (
+    handSide === "right"
+    && ready
+    && !teaching
+    && debug?.pose_type === 6
+    && (
+      continuousRotationActive
+      || debug?.controller_state === "GROPED_GRASP"
+    )
+  );
   const rotationDirection = !rotationDegreesValid
     ? "SET ANGLE"
     : parsedRotationDegrees > 0
@@ -636,7 +646,7 @@ export function ControlPanel({
             <button
               className="blind-direction-button"
               type="button"
-              disabled={!continuousRotationActive || debug?.pose_type !== 6}
+              disabled={!blindDirectionAvailable}
               title="Toggle rotation direction"
               aria-label="Toggle rotation direction"
               onClick={() => onBlindDirectionToggle()}

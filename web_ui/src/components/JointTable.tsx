@@ -41,6 +41,7 @@ export function JointTable({ jointState, debug }: JointTableProps) {
               <th>Velocity</th>
               <th>Controller τ</th>
               <th>Commanded</th>
+              <th className="current-heading">FEEDBACK I (mA)</th>
             </tr>
           </thead>
           <tbody>
@@ -48,6 +49,7 @@ export function JointTable({ jointState, debug }: JointTableProps) {
               const messageIndex = stateIndex.get(name);
               const position = messageIndex === undefined ? undefined : jointState?.position[messageIndex];
               const velocity = messageIndex === undefined ? undefined : jointState?.velocity[messageIndex];
+              const current = messageIndex === undefined ? undefined : jointState?.effort[messageIndex];
               return (
                 <tr key={name}>
                   <td><span className={`finger-tag tag-${Math.floor(fixedIndex / 4) + 1}`}>{FINGER_NAMES[Math.floor(fixedIndex / 4)]}</span></td>
@@ -57,6 +59,7 @@ export function JointTable({ jointState, debug }: JointTableProps) {
                   <td>{fmt(velocity)}</td>
                   <td className="torque-value">{fmt(debug?.controller_torques[fixedIndex])}</td>
                   <td>{fmt(debug?.commanded_efforts[fixedIndex])}</td>
+                  <td className="current-value">{fmt(current, 1)}</td>
                 </tr>
               );
             })}
@@ -66,4 +69,3 @@ export function JointTable({ jointState, debug }: JointTableProps) {
     </section>
   );
 }
-

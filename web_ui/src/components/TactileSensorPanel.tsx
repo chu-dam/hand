@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 
-import type { TactileSample } from "../ros/types";
+import { TACTILE_Y_ORIGIN_OFFSET_M, type TactileSample } from "../ros/types";
 
 interface TactileSensorPanelProps {
   samples?: Array<TactileSample | null>;
@@ -23,7 +23,6 @@ const VALUES = [
   ["fz", "Fz", "N"],
 ] as const;
 
-const SENSOR_ORIGIN_FROM_TIP_BOTTOM_M = 0.0;
 const SENSOR_X_SIGN = 1;
 const SENSOR_Y_SIGN = 1;
 
@@ -126,7 +125,7 @@ function TactileTipCard({ finger, index, sample }: {
         const raycaster = new THREE.Raycaster();
         const surfacePoint = (xMm: number, yMm: number) => {
           const localX = clamp(
-            bounds.min.x + SENSOR_ORIGIN_FROM_TIP_BOTTOM_M + SENSOR_Y_SIGN * yMm * 0.001,
+            bounds.min.x + TACTILE_Y_ORIGIN_OFFSET_M + SENSOR_Y_SIGN * yMm * 0.001,
             bounds.min.x + 0.0002,
             bounds.max.x - 0.0002,
           );

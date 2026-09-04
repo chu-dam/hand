@@ -739,7 +739,7 @@ SystemInterface::return_type SystemInterface::read(
     if (tactile_contact_publisher_ &&
         received_data.fingertip_contacts.size() == num_fingers_ &&
         (last_tactile_publish_seconds_ < 0.0 ||
-         time.seconds() - last_tactile_publish_seconds_ >= 0.05)) {
+         time.seconds() - last_tactile_publish_seconds_ >= 0.02)) {
       std_msgs::msg::Float64MultiArray message;
       message.data.reserve(num_fingers_ * 5);
       for (const auto& contact : received_data.fingertip_contacts) {

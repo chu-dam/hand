@@ -2,6 +2,7 @@ import numpy as np
 
 JOINT_COUNT = 20
 FINGER_COUNT = 5
+TACTILE_Y_ORIGIN_OFFSET_M = 0.0032
 HAND_JOINT_NAMES = [f"joint_{f}_{j}" for f in range(1, 6) for j in range(1, 5)]
 
 FINGER_SELECTIONS = {

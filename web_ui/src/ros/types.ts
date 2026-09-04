@@ -1,5 +1,7 @@
 export type HandSide = "left" | "right";
 
+export const TACTILE_Y_ORIGIN_OFFSET_M = 0.0032;
+
 export interface RosTime {
   sec: number;
   nanosec: number;
@@ -36,6 +38,11 @@ export interface TactileSample {
   fx: number;
   fy: number;
   fz: number;
+}
+
+export interface TipAreaSample {
+  stampSec: number;
+  areaM2: number;
 }
 
 export interface Vector3StampedMessage {

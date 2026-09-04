@@ -639,7 +639,7 @@ input[type="range"] { accent-color: var(--teal); }
 .scene-warning-stack {
   position: absolute;
   z-index: 2;
-  top: 12px;
+  top: 50px;
   left: 12px;
   display: grid;
   justify-items: start;
@@ -856,6 +856,52 @@ input[type="range"] { accent-color: var(--teal); }
   width: 100%;
   height: auto;
   overflow: visible;
+}
+
+.tip-distance-panel {
+  overflow: hidden;
+}
+
+.tip-distance-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding: 0 12px 10px;
+}
+
+.tip-distance-line {
+  fill: none;
+  stroke: var(--teal);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.tip-distance-point {
+  fill: var(--teal);
+  stroke: #fff;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.tip-distance-value {
+  fill: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  font-weight: 750;
+}
+
+.tip-area-reference {
+  stroke: var(--red);
+  stroke-dasharray: 7 5;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.tip-area-reference-label {
+  fill: var(--red);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  font-weight: 850;
 }
 
 .force-chart-plot {
@@ -1486,7 +1532,7 @@ input[type="range"] { accent-color: var(--teal); }
 .joint-table-wrap { max-height: 500px; overflow: auto; }
 .joint-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 .joint-table th,
-.joint-table td { padding: 8px 12px; border-bottom: 1px solid #e4eaed; text-align: right; white-space: nowrap; }
+.joint-table td { padding: 8px 9px; border-bottom: 1px solid #e4eaed; text-align: right; white-space: nowrap; }
 .joint-table th { position: sticky; top: 0; z-index: 1; background: var(--surface-soft); color: var(--muted); font-size: 9px; font-weight: 850; letter-spacing: 0.05em; text-transform: uppercase; }
 .joint-table td { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; }
 .joint-table th:first-child,
@@ -1495,6 +1541,8 @@ input[type="range"] { accent-color: var(--teal); }
 .joint-table td:nth-child(2) { text-align: left; }
 .joint-table .joint-name { color: #2d3b43; font-weight: 750; }
 .joint-table .torque-value { color: var(--red); font-weight: 800; }
+.joint-table th.current-heading { text-transform: none; }
+.joint-table .current-value { color: var(--teal); font-weight: 800; }
 
 .finger-tag { display: inline-block; min-width: 46px; padding: 3px 6px; border-radius: 5px; background: #edf2f4; color: #5d6d76; font-family: inherit; font-size: 8px; font-weight: 850; text-align: center; }
 .tag-1 { background: #f9e7e5; color: #a73e37; }

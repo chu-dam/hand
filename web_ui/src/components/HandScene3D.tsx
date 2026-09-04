@@ -13,6 +13,7 @@ import {
   type Point3,
   type RotationMatrix3,
   type TactileSample,
+  TACTILE_Y_ORIGIN_OFFSET_M,
 } from "../ros/types";
 
 const EXPECTED_JOINTS = new Set(
@@ -71,6 +72,46 @@ function isFinitePoint(point: Point3 | undefined): point is Point3 {
 
 function millimeters(value: number): string {
   return `${(value * 1000).toFixed(1)} mm`;
+}
+
+function fitFixedRadiusCenter(
+  points: THREE.Vector3[],
+  radius: number,
+  previous?: THREE.Vector3,
+): THREE.Vector3 | null {
+  if (points.length < 3) return null;
+  const center = previous?.clone() ?? points
+    .reduce((sum, point) => sum.add(point), new THREE.Vector3())
+    .multiplyScalar(1 / points.length);
+
+  for (let iteration = 0; iteration < 12; iteration += 1) {
+    const h = Array(9).fill(0) as number[];
+    const gradient = new THREE.Vector3();
+    for (const point of points) {
+      const offset = center.clone().sub(point);
+      const distance = offset.length();
+      if (distance < 1e-9) return null;
+      const jacobian = offset.multiplyScalar(1 / distance);
+      const residual = distance - radius;
+      gradient.addScaledVector(jacobian, residual);
+      const values = [jacobian.x, jacobian.y, jacobian.z];
+      for (let row = 0; row < 3; row += 1) {
+        for (let column = 0; column < 3; column += 1) {
+          h[row * 3 + column] += values[row] * values[column];
+        }
+      }
+    }
+    h[0] += 1e-6;
+    h[4] += 1e-6;
+    h[8] += 1e-6;
+    const matrix = new THREE.Matrix3().set(...h as [number, number, number, number, number, number, number, number, number]);
+    if (Math.abs(matrix.determinant()) < 1e-12) return null;
+    const step = gradient.applyMatrix3(matrix.invert()).multiplyScalar(-1);
+    if (step.length() > 0.02) step.setLength(0.02);
+    center.add(step);
+    if (step.length() < 1e-8) break;
+  }
+  return [center.x, center.y, center.z].every(Number.isFinite) ? center : null;
 }
 
 function applyJointState(robot: URDFRobot, state: JointStateMessage | null): number {
@@ -254,9 +295,11 @@ function updateDebugOverlay(
   worldOrientationAvailable: boolean,
   robot: URDFRobot | null = null,
   handFrame: THREE.Group | null = null,
-) {
+): THREE.Vector3 | null {
   const frameMatches = debug?.header.frame_id === "link_base";
   const showWorldOverlay = frameMatches && worldOrientationAvailable;
+  const blindSphereMode = debug?.controller_state === "GROPED_GRASP"
+    && debug.grasp_type >= 3;
 
   overlay.fingertips.forEach((marker, index) => {
     const point = debug?.fingertip_positions[index];
@@ -273,7 +316,11 @@ function updateDebugOverlay(
           if (object instanceof THREE.Mesh) tipMeshes.push(object);
         });
         tipLink.updateMatrixWorld(true);
-        const tipLocal = new THREE.Vector3(sample.y * 0.001, 0.1, sample.x * 0.001);
+        const tipLocal = new THREE.Vector3(
+          TACTILE_Y_ORIGIN_OFFSET_M + sample.y * 0.001,
+          0.1,
+          sample.x * 0.001,
+        );
         const worldPoint = tipLink.localToWorld(tipLocal.clone());
         const worldDirection = tipLink
           .localToWorld(new THREE.Vector3(tipLocal.x, -0.1, tipLocal.z))
@@ -333,21 +380,22 @@ function updateDebugOverlay(
     overlay.virtualCentroid.position.set(virtualPoint.x, virtualPoint.y, virtualPoint.z);
   }
 
-  const sphereCenter = debug?.blind_sphere_center;
-  const blindSphereMode = debug?.pose_type === 6;
-  overlay.estimatedSphere.visible = Boolean(
-    showWorldOverlay
-      && blindSphereMode
-      && debug?.blind_sphere_estimate_valid
-      && isFinitePoint(sphereCenter),
+  const sphereCenter = fitFixedRadiusCenter(
+    overlay.fingertips.filter((marker) => marker.visible).map((marker) => marker.position),
+    0.0375,
+    overlay.estimatedSphere.visible
+      ? overlay.estimatedSphere.position
+      : isFinitePoint(debug?.geometric_centroid)
+        ? new THREE.Vector3(
+          debug.geometric_centroid.x,
+          debug.geometric_centroid.y,
+          debug.geometric_centroid.z,
+        )
+        : undefined,
   );
-  if (overlay.estimatedSphere.visible && sphereCenter) {
-    overlay.estimatedSphere.position.set(
-      sphereCenter.x,
-      sphereCenter.y,
-      sphereCenter.z,
-    );
-  }
+  overlay.estimatedSphere.visible = Boolean(showWorldOverlay && blindSphereMode && sphereCenter);
+  if (sphereCenter) overlay.estimatedSphere.position.copy(sphereCenter);
+  return sphereCenter;
 }
 
 function disposeObject(root: THREE.Object3D) {
@@ -390,8 +438,8 @@ export function HandScene3D({
   const latestForceScale = useRef(16);
   const renderRef = useRef<() => void>(() => undefined);
   const resetViewRef = useRef<() => void>(() => undefined);
-
   const [forceScale, setForceScale] = useState(16);
+  const [contactSphereCenter, setContactSphereCenter] = useState<Point3 | null>(null);
   const [viewer, setViewer] = useState<ViewerState>({
     status: "loading",
     detail: "Preparing the DG5F-S CAD model",
@@ -440,7 +488,7 @@ export function HandScene3D({
     latestForceScale.current = forceScale;
     const overlay = overlayRef.current;
     if (!overlay) return;
-    updateDebugOverlay(
+    const center = updateDebugOverlay(
       overlay,
       debug,
       tactileSamples,
@@ -449,6 +497,7 @@ export function HandScene3D({
       robotRef.current,
       handFrameRef.current,
     );
+    setContactSphereCenter(center ? { x: center.x, y: center.y, z: center.z } : null);
     renderRef.current();
   }, [debug, tactileSamples, forceScale, handToWorldRotation]);
 
@@ -740,12 +789,9 @@ export function HandScene3D({
 
   const frameMatches = !debug || debug.header.frame_id === "link_base";
   const live = viewer.status === "ready" && mappedJointCount === EXPECTED_JOINTS.size;
-  const blindSphereMode = debug?.pose_type === 6;
-  const sphereCenter = blindSphereMode
-    && debug?.blind_sphere_estimate_valid
-    && isFinitePoint(debug.blind_sphere_center)
-    ? debug.blind_sphere_center
-    : null;
+  const blindSphereMode = debug?.controller_state === "GROPED_GRASP"
+    && debug.grasp_type >= 3;
+  const sphereCenter = blindSphereMode ? contactSphereCenter : null;
 
   return (
     <section className="panel scene-panel">

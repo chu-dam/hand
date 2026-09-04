@@ -25,7 +25,7 @@ from dg5f_grasp_control.hand_model import (
     HAND_JOINT_NAMES,
     JOINT_COUNT,
 )
-from dg5f_grasp_control.kinematics import set_hand_side
+from dg5f_grasp_control.kinematics import set_hand_side, tip_position
 from dg5f_grasp_control.mujoco_gravity import MujocoGravityCompensator
 from dg5f_grasp_control.ros_debug import build_grasp_debug_message
 
@@ -89,9 +89,17 @@ class GraspRealRunner:
         self.controller.set_tactile_link_pose_provider(
             self.gravity_comp.tactile_link_pose
         )
+        self.controller.set_tactile_contact_geometry_provider(
+            self.gravity_comp.tactile_contact_geometry
+        )
 
         self.pub = node.create_publisher(Float64MultiArray, cfg.effort_topic, 10)
         self.debug_pub = node.create_publisher(GraspDebug, cfg.debug_topic, 10)
+        self.thumb_index_ring_area_pub = node.create_publisher(
+            Float64MultiArray,
+            f"/dg5f_grasp_control/{cfg.hand_side}/thumb_index_ring_tip_area",
+            10,
+        )
         self.tactile_contact_pub = node.create_publisher(
             Float64MultiArray,
             f"/dg5f_grasp_control/{cfg.hand_side}/tactile_contact_points",
@@ -180,6 +188,22 @@ class GraspRealRunner:
         self.hand_q = new_q
         self.got_state = True
         self.last_joint_state_time = now
+
+    def _publish_thumb_index_ring_area(self, now):
+        thumb, index, ring = (
+            tip_position(self.hand_q, finger) for finger in (1, 2, 4)
+        )
+        area_m2 = 0.5 * float(np.linalg.norm(
+            np.cross(index - thumb, ring - thumb)
+        ))
+        self.controller.set_blind_tip_triangle_area(area_m2)
+        self.thumb_index_ring_area_pub.publish(
+            Float64MultiArray(data=[float(now), area_m2])
+        )
+        self.node.get_logger().info(
+            "Thumb-index-ring basic-tip area: "
+            f"{area_m2 * 1e6:.3f} mm^2"
+        )
 
     def tactile_cb(self, msg):
         data = np.asarray(msg.data, dtype=np.float64)
@@ -783,7 +807,14 @@ class GraspRealRunner:
                     effort = gravity + friction + hold_pd
                     controller_torques = hold_pd
                 else:
+                    previous_phase = self.controller.continuous_rotation_phase
                     output = self.controller.step(self.hand_q, qdot, now)
+                    if (
+                        previous_phase == "blind_thumb_regrasp"
+                        and self.controller.continuous_rotation_phase
+                        == "blind_pinky_release"
+                    ):
+                        self._publish_thumb_index_ring_area(now)
                     effort = gravity + friction + output.tau
                     controller_torques = output.tau
 

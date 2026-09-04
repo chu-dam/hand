@@ -3,7 +3,10 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
-from dg5f_grasp_control.hand_model import HAND_JOINT_NAMES
+from dg5f_grasp_control.hand_model import (
+    HAND_JOINT_NAMES,
+    TACTILE_Y_ORIGIN_OFFSET_M,
+)
 
 
 class MujocoGravityCompensator:
@@ -73,3 +76,54 @@ class MujocoGravityCompensator:
             self.data.xpos[body_id].copy(),
             self.data.xmat[body_id].reshape(3, 3).copy(),
         )
+
+    def tactile_contact_geometry(self, q, finger, x_mm, y_mm):
+        """Return tactile surface point and outward normal in model-world coordinates."""
+        self.data.qpos[:] = 0.0
+        self.data.qpos[self.qadr] = q
+        mujoco.mj_forward(self.model, self.data)
+        finger = int(finger)
+        body_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, f"link_{finger}_tip"
+        )
+        geom_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_GEOM, f"link_{finger}_tip_geom"
+        )
+        if body_id < 0 or geom_id < 0:
+            body_id = mujoco.mj_name2id(
+                self.model, mujoco.mjtObj.mjOBJ_BODY, f"link_{finger}_4"
+            )
+            geom_ids = np.flatnonzero(self.model.geom_bodyid == body_id)
+            if body_id < 0 or geom_ids.size < 2:
+                return None
+            geom_id = int(max(geom_ids, key=lambda gid: self.model.geom_pos[gid, 0]))
+            mesh_id = int(self.model.geom_dataid[geom_id])
+            if mesh_id < 0:
+                return None
+            rotation = self.data.xmat[body_id].reshape(3, 3)
+            position = self.data.geom_xpos[geom_id] - rotation @ self.model.mesh_pos[mesh_id]
+        else:
+            position = self.data.xpos[body_id]
+            rotation = self.data.xmat[body_id].reshape(3, 3)
+        ray_origin = position + rotation @ np.array(
+            [
+                TACTILE_Y_ORIGIN_OFFSET_M + float(y_mm) * 0.001,
+                0.1,
+                float(x_mm) * 0.001,
+            ]
+        )
+        ray_direction = rotation @ np.array([0.0, -1.0, 0.0])
+        normal = np.zeros(3, dtype=np.float64)
+        distance = mujoco.mj_rayMesh(
+            self.model,
+            self.data,
+            geom_id,
+            ray_origin,
+            ray_direction,
+            normal,
+        )
+        if distance < 0.0:
+            return None
+        if np.dot(normal, -ray_direction) < 0.0:
+            normal *= -1.0
+        return ray_origin + distance * ray_direction, normal
