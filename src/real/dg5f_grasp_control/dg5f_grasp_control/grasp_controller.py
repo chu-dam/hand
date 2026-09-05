@@ -618,10 +618,8 @@ class GraspController:
                 self.cfg.blind_thumb_j4_target_rad,
             ]
         elif finger in (2, 3, 4):
-            index_j1 = FINGER_JOINT_INDEX[2][0]
-            target[0] += (
-                float(self.cfg.blind_index_j1_target_rad)
-                - RIGHT_HAND_BLIND_GRASP_INITIAL_POSE[index_j1]
+            target[0] -= np.deg2rad(
+                float(self.cfg.blind_finger_j1_release_deg)
             )
             if finger != 2:
                 release_deg = (
@@ -732,6 +730,14 @@ class GraspController:
 
     def _start_blind_regrasp(self, group: int, now: float) -> None:
         self.apply_grasp_type(5, now, internal=True)
+        if group == 3:
+            pinky = np.asarray(FINGER_JOINT_INDEX[5], dtype=int)
+            self.continuous_rotation_pose_target[pinky] = [
+                self.cfg.blind_pinky_regrasp_j1_target_rad,
+                self.cfg.blind_pinky_regrasp_j2_target_rad,
+                self.cfg.blind_pinky_regrasp_j3_target_rad,
+                self.cfg.blind_pinky_regrasp_j4_target_rad,
+            ]
         self._set_continuous_rotation_phase(
             (
                 "blind_middle_regrasp",
@@ -851,9 +857,12 @@ class GraspController:
                     self._reset_regular_force_balance_state()
                     target = RIGHT_HAND_BLIND_GRASP_INITIAL_POSE.copy()
                     thumb = np.asarray(FINGER_JOINT_INDEX[1], dtype=int)
-                    target[thumb] = self.blind_release_pose_targets[1]
-                    target[thumb[2]] = self.cfg.blind_thumb_lift_j3_target_rad
-                    target[thumb[3]] = self.cfg.blind_thumb_lift_j4_target_rad
+                    target[thumb] = [
+                        self.cfg.blind_thumb_lift_j1_target_rad,
+                        self.cfg.blind_thumb_lift_j2_target_rad,
+                        self.cfg.blind_thumb_lift_j3_target_rad,
+                        self.cfg.blind_thumb_lift_j4_target_rad,
+                    ]
                     self.blind_thumb_lift_pending = False
                     self._log(
                         "[BLIND_SPHERE] X below threshold; "
@@ -887,12 +896,7 @@ class GraspController:
                 self._start_blind_regrasp(3, now)
             return
         if self.continuous_rotation_phase == "blind_pinky_regrasp":
-            duration = (
-                self.cfg.blind_reverse_pinky_regrasp_sec
-                if self.blind_rotation_direction < 0
-                else self.cfg.continuous_rotation_move_sec
-            )
-            if elapsed >= float(duration):
+            if elapsed >= float(self.cfg.blind_pinky_regrasp_sec):
                 self._advance_blind_rotation(3, now)
             return
         if self.continuous_rotation_phase.startswith("continuous_release_"):
@@ -3411,6 +3415,19 @@ class GraspController:
                     limit=self.cfg.pre_rotation_pose_pd_limit,
                 )
                 self.inactive_pd_target[indices] = target
+            if self.continuous_rotation_phase == "blind_pinky_regrasp":
+                pinky = np.asarray(FINGER_JOINT_INDEX[5], dtype=int)
+                target = self.continuous_rotation_pose_target[pinky]
+                pinky_pd, _ = pose_pd(
+                    target,
+                    self.hand_q[pinky],
+                    qdot[pinky],
+                    kp=self.cfg.blind_grasp_pre_rotation_pose_kp,
+                    kd=self.cfg.blind_grasp_pre_rotation_pose_kd,
+                    limit=self.cfg.pre_rotation_pose_pd_limit,
+                )
+                inactive_pd[pinky] += pinky_pd
+                self.inactive_pd_target[pinky] = target
             if self.continuous_rotation_phase == "blind_pose_rotation":
                 controlled_indices = np.arange(0, JOINT_COUNT - 4)
                 rotation_pose = (

@@ -43,9 +43,9 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
 
         np.testing.assert_allclose(
             target[:3],
-            [0.2417, -1.5818, -0.2758],
+            [0.2801, -1.5235, -0.0419],
         )
-        self.assertAlmostEqual(target[3], 1.3308)
+        self.assertAlmostEqual(target[3], 0.9315)
         self.assertFalse(controller.blind_thumb_area_lift_pending)
 
     def test_tactile_filter_warms_up_and_resets_for_released_finger(self):
@@ -233,7 +233,7 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         target = controller.continuous_rotation_pose_target
         self.assertEqual(controller.use_fingers, [1, 2, 4, 5])
         self.assertEqual(controller.continuous_rotation_phase, "blind_middle_release")
-        j1_delta = -0.8110 - initial[FINGER_JOINT_INDEX[2][0]]
+        j1_delta = -np.deg2rad(19.0)
         self.assertAlmostEqual(target[middle[0]], initial[middle[0]] + j1_delta)
         self.assertAlmostEqual(target[middle[1]], initial[middle[1]] - np.deg2rad(3.0))
         self.assertAlmostEqual(target[middle[2]], initial[middle[2]] - np.deg2rad(3.0))
@@ -249,7 +249,7 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         target = controller.continuous_rotation_pose_target
         self.assertEqual(controller.use_fingers, [1, 3, 5])
         self.assertEqual(controller.continuous_rotation_phase, "blind_index_ring_release")
-        self.assertAlmostEqual(target[index[0]], -0.8110)
+        self.assertAlmostEqual(target[index[0]], initial[index[0]] + j1_delta)
         np.testing.assert_allclose(target[index[1:]], initial[index[1:]])
         self.assertAlmostEqual(target[ring[0]], initial[ring[0]] + j1_delta)
         self.assertAlmostEqual(target[ring[1]], initial[ring[1]] - np.deg2rad(6.0))
@@ -265,7 +265,7 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         target = controller.continuous_rotation_pose_target
         self.assertEqual(controller.use_fingers, [2, 3, 4, 5])
         self.assertEqual(controller.continuous_rotation_phase, "blind_thumb_down")
-        np.testing.assert_allclose(target[thumb], [0.2417, -1.5818, -0.2758, 1.3308])
+        np.testing.assert_allclose(target[thumb], [0.2801, -1.5235, -0.0419, 0.9315])
 
         controller._process_continuous_rotation(3.606)
         self.assertEqual(controller.use_fingers, [1, 2, 3, 4, 5])
@@ -297,7 +297,11 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         controller._process_continuous_rotation(4.349)
         self.assertEqual(controller.use_fingers, [1, 2, 3, 4, 5])
         self.assertEqual(controller.continuous_rotation_phase, "blind_pinky_regrasp")
-        controller._process_continuous_rotation(4.630)
+        np.testing.assert_allclose(
+            controller.continuous_rotation_pose_target[pinky],
+            [0.8323, 1.2723, 0.7594, 0.5027],
+        )
+        controller._process_continuous_rotation(4.550)
         self.assertEqual(controller.continuous_rotation_phase, "blind_middle_release")
         self.assertTrue(
             any(
@@ -331,11 +335,11 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
 
         controller._process_continuous_rotation(3.442)
         self.assertEqual(controller.continuous_rotation_phase, "blind_pinky_regrasp")
-        controller._process_continuous_rotation(3.445)
+        controller._process_continuous_rotation(3.494)
         self.assertEqual(controller.continuous_rotation_phase, "blind_thumb_down")
 
-        controller._process_continuous_rotation(3.626)
-        controller._process_continuous_rotation(3.907)
+        controller._process_continuous_rotation(3.675)
+        controller._process_continuous_rotation(3.956)
         self.assertEqual(controller.continuous_rotation_phase, "blind_index_ring_release")
 
     def test_blind_direction_change_after_regrasp_repeats_same_group(self):
@@ -387,7 +391,7 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
 
         np.testing.assert_allclose(
             controller.continuous_rotation_pose_target[thumb],
-            [0.2417, -1.5818, -0.2758, 1.3308],
+            [0.2801, -1.5235, -0.0419, 0.9315],
         )
 
     def test_reverse_pinky_release_uses_fifteen_degrees(self):
@@ -425,6 +429,26 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
             measured[pinky[0]] - np.deg2rad(10.0),
         )
         np.testing.assert_allclose(target[1:], measured[pinky[1:]])
+
+    def test_pinky_regrasp_combines_target_pd_with_five_finger_grasp(self):
+        controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
+        controller.continuous_rotation_active = True
+        controller.continuous_rotation_pose_target = np.zeros(20)
+        controller._start_blind_regrasp(3, now=2.0)
+        pinky = np.asarray(FINGER_JOINT_INDEX[5], dtype=int)
+
+        output = controller.step(np.zeros(20), np.zeros(20), now=2.001)
+
+        self.assertEqual(controller.use_fingers, [1, 2, 3, 4, 5])
+        np.testing.assert_allclose(
+            output.inactive_pd_target[pinky],
+            [0.8323, 1.2723, 0.7594, 0.5027],
+        )
+        controller._process_continuous_rotation(2.201)
+        self.assertNotEqual(
+            controller.continuous_rotation_phase,
+            "blind_pinky_regrasp",
+        )
 
     def test_reverse_pose_rotation_uses_supplied_non_pinky_target(self):
         controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
@@ -470,7 +494,7 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         thumb = np.asarray(FINGER_JOINT_INDEX[1], dtype=int)
         np.testing.assert_allclose(
             controller.continuous_rotation_pose_target[thumb],
-            [0.2417, -1.5818, -0.2758, 1.3308],
+            [0.2801, -1.5235, -0.0419, 0.9315],
         )
         self.assertTrue(controller.blind_thumb_lift_pending)
         self.assertEqual(controller.continuous_rotation_phase, "blind_thumb_down")
@@ -480,7 +504,7 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         target = controller.continuous_rotation_pose_target[thumb]
         np.testing.assert_allclose(
             target,
-            [0.2417, -1.5818, -0.0852, 0.9840],
+            [0.2789, -1.5046, -0.2473, 1.2418],
         )
         self.assertFalse(controller.blind_thumb_lift_pending)
         self.assertEqual(controller.continuous_rotation_phase, "blind_thumb_release")

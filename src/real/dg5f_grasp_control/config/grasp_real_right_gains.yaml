@@ -20,15 +20,19 @@ grasp_real:
     continuous_rotation_release_sec: 0.18
     continuous_rotation_move_sec: 0.28
     blind_rotation_grasp_settle_sec: 0.50
-    blind_reverse_pinky_regrasp_sec: 0.15
+    blind_pinky_regrasp_sec: 0.20
     blind_finger_release_deg: 8.0
     blind_middle_release_deg: 3.0
     blind_pinky_release_deg: 10.0
-    blind_index_j1_target_rad: -0.8110
-    blind_thumb_j1_target_rad: 0.2417
-    blind_thumb_j2_target_rad: -1.5818
-    blind_thumb_j3_target_rad: -0.2758
-    blind_thumb_j4_target_rad: 1.3308
+    blind_pinky_regrasp_j1_target_rad: 0.8323
+    blind_pinky_regrasp_j2_target_rad: 1.2723
+    blind_pinky_regrasp_j3_target_rad: 0.7594
+    blind_pinky_regrasp_j4_target_rad: 0.5027
+    blind_finger_j1_release_deg: 19.0
+    blind_thumb_j1_target_rad: 0.2801
+    blind_thumb_j2_target_rad: -1.5235
+    blind_thumb_j3_target_rad: -0.0419
+    blind_thumb_j4_target_rad: 0.9315
     blind_reverse_thumb_j1_target_rad: 0.7187
     blind_reverse_thumb_j2_target_rad: -1.0914
     blind_reverse_thumb_j3_target_rad: -0.5070
@@ -37,8 +41,10 @@ grasp_real:
     blind_sphere_lift_x_threshold_m: 0.098
     blind_sphere_safe_center_x_m: 0.100
     blind_sphere_safe_half_range_m: 0.012
-    blind_thumb_lift_j3_target_rad: -0.0852
-    blind_thumb_lift_j4_target_rad: 0.9840
+    blind_thumb_lift_j1_target_rad: 0.2789
+    blind_thumb_lift_j2_target_rad: -1.5046
+    blind_thumb_lift_j3_target_rad: -0.2473
+    blind_thumb_lift_j4_target_rad: 1.2418
     blind_sphere_effective_radius_m: 0.0375
     blind_sphere_fit_max_error_m: 0.008
     blind_sphere_drop_confirm_samples: 3
