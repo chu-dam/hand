@@ -191,6 +191,9 @@ export function App() {
             tactileContactPoints={ros.tactileContactPoints}
             handToWorldRotation={ros.handToWorldRotation}
             orientationFromTopic={ros.lastRotationAt !== null}
+            rotationControlsEnabled={connected && selectedHand === "right"}
+            onRotationMatrix={ros.setRotationMatrix}
+            onSphereCenterWorld={ros.setSphereCenterWorld}
           />
           <ForceHistoryPanel
             debug={ros.debug}

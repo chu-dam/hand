@@ -152,6 +152,12 @@ class GraspRealRunner:
             self.rotation_matrix_cb,
             10,
         )
+        node.create_subscription(
+            Float64MultiArray,
+            f"/dg5f_grasp_control/{cfg.hand_side}/ui_sphere_center_world",
+            self.ui_sphere_center_world_cb,
+            10,
+        )
 
     def joint_cb(self, msg):
         now = time()
@@ -210,6 +216,12 @@ class GraspRealRunner:
         if data.size < 25 or not np.all(np.isfinite(data[:25])):
             return
         self.controller.set_tactile_contacts(data[:25].reshape(5, 5))
+
+    def ui_sphere_center_world_cb(self, msg):
+        data = np.asarray(msg.data, dtype=np.float64)
+        if data.size < 3 or not np.all(np.isfinite(data[:3])):
+            return
+        self.controller.set_ui_sphere_center_world(data[:3])
 
     def command_cb(self, msg):
         if self.teaching_mode or self.pending_teaching_mode is True:

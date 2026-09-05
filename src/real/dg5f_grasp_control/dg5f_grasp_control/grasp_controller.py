@@ -65,7 +65,7 @@ CONTINUOUS_ROTATION_RELEASE_JOINTS = {
 BLIND_RELEASE_PHASE_FINGERS = {
     "blind_middle_release": (3,),
     "blind_index_ring_release": (2, 4),
-    "blind_thumb_down": (1,),
+    "blind_thumb_down": (1, 3, 4),
     "blind_thumb_release": (1, 3, 4),
     "blind_pinky_release": (5,),
     "blind_pose_rotation": (5,),
@@ -309,6 +309,7 @@ class GraspController:
         self.blind_direction_change_pending = False
         self.blind_rotation_direction = 1
         self.blind_sphere_center = np.zeros(3, dtype=np.float64)
+        self.blind_sphere_center_world = np.zeros(3, dtype=np.float64)
         self.blind_sphere_effective_radius_m = 0.0
         self.blind_sphere_fit_rms_error_m = 0.0
         self.blind_four_finger_polygon_area_m2 = 0.0
@@ -318,7 +319,7 @@ class GraspController:
         self.blind_sphere_last_log_key = None
         self.blind_thumb_lift_pending = False
         self.blind_thumb_area_lift_pending = False
-        self.blind_sphere_below_x_count = 0
+        self.ui_sphere_center_world = None
         self.tactile_contacts = np.zeros((5, 5), dtype=np.float64)
         self.tactile_sample_queues = [
             deque(maxlen=TACTILE_FILTER_WINDOW) for _ in range(5)
@@ -478,6 +479,24 @@ class GraspController:
             float(area_m2) < float(self.cfg.blind_thumb_area_threshold_m2)
         )
 
+    def set_ui_sphere_center_world(self, center) -> None:
+        center = np.asarray(center, dtype=np.float64)
+        if center.shape != (3,) or not np.all(np.isfinite(center)):
+            return
+        self.ui_sphere_center_world = center.copy()
+        if (
+            self.continuous_rotation_phase == "blind_pinky_regrasp"
+            and center[2] <= float(self.cfg.blind_sphere_lift_world_z_threshold_m)
+            and not self.blind_thumb_lift_pending
+        ):
+            self.blind_thumb_lift_pending = True
+            self._log(
+                "[BLIND_SPHERE] UI world Z at or below threshold; "
+                f"z={center[2] * 1000.0:.2f}mm <= "
+                f"{self.cfg.blind_sphere_lift_world_z_threshold_m * 1000.0:.2f}mm; "
+                "arming thumb lift release"
+            )
+
     def _set_continuous_rotation_phase(self, phase: str, now: float) -> None:
         self.continuous_rotation_phase = str(phase)
         self.continuous_rotation_phase_started_at = float(now)
@@ -485,11 +504,16 @@ class GraspController:
         self._log(f"[CONTINUOUS_ROTATION] phase={phase}")
 
     def _update_blind_sphere_geometry(self, now: float) -> bool:
+        estimate_fingers = (
+            (1, 2, 3, 4)
+            if self.continuous_rotation_phase == "blind_pinky_regrasp"
+            else tuple(self.use_fingers)
+        )
         missing = []
         if self.state != "GROPED_GRASP":
             missing.append(f"state={self.state} (expected GROPED_GRASP)")
-        if len(self.use_fingers) < 3:
-            missing.append(f"active_fingers={len(self.use_fingers)}/3")
+        if len(estimate_fingers) < 3:
+            missing.append(f"estimate_fingers={len(estimate_fingers)}/3")
         if missing:
             self._log_blind_sphere_status(
                 now,
@@ -500,7 +524,7 @@ class GraspController:
         contact_points = {}
         zero_contact_fingers = []
         geometry_failed_fingers = []
-        for finger in self.use_fingers:
+        for finger in estimate_fingers:
             sample = self.tactile_contacts[finger - 1]
             if abs(sample[0]) <= 1e-6 and abs(sample[1]) <= 1e-6:
                 zero_contact_fingers.append(finger)
@@ -589,22 +613,25 @@ class GraspController:
                 f"{self.cfg.blind_sphere_fit_max_error_m * 1000.0:.2f}mm",
             )
         self.blind_sphere_center = center
+        self.blind_sphere_center_world = self.rotation_hand_to_world @ center
         self.blind_sphere_effective_radius_m = float(
             self.cfg.blind_sphere_effective_radius_m
         )
         self.blind_sphere_fit_rms_error_m = fit_rms_error
         self.blind_sphere_estimate_valid = True
         center_mm = 1000.0 * center
+        center_world_mm = 1000.0 * self.blind_sphere_center_world
         self._log_blind_sphere_status(
             now,
             "ok",
             "OK: center_mm="
             f"[{center_mm[0]:.2f}, {center_mm[1]:.2f}, {center_mm[2]:.2f}], "
+            "world_mm="
+            f"[{center_world_mm[0]:.2f}, {center_world_mm[1]:.2f}, "
+            f"{center_world_mm[2]:.2f}], "
             f"rms={fit_rms_error * 1000.0:.2f}mm, "
             f"contacts={len(contact_points)}",
         )
-        # Sphere position is visualization/diagnostic only for now.  Do not
-        # trigger pose recovery or thumb-lift motions from its X coordinate.
         return True
 
     def _build_blind_release_pose(self, finger: int) -> np.ndarray:
@@ -692,15 +719,36 @@ class GraspController:
         self._set_continuous_rotation_phase("blind_index_ring_release", now)
 
     def _start_blind_thumb_release(self, now: float) -> None:
-        self.use_fingers = [2, 3, 4, 5]
+        lift = self.blind_thumb_lift_pending
+        self.use_fingers = [2, 5]
         self.policy = GraspPolicy(self.use_fingers, self.cfg)
-        self.active_finger_count = 4
+        self.active_finger_count = 2
         self._reset_regular_force_balance_state()
         target = RIGHT_HAND_BLIND_GRASP_INITIAL_POSE.copy()
         thumb = np.asarray(FINGER_JOINT_INDEX[1], dtype=int)
-        target[thumb] = self._blind_thumb_release_target()
+        target[thumb] = (
+            [
+                self.cfg.blind_thumb_lift_j1_target_rad,
+                self.cfg.blind_thumb_lift_j2_target_rad,
+                self.cfg.blind_thumb_lift_j3_target_rad,
+                self.cfg.blind_thumb_lift_j4_target_rad,
+            ]
+            if lift
+            else self._blind_thumb_release_target()
+        )
+        for finger in (3, 4):
+            indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
+            target[indices] = self.hand_q[indices]
+        if lift:
+            self.blind_thumb_lift_pending = False
+            self._log(
+                "[BLIND_SPHERE] using thumb lift release for low world Z"
+            )
         self.continuous_rotation_pose_target = target
-        self._set_continuous_rotation_phase("blind_thumb_down", now)
+        self._set_continuous_rotation_phase(
+            "blind_thumb_release" if lift else "blind_thumb_down",
+            now,
+        )
 
     def _start_blind_pinky_release(self, now: float) -> None:
         self.use_fingers = [1, 2, 3, 4]
@@ -850,34 +898,7 @@ class GraspController:
             return
         if self.continuous_rotation_phase == "blind_thumb_down":
             if elapsed >= float(self.cfg.continuous_rotation_release_sec):
-                if self.blind_thumb_lift_pending:
-                    self.use_fingers = [2, 5]
-                    self.policy = GraspPolicy(self.use_fingers, self.cfg)
-                    self.active_finger_count = 2
-                    self._reset_regular_force_balance_state()
-                    target = RIGHT_HAND_BLIND_GRASP_INITIAL_POSE.copy()
-                    thumb = np.asarray(FINGER_JOINT_INDEX[1], dtype=int)
-                    target[thumb] = [
-                        self.cfg.blind_thumb_lift_j1_target_rad,
-                        self.cfg.blind_thumb_lift_j2_target_rad,
-                        self.cfg.blind_thumb_lift_j3_target_rad,
-                        self.cfg.blind_thumb_lift_j4_target_rad,
-                    ]
-                    self.blind_thumb_lift_pending = False
-                    self._log(
-                        "[BLIND_SPHERE] X below threshold; "
-                        "using thumb lift release once"
-                    )
-                    for finger in (3, 4):
-                        indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
-                        target[indices] = self.hand_q[indices]
-                    self.continuous_rotation_pose_target = target
-                    self._set_continuous_rotation_phase(
-                        "blind_thumb_release",
-                        now,
-                    )
-                else:
-                    self._start_blind_regrasp(2, now)
+                self._start_blind_regrasp(2, now)
             return
         if self.continuous_rotation_phase == "blind_thumb_release":
             if elapsed >= float(self.cfg.continuous_rotation_release_sec):
@@ -923,9 +944,10 @@ class GraspController:
             self.blind_direction_change_pending = False
             self.blind_rotation_direction = 1
             self.blind_sphere_estimate_valid = False
+            self.blind_sphere_center_world[:] = 0.0
             self.blind_thumb_lift_pending = False
             self.blind_thumb_area_lift_pending = False
-            self.blind_sphere_below_x_count = 0
+            self.ui_sphere_center_world = None
             self.apply_grasp_type(5, now, internal=True)
             self.continuous_rotation_active = True
             self._set_continuous_rotation_phase("blind_grasp_settle", now)

@@ -32,6 +32,7 @@ function topicsForHand(side: HandSide) {
     relativeTranslation: `${prefix}/relative_translation_cmd`,
     tactile: `/dg5f_s_${side}/tactile_contacts`,
     tactileContactPoints: `${prefix}/tactile_contact_points`,
+    sphereCenterWorld: `${prefix}/ui_sphere_center_world`,
   };
 }
 
@@ -59,6 +60,7 @@ interface Publishers {
   relativeRotationDegrees: CommandTopic | null;
   continuousRotation: CommandTopic | null;
   blindDirectionToggle: CommandTopic | null;
+  sphereCenterWorld: CommandTopic | null;
   relativeTranslation: RelativeTranslationTopic | null;
 }
 
@@ -71,6 +73,7 @@ const EMPTY_PUBLISHERS: Publishers = {
   relativeRotationDegrees: null,
   continuousRotation: null,
   blindDirectionToggle: null,
+  sphereCenterWorld: null,
   relativeTranslation: null,
 };
 
@@ -190,6 +193,7 @@ export function useRosBridge(url: string, handSide: HandSide) {
       relativeRotationDegrees: commandTopic(topics.relativeRotationDegrees, "std_msgs/msg/Float64"),
       continuousRotation: commandTopic(topics.continuousRotation, "std_msgs/msg/Bool"),
       blindDirectionToggle: commandTopic(topics.blindDirectionToggle, "std_msgs/msg/Int32"),
+      sphereCenterWorld: commandTopic(topics.sphereCenterWorld, "std_msgs/msg/Float64MultiArray"),
       relativeTranslation: new Topic<Vector3StampedMessage>({
         ros,
         name: topics.relativeTranslation,
@@ -346,6 +350,13 @@ export function useRosBridge(url: string, handSide: HandSide) {
     [publish],
   );
   const toggleBlindDirection = useCallback(() => publish(publishers.current.blindDirectionToggle, { data: 1 }), [publish]);
+  const setSphereCenterWorld = useCallback(
+    (center: Point3) => publish(publishers.current.sphereCenterWorld, {
+      layout: { dim: [], data_offset: 0 },
+      data: [center.x, center.y, center.z],
+    }),
+    [publish],
+  );
   const setRelativeTranslationWorld = useCallback((deltaMeters: Point3): boolean => {
     const ros = activeRos.current;
     const topic = publishers.current.relativeTranslation;
@@ -387,6 +398,7 @@ export function useRosBridge(url: string, handSide: HandSide) {
     setRelativeRotationDegrees,
     setContinuousRotation,
     toggleBlindDirection,
+    setSphereCenterWorld,
     setRelativeTranslationWorld,
   };
 }

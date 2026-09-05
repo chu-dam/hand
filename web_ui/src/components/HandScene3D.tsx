@@ -15,6 +15,7 @@ import {
   type TactileSample,
   TACTILE_Y_ORIGIN_OFFSET_M,
 } from "../ros/types";
+import { IDENTITY_ROTATION_MATRIX, rotateVectorToWorld } from "../ros/frames";
 
 const EXPECTED_JOINTS = new Set(
   Array.from({ length: 5 }, (_, fingerIndex) =>
@@ -26,6 +27,11 @@ const EXPECTED_JOINTS = new Set(
 
 const FINGER_COLORS = [0xc84b42, 0x0b8f8f, 0x5965bd, 0xd3920b, 0x7d54a5];
 const FORCE_COLOR = 0x0b8f8f;
+const DEMO_ROTATION_MATRIX: RotationMatrix3 = [
+  0.4695, 0, -0.8829,
+  0, 1, 0,
+  0.8829, 0, 0.4695,
+];
 const MODEL_PACKAGE = "dg5f_s_description";
 const MODEL_ROOT = "robot/dg5f_s_description";
 
@@ -44,6 +50,9 @@ interface HandScene3DProps {
   tactileContactPoints: Point3[];
   handToWorldRotation: RotationMatrix3;
   orientationFromTopic: boolean;
+  rotationControlsEnabled: boolean;
+  onRotationMatrix: (value: number[]) => boolean;
+  onSphereCenterWorld: (center: Point3) => boolean;
 }
 
 interface DebugOverlay {
@@ -381,7 +390,10 @@ function updateDebugOverlay(
   }
 
   const sphereCenter = fitFixedRadiusCenter(
-    overlay.fingertips.filter((marker) => marker.visible).map((marker) => marker.position),
+    overlay.fingertips
+      .filter((marker, index) => marker.visible
+        && !(debug?.controller_phase === "blind_pinky_regrasp" && index === 4))
+      .map((marker) => marker.position),
     0.0375,
     overlay.estimatedSphere.visible
       ? overlay.estimatedSphere.position
@@ -426,6 +438,9 @@ export function HandScene3D({
   tactileSamples,
   handToWorldRotation,
   orientationFromTopic,
+  rotationControlsEnabled,
+  onRotationMatrix,
+  onSphereCenterWorld,
 }: HandScene3DProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const robotRef = useRef<URDFRobot | null>(null);
@@ -497,9 +512,19 @@ export function HandScene3D({
       robotRef.current,
       handFrameRef.current,
     );
-    setContactSphereCenter(center ? { x: center.x, y: center.y, z: center.z } : null);
+    const worldCenter = center
+      ? rotateVectorToWorld(center, handToWorldRotation)
+      : null;
+    setContactSphereCenter(worldCenter);
+    if (
+      worldCenter
+      && debug?.controller_state === "GROPED_GRASP"
+      && debug.grasp_type >= 3
+    ) {
+      onSphereCenterWorld(worldCenter);
+    }
     renderRef.current();
-  }, [debug, tactileSamples, forceScale, handToWorldRotation]);
+  }, [debug, tactileSamples, forceScale, handToWorldRotation, onSphereCenterWorld]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -833,9 +858,26 @@ export function HandScene3D({
       <div className="scene-wrap hand-scene-wrap">
         <div ref={mountRef} className="hand-canvas-mount" />
 
+        <div className="scene-orientation-controls">
+          <button
+            type="button"
+            disabled={!rotationControlsEnabled}
+            onClick={() => onRotationMatrix([...DEMO_ROTATION_MATRIX])}
+          >
+            DEMO
+          </button>
+          <button
+            type="button"
+            disabled={!rotationControlsEnabled}
+            onClick={() => onRotationMatrix([...IDENTITY_ROTATION_MATRIX])}
+          >
+            RESET
+          </button>
+        </div>
+
         {blindSphereMode && (
           <div className={`sphere-position-overlay ${sphereCenter ? "live" : "waiting"}`}>
-            <span>SPHERE · WRIST (link_base)</span>
+            <span>SPHERE · WORLD</span>
             <div><b>X</b><strong>{sphereCenter ? millimeters(sphereCenter.x) : "—"}</strong></div>
             <div><b>Y</b><strong>{sphereCenter ? millimeters(sphereCenter.y) : "—"}</strong></div>
             <div><b>Z</b><strong>{sphereCenter ? millimeters(sphereCenter.z) : "—"}</strong></div>
