@@ -93,11 +93,11 @@ RIGHT_HAND_BLIND_GRASP_INITIAL_POSE = np.array([
 ], dtype=np.float64)
 
 RIGHT_HAND_BLIND_GRASP_REVERSE_ROTATION_POSE = np.array([
-     0.1696, -1.6570, -0.2011, 1.3533,  # thumb
-    -0.8377580409572782, 0.7569, 0.6754, 1.0774,  # index (J1 clamped to -48 deg)
-    -0.4679,  0.3540,  0.6517, 1.0371,  # middle
-    -0.0960,  0.2946,  0.6718, 0.9289,  # ring
-     0.6058,  1.0894,  1.0210, 0.3850,  # pinky
+     0.3356, -1.3985, 0.0213, 0.9715,  # thumb
+    -0.7020,  0.8018, 0.6620, 0.5658,  # index
+    -0.3138,  0.5109, 0.5861, 0.5121,  # middle
+     0.0243,  0.5845, 0.3807, 0.7870,  # ring
+     0.8022,  1.2627, 0.7718, 0.5074,  # pinky
 ], dtype=np.float64)
 
 RIGHT_HAND_CONTINUOUS_ROTATION_POSE = np.array([

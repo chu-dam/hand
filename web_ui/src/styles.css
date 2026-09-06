@@ -882,52 +882,6 @@ input[type="range"] { accent-color: var(--teal); }
   overflow: visible;
 }
 
-.tip-distance-panel {
-  overflow: hidden;
-}
-
-.tip-distance-chart {
-  display: block;
-  width: 100%;
-  height: auto;
-  padding: 0 12px 10px;
-}
-
-.tip-distance-line {
-  fill: none;
-  stroke: var(--teal);
-  stroke-width: 2;
-  vector-effect: non-scaling-stroke;
-}
-
-.tip-distance-point {
-  fill: var(--teal);
-  stroke: #fff;
-  stroke-width: 1.5;
-  vector-effect: non-scaling-stroke;
-}
-
-.tip-distance-value {
-  fill: var(--ink);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 8px;
-  font-weight: 750;
-}
-
-.tip-area-reference {
-  stroke: var(--red);
-  stroke-dasharray: 7 5;
-  stroke-width: 1.5;
-  vector-effect: non-scaling-stroke;
-}
-
-.tip-area-reference-label {
-  fill: var(--red);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 8px;
-  font-weight: 850;
-}
-
 .force-chart-plot {
   fill: #fbfcfc;
   stroke: #dfe6e9;

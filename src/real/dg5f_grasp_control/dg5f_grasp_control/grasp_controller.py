@@ -318,7 +318,6 @@ class GraspController:
         self.blind_sphere_last_log_at = -float("inf")
         self.blind_sphere_last_log_key = None
         self.blind_thumb_lift_pending = False
-        self.blind_thumb_area_lift_pending = False
         self.ui_sphere_center_world = None
         self.tactile_contacts = np.zeros((5, 5), dtype=np.float64)
         self.tactile_sample_queues = [
@@ -473,11 +472,6 @@ class GraspController:
             self.blind_direction_change_pending = (
                 not self.blind_direction_change_pending
             )
-
-    def set_blind_tip_triangle_area(self, area_m2: float) -> None:
-        self.blind_thumb_area_lift_pending = (
-            float(area_m2) < float(self.cfg.blind_thumb_area_threshold_m2)
-        )
 
     def set_ui_sphere_center_world(self, center) -> None:
         center = np.asarray(center, dtype=np.float64)
@@ -660,20 +654,21 @@ class GraspController:
         return target
 
     def _blind_release_target(self, finger: int) -> np.ndarray:
-        target = self.blind_release_pose_targets[finger].copy()
-        if self.blind_rotation_direction < 0 and finger in (2, 3, 4):
-            indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
-            target[0] = RIGHT_HAND_BLIND_GRASP_INITIAL_POSE[indices[0]]
-            if finger == 2:
-                target[1:3] -= np.deg2rad(
-                    float(self.cfg.blind_finger_release_deg)
-                )
-        elif self.blind_rotation_direction < 0 and finger == 5:
-            target[0] = RIGHT_HAND_BLIND_GRASP_INITIAL_POSE[
-                FINGER_JOINT_INDEX[5][0]
-            ] - np.deg2rad(
-                float(self.cfg.blind_reverse_pinky_release_deg)
+        indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
+        target = self.hand_q[indices].copy()
+        target[0] += np.deg2rad(
+            float(self.cfg.blind_finger_j1_release_deg)
+            * (-1.0 if self.blind_rotation_direction >= 0 else 1.0)
+        )
+        if finger in (3, 4) or (
+            finger == 2 and self.blind_rotation_direction < 0
+        ):
+            release_deg = (
+                self.cfg.blind_middle_release_deg
+                if finger == 3
+                else self.cfg.blind_finger_release_deg
             )
+            target[1:3] -= np.deg2rad(float(release_deg))
         return target
 
     def _blind_thumb_release_target(self) -> np.ndarray:
@@ -686,13 +681,6 @@ class GraspController:
                 self.cfg.blind_reverse_thumb_j3_target_rad,
                 self.cfg.blind_reverse_thumb_j4_target_rad,
             ], dtype=np.float64)
-        if self.blind_thumb_area_lift_pending:
-            target[3] = self.cfg.blind_thumb_low_area_j4_target_rad
-            self.blind_thumb_area_lift_pending = False
-            self._log(
-                "[BLIND_ROTATION] low tip area; thumb release J4="
-                f"{np.rad2deg(target[3]):.1f}deg"
-            )
         return target
 
     def _start_blind_middle_release(self, now: float) -> None:
@@ -727,12 +715,21 @@ class GraspController:
         target = RIGHT_HAND_BLIND_GRASP_INITIAL_POSE.copy()
         thumb = np.asarray(FINGER_JOINT_INDEX[1], dtype=int)
         target[thumb] = (
-            [
-                self.cfg.blind_thumb_lift_j1_target_rad,
-                self.cfg.blind_thumb_lift_j2_target_rad,
-                self.cfg.blind_thumb_lift_j3_target_rad,
-                self.cfg.blind_thumb_lift_j4_target_rad,
-            ]
+            (
+                [
+                    self.cfg.blind_thumb_lift_j1_target_rad,
+                    self.cfg.blind_thumb_lift_j2_target_rad,
+                    self.cfg.blind_thumb_lift_j3_target_rad,
+                    self.cfg.blind_thumb_lift_j4_target_rad,
+                ]
+                if self.blind_rotation_direction >= 0
+                else [
+                    self.cfg.blind_reverse_thumb_lift_j1_target_rad,
+                    self.cfg.blind_reverse_thumb_lift_j2_target_rad,
+                    self.cfg.blind_reverse_thumb_lift_j3_target_rad,
+                    self.cfg.blind_reverse_thumb_lift_j4_target_rad,
+                ]
+            )
             if lift
             else self._blind_thumb_release_target()
         )
@@ -869,8 +866,19 @@ class GraspController:
             self.continuous_rotation_phase
         )
         if self.blind_direction_change_pending and interrupted_group is not None:
+            interrupted_phase = self.continuous_rotation_phase
             self._apply_blind_direction_change()
-            self._start_blind_regrasp(interrupted_group, now)
+            if interrupted_phase == "blind_middle_release":
+                self._start_blind_middle_release(now)
+            elif interrupted_phase == "blind_index_ring_release":
+                self._start_blind_index_ring_release(now)
+            elif interrupted_phase in ("blind_thumb_down", "blind_thumb_release"):
+                self.blind_thumb_lift_pending = (
+                    interrupted_phase == "blind_thumb_release"
+                )
+                self._start_blind_thumb_release(now)
+            else:
+                self._start_blind_regrasp(interrupted_group, now)
             return
         if self.continuous_rotation_phase == "blind_grasp_settle":
             if elapsed >= float(self.cfg.blind_rotation_grasp_settle_sec):
@@ -946,7 +954,6 @@ class GraspController:
             self.blind_sphere_estimate_valid = False
             self.blind_sphere_center_world[:] = 0.0
             self.blind_thumb_lift_pending = False
-            self.blind_thumb_area_lift_pending = False
             self.ui_sphere_center_world = None
             self.apply_grasp_type(5, now, internal=True)
             self.continuous_rotation_active = True

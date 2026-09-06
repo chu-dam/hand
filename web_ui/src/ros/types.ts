@@ -40,11 +40,6 @@ export interface TactileSample {
   fz: number;
 }
 
-export interface TipAreaSample {
-  stampSec: number;
-  areaM2: number;
-}
-
 export interface Vector3StampedMessage {
   header: RosHeader;
   vector: Point3;

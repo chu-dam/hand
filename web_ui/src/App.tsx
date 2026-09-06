@@ -9,7 +9,6 @@ import { HandScene3D } from "./components/HandScene3D";
 import { JointTable } from "./components/JointTable";
 import { StatusPill } from "./components/StatusPill";
 import { TactileSensorPanel } from "./components/TactileSensorPanel";
-import { TipAreaHistoryPanel } from "./components/TipDistanceHistoryPanel";
 import { defaultRosbridgeUrl, useRosBridge } from "./ros/useRosBridge";
 import type { HandSide } from "./ros/types";
 
@@ -200,10 +199,6 @@ export function App() {
             live={debugLive}
             handToWorldRotation={ros.handToWorldRotation}
             orientationFromTopic={ros.lastRotationAt !== null}
-          />
-          <TipAreaHistoryPanel
-            key={selectedHand}
-            sample={ros.thumbIndexRingArea}
           />
           <TactileSensorPanel
             samples={ros.tactileSamples}
