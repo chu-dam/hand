@@ -20,6 +20,7 @@ EOF
 fi
 
 BRIDGE_PID=""
+BRIDGE_REUSED=false
 API_PID=""
 WEB_PID=""
 CLEANUP_STARTED=false
@@ -159,7 +160,8 @@ ros2 pkg prefix rosbridge_server >/dev/null 2>&1 \
   || die "rosbridge_server를 찾을 수 없습니다. ros-humble-rosbridge-suite를 설치하세요."
 
 if port_listening 9090; then
-  die "9090 포트가 이미 사용 중입니다. 기존 rosbridge를 먼저 종료하세요."
+  BRIDGE_REUSED=true
+  log "기존 rosbridge 재사용 · 127.0.0.1:9090"
 fi
 if port_listening 8080; then
   die "8080 포트가 이미 사용 중입니다. 기존 웹 UI를 먼저 종료하세요."
@@ -192,11 +194,13 @@ wait_for_port() {
   die "${label}가 ${timeout_seconds}초 안에 ${port} 포트를 열지 못했습니다."
 }
 
-log "rosbridge 시작"
-setsid ros2 launch rosbridge_server rosbridge_websocket_launch.xml \
-  address:=127.0.0.1 port:=9090 &
-BRIDGE_PID=$!
-wait_for_port "rosbridge" 9090 "${BRIDGE_PID}" 30
+if [[ "${BRIDGE_REUSED}" == false ]]; then
+  log "rosbridge 시작"
+  setsid ros2 launch rosbridge_server rosbridge_websocket_launch.xml \
+    address:=127.0.0.1 port:=9090 &
+  BRIDGE_PID=$!
+  wait_for_port "rosbridge" 9090 "${BRIDGE_PID}" 30
+fi
 
 log "컨트롤러 API 시작"
 setsid python3 "${ROOT_DIR}/scripts/controller_api.py" &
@@ -221,6 +225,10 @@ printf '\n'
 while true; do
   process_alive "${WEB_PID}" || die "웹 UI가 예기치 않게 종료되었습니다."
   process_alive "${API_PID}" || die "컨트롤러 API가 예기치 않게 종료되었습니다."
-  process_alive "${BRIDGE_PID}" || die "rosbridge가 예기치 않게 종료되었습니다."
+  if [[ "${BRIDGE_REUSED}" == true ]]; then
+    port_listening 9090 || die "재사용 중인 rosbridge 연결이 종료되었습니다."
+  else
+    process_alive "${BRIDGE_PID}" || die "rosbridge가 예기치 않게 종료되었습니다."
+  fi
   sleep 1
 done

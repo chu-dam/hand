@@ -16,6 +16,7 @@ import {
   TACTILE_Y_ORIGIN_OFFSET_M,
 } from "../ros/types";
 import { IDENTITY_ROTATION_MATRIX, rotateVectorToWorld } from "../ros/frames";
+import { fitSphereCenterFromContactTriangle } from "../ros/sphereGeometry";
 
 const EXPECTED_JOINTS = new Set(
   Array.from({ length: 5 }, (_, fingerIndex) =>
@@ -61,6 +62,7 @@ interface DebugOverlay {
   geometricCentroid: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
   virtualCentroid: THREE.Mesh<THREE.OctahedronGeometry, THREE.MeshBasicMaterial>;
   estimatedSphere: THREE.Mesh<THREE.SphereGeometry, THREE.MeshPhongMaterial>;
+  contactTriangleSphere: THREE.Mesh<THREE.SphereGeometry, THREE.MeshPhongMaterial>;
 }
 
 function assetUrl(path: string): string {
@@ -208,12 +210,28 @@ function createDebugOverlay(): DebugOverlay {
   estimatedSphere.renderOrder = 3;
   group.add(estimatedSphere);
 
+  const contactTriangleSphere = new THREE.Mesh(
+    new THREE.SphereGeometry(0.0375, 40, 28),
+    new THREE.MeshPhongMaterial({
+      color: 0xef4444,
+      transparent: true,
+      opacity: 0.24,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  contactTriangleSphere.name = "debug-three-contact-75mm-sphere";
+  contactTriangleSphere.visible = false;
+  contactTriangleSphere.renderOrder = 4;
+  group.add(contactTriangleSphere);
+
   return {
     fingertips,
     forces,
     geometricCentroid,
     virtualCentroid,
     estimatedSphere,
+    contactTriangleSphere,
   };
 }
 
@@ -293,6 +311,7 @@ function addOverlayToFrame(frame: THREE.Group, overlay: DebugOverlay) {
     overlay.geometricCentroid,
     overlay.virtualCentroid,
     overlay.estimatedSphere,
+    overlay.contactTriangleSphere,
   );
 }
 
@@ -309,6 +328,12 @@ function updateDebugOverlay(
   const showWorldOverlay = frameMatches && worldOrientationAvailable;
   const blindSphereMode = debug?.controller_state === "GROPED_GRASP"
     && debug.grasp_type >= 3;
+  const updateBlindSphere = blindSphereMode
+    && (
+      !debug.controller_phase.startsWith("blind_")
+      || debug.controller_phase === "blind_pinky_regrasp"
+      || debug.controller_phase === "blind_reverse_sphere_estimate"
+    );
 
   overlay.fingertips.forEach((marker, index) => {
     const point = debug?.fingertip_positions[index];
@@ -389,24 +414,45 @@ function updateDebugOverlay(
     overlay.virtualCentroid.position.set(virtualPoint.x, virtualPoint.y, virtualPoint.z);
   }
 
-  const sphereCenter = fitFixedRadiusCenter(
-    overlay.fingertips
-      .filter((marker, index) => marker.visible
-        && !(debug?.controller_phase === "blind_pinky_regrasp" && index === 4))
-      .map((marker) => marker.position),
-    0.0375,
-    overlay.estimatedSphere.visible
-      ? overlay.estimatedSphere.position
-      : isFinitePoint(debug?.geometric_centroid)
-        ? new THREE.Vector3(
-          debug.geometric_centroid.x,
-          debug.geometric_centroid.y,
-          debug.geometric_centroid.z,
-        )
-        : undefined,
-  );
-  overlay.estimatedSphere.visible = Boolean(showWorldOverlay && blindSphereMode && sphereCenter);
-  if (sphereCenter) overlay.estimatedSphere.position.copy(sphereCenter);
+  const sphereCenter = updateBlindSphere && overlay.fingertips[0].visible
+    ? fitFixedRadiusCenter(
+      overlay.fingertips
+        .filter((marker, index) => marker.visible && index !== 4)
+        .map((marker) => marker.position),
+      0.0375,
+      overlay.estimatedSphere.visible
+        ? overlay.estimatedSphere.position
+        : isFinitePoint(debug?.geometric_centroid)
+          ? new THREE.Vector3(
+            debug.geometric_centroid.x,
+            debug.geometric_centroid.y,
+            debug.geometric_centroid.z,
+          )
+          : undefined,
+    )
+    : null;
+  overlay.estimatedSphere.visible = Boolean(showWorldOverlay && sphereCenter);
+  if (sphereCenter) {
+    overlay.estimatedSphere.position.copy(sphereCenter);
+  }
+  const contactTriangleCenter = blindSphereMode
+    && debug.controller_phase === "idle"
+    && overlay.fingertips[0].visible
+    ? fitSphereCenterFromContactTriangle(
+      overlay.fingertips
+        .slice(0, 4)
+        .filter((marker) => marker.visible)
+        .map((marker) => marker.position),
+      0.0375,
+      sphereCenter ?? (overlay.contactTriangleSphere.visible
+        ? overlay.contactTriangleSphere.position
+        : undefined),
+    )
+    : null;
+  overlay.contactTriangleSphere.visible = Boolean(showWorldOverlay && contactTriangleCenter);
+  if (contactTriangleCenter) {
+    overlay.contactTriangleSphere.position.copy(contactTriangleCenter);
+  }
   return sphereCenter;
 }
 
@@ -515,12 +561,8 @@ export function HandScene3D({
     const worldCenter = center
       ? rotateVectorToWorld(center, handToWorldRotation)
       : null;
-    setContactSphereCenter(worldCenter);
-    if (
-      worldCenter
-      && debug?.controller_state === "GROPED_GRASP"
-      && debug.grasp_type >= 3
-    ) {
+    if (worldCenter) {
+      setContactSphereCenter(worldCenter);
       onSphereCenterWorld(worldCenter);
     }
     renderRef.current();
@@ -814,9 +856,7 @@ export function HandScene3D({
 
   const frameMatches = !debug || debug.header.frame_id === "link_base";
   const live = viewer.status === "ready" && mappedJointCount === EXPECTED_JOINTS.size;
-  const blindSphereMode = debug?.controller_state === "GROPED_GRASP"
-    && debug.grasp_type >= 3;
-  const sphereCenter = blindSphereMode ? contactSphereCenter : null;
+  const sphereCenter = contactSphereCenter;
 
   return (
     <section className="panel scene-panel">
@@ -875,14 +915,12 @@ export function HandScene3D({
           </button>
         </div>
 
-        {blindSphereMode && (
-          <div className={`sphere-position-overlay ${sphereCenter ? "live" : "waiting"}`}>
-            <span>SPHERE · WORLD</span>
-            <div><b>X</b><strong>{sphereCenter ? millimeters(sphereCenter.x) : "—"}</strong></div>
-            <div><b>Y</b><strong>{sphereCenter ? millimeters(sphereCenter.y) : "—"}</strong></div>
-            <div><b>Z</b><strong>{sphereCenter ? millimeters(sphereCenter.z) : "—"}</strong></div>
-          </div>
-        )}
+        <div className={`sphere-position-overlay ${sphereCenter ? "live" : "waiting"}`}>
+          <span>SPHERE · WORLD</span>
+          <div><b>X</b><strong>{sphereCenter ? millimeters(sphereCenter.x) : "—"}</strong></div>
+          <div><b>Y</b><strong>{sphereCenter ? millimeters(sphereCenter.y) : "—"}</strong></div>
+          <div><b>Z</b><strong>{sphereCenter ? millimeters(sphereCenter.z) : "—"}</strong></div>
+        </div>
 
         {viewer.status !== "ready" && (
           <div className={`model-state-overlay ${viewer.status}`} role="status">
