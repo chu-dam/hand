@@ -41,13 +41,6 @@ class GraspPolicyResult:
     total_forces: Dict[int, np.ndarray]
 
 
-def _normalize(v, eps=1e-9):
-    n = np.linalg.norm(v)
-    if n < eps:
-        return np.zeros_like(v), 0.0
-    return v / n, n
-
-
 def polygon_centroid_3d(points):
     """Return the groped-shape centroid in 3-D.
 
@@ -471,13 +464,10 @@ class GraspPolicy:
             finger: np.zeros(3, dtype=np.float64) for finger in tip_pos
         }
 
-        tau = np.zeros(20, dtype=np.float64)
         grasp_forces = {}
         total_forces = {}
 
         for finger in self.use_fingers:
-            idxs = FINGER_JOINT_INDEX[finger]
-            J = tip_jacobian(q, finger, eps=self.cfg.jacobian_eps)
             grasp_force = alpha[finger] * fhat[finger]
             total_force = (
                 grasp_force
@@ -487,16 +477,9 @@ class GraspPolicy:
             )
             grasp_forces[finger] = grasp_force.copy()
             total_forces[finger] = total_force.copy()
-            tau_finger = J.T @ total_force
-            tau[idxs] = tau_finger * GRASP_TAU_SIGN[idxs]
-
-        tau = np.clip(tau, -self.cfg.groped_tau_limit, self.cfg.groped_tau_limit)
-
-        for joint_idx, limit in BASE_JOINT_TAU_LIMIT.items():
-            tau[joint_idx] = np.clip(tau[joint_idx], -limit, limit)
 
         return GraspPolicyResult(
-            tau=tau,
+            tau=self.calc_tau_from_total_forces(q, total_forces),
             alpha={int(finger): float(value) for finger, value in alpha.items()},
             cg=cg.copy(),
             cv=cv.copy(),

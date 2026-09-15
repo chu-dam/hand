@@ -5,7 +5,9 @@ from builtin_interfaces.msg import Time
 
 from dg5f_grasp_control.config import RuntimeConfig
 from dg5f_grasp_control.grasp_controller import GraspController
-from dg5f_grasp_control.grasp_policy import GraspPolicy
+from dg5f_grasp_control.grasp_policy import BASE_JOINT_TAU_LIMIT, GraspPolicy
+from dg5f_grasp_control.hand_model import FINGER_JOINT_INDEX, GRASP_TAU_SIGN
+from dg5f_grasp_control.kinematics import tip_jacobian
 from dg5f_grasp_control.ros_debug import build_grasp_debug_message
 
 
@@ -18,7 +20,13 @@ class GraspDebugTest(unittest.TestCase):
         policy = GraspPolicy([1, 2, 3, 4], RuntimeConfig())
 
         result = policy.calc_grasp_tau(q)
-        expected_tau = policy.calc_tau_from_total_forces(q, result.total_forces)
+        expected_tau = np.zeros(20)
+        for finger, force in result.total_forces.items():
+            indices = FINGER_JOINT_INDEX[finger]
+            expected_tau[indices] = tip_jacobian(q, finger).T @ force * GRASP_TAU_SIGN[indices]
+        expected_tau = np.clip(expected_tau, -policy.cfg.groped_tau_limit, policy.cfg.groped_tau_limit)
+        for index, limit in BASE_JOINT_TAU_LIMIT.items():
+            expected_tau[index] = np.clip(expected_tau[index], -limit, limit)
         np.testing.assert_allclose(
             result.tau,
             expected_tau,
@@ -58,6 +66,7 @@ class GraspDebugTest(unittest.TestCase):
         )
 
         self.assertEqual(list(message.finger_ids), FINGER_IDS)
+        self.assertEqual(list(message.active_finger_ids), [1, 2, 3, 4])
         self.assertEqual(message.header.frame_id, "link_base")
         self.assertEqual(message.header.stamp.sec, 12)
         self.assertEqual(len(message.fingertip_positions), 5)
@@ -65,22 +74,9 @@ class GraspDebugTest(unittest.TestCase):
         self.assertEqual(len(message.grasp_forces), 5)
         self.assertEqual(len(message.translation_forces), 5)
         self.assertEqual(len(message.rotation_forces), 5)
-        self.assertEqual(len(message.center_hold_forces), 5)
         self.assertEqual(len(message.collision_forces), 5)
         self.assertEqual(len(message.total_forces), 5)
         self.assertEqual(len(message.translation_torques), 20)
-        self.assertEqual(
-            len(message.relative_rotation_center_joint_error),
-            20,
-        )
-        self.assertEqual(
-            len(message.relative_rotation_center_position_torques),
-            20,
-        )
-        self.assertEqual(
-            len(message.relative_rotation_nullspace_torques),
-            20,
-        )
         self.assertEqual(len(message.inactive_collision_avoidance_offsets_rad), 5)
         self.assertEqual(len(message.inactive_collision_avoidance_active), 5)
         self.assertEqual(len(message.controller_torques), 20)
@@ -145,20 +141,6 @@ class GraspDebugTest(unittest.TestCase):
             output.fingertip_positions[1],
             rtol=0.0,
             atol=0.0,
-        )
-        self.assertEqual(message.relative_rotation_dls_sigma_min, 0.0)
-        self.assertEqual(message.relative_rotation_dls_condition, 0.0)
-        self.assertEqual(
-            len(message.relative_rotation_center_joint_error),
-            20,
-        )
-        self.assertEqual(
-            len(message.relative_rotation_center_position_torques),
-            20,
-        )
-        self.assertEqual(
-            len(message.relative_rotation_nullspace_torques),
-            20,
         )
         np.testing.assert_allclose(
             [
@@ -226,14 +208,7 @@ class GraspDebugTest(unittest.TestCase):
             message.relative_translation_control_mode,
             "cartesian_fingertip_jacobian_transpose",
         )
-        self.assertEqual(message.relative_translation_dls_sigma_min, 0.0)
-        self.assertEqual(message.relative_translation_dls_condition, 0.0)
-        self.assertEqual(len(message.relative_translation_joint_error), 20)
         self.assertEqual(len(message.relative_translation_position_torques), 20)
-        self.assertEqual(
-            len(message.relative_translation_nullspace_grasp_torques),
-            20,
-        )
         self.assertGreater(
             np.linalg.norm(message.relative_translation_position_torques),
             0.0,

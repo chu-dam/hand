@@ -23,14 +23,17 @@ function topicsForHand(side: HandSide) {
     pose: side === "right" ? `${prefix}/pose_type` : "/pose_type",
     alpha: `${prefix}/alpha1_cmd`,
     teaching: `${prefix}/teaching_mode`,
+    compensationMode: `${prefix}/compensation_mode`,
     rotation: `${prefix}/rotation_matrix_cmd`,
     relativeRotationDegrees: `${prefix}/relative_rotation_deg_cmd`,
     continuousRotation: `${prefix}/continuous_rotation_cmd`,
     blindDirectionToggle: `${prefix}/blind_direction_toggle`,
+    blindTactileMode: `${prefix}/blind_tactile_mode`,
     relativeTranslation: `${prefix}/relative_translation_cmd`,
     tactile: `/dg5f_s_${side}/tactile_contacts`,
     tactileContactPoints: `${prefix}/tactile_contact_points`,
     sphereCenterWorld: `${prefix}/ui_sphere_center_world`,
+    sphereEstimateStatus: `${prefix}/ui_sphere_estimate_status`,
   };
 }
 
@@ -54,11 +57,14 @@ interface Publishers {
   pose: CommandTopic | null;
   alpha: CommandTopic | null;
   teaching: CommandTopic | null;
+  compensationMode: CommandTopic | null;
   rotation: CommandTopic | null;
   relativeRotationDegrees: CommandTopic | null;
   continuousRotation: CommandTopic | null;
   blindDirectionToggle: CommandTopic | null;
+  blindTactileMode: CommandTopic | null;
   sphereCenterWorld: CommandTopic | null;
+  sphereEstimateStatus: CommandTopic | null;
   relativeTranslation: RelativeTranslationTopic | null;
 }
 
@@ -67,11 +73,14 @@ const EMPTY_PUBLISHERS: Publishers = {
   pose: null,
   alpha: null,
   teaching: null,
+  compensationMode: null,
   rotation: null,
   relativeRotationDegrees: null,
   continuousRotation: null,
   blindDirectionToggle: null,
+  blindTactileMode: null,
   sphereCenterWorld: null,
+  sphereEstimateStatus: null,
   relativeTranslation: null,
 };
 
@@ -185,11 +194,14 @@ export function useRosBridge(url: string, handSide: HandSide) {
       pose: commandTopic(topics.pose, "std_msgs/msg/Int32"),
       alpha: commandTopic(topics.alpha, "std_msgs/msg/Float64"),
       teaching: commandTopic(topics.teaching, "std_msgs/msg/Bool"),
+      compensationMode: commandTopic(topics.compensationMode, "std_msgs/msg/Int32"),
       rotation: commandTopic(topics.rotation, "std_msgs/msg/Float64MultiArray"),
       relativeRotationDegrees: commandTopic(topics.relativeRotationDegrees, "std_msgs/msg/Float64"),
       continuousRotation: commandTopic(topics.continuousRotation, "std_msgs/msg/Bool"),
       blindDirectionToggle: commandTopic(topics.blindDirectionToggle, "std_msgs/msg/Int32"),
+      blindTactileMode: commandTopic(topics.blindTactileMode, "std_msgs/msg/Bool"),
       sphereCenterWorld: commandTopic(topics.sphereCenterWorld, "std_msgs/msg/Float64MultiArray"),
+      sphereEstimateStatus: commandTopic(topics.sphereEstimateStatus, "std_msgs/msg/String"),
       relativeTranslation: new Topic<Vector3StampedMessage>({
         ros,
         name: topics.relativeTranslation,
@@ -317,6 +329,10 @@ export function useRosBridge(url: string, handSide: HandSide) {
     (value: boolean) => publish(publishers.current.teaching, { data: value }),
     [publish],
   );
+  const setCompensationMode = useCallback(
+    (value: number) => publish(publishers.current.compensationMode, { data: value }),
+    [publish],
+  );
   const setRotationMatrix = useCallback(
     (value: number[]) => publish(publishers.current.rotation, {
       layout: { dim: [], data_offset: 0 },
@@ -333,11 +349,19 @@ export function useRosBridge(url: string, handSide: HandSide) {
     [publish],
   );
   const toggleBlindDirection = useCallback(() => publish(publishers.current.blindDirectionToggle, { data: 1 }), [publish]);
+  const setBlindTactileMode = useCallback(
+    (value: boolean) => publish(publishers.current.blindTactileMode, { data: value }),
+    [publish],
+  );
   const setSphereCenterWorld = useCallback(
     (center: Point3) => publish(publishers.current.sphereCenterWorld, {
       layout: { dim: [], data_offset: 0 },
       data: [center.x, center.y, center.z],
     }),
+    [publish],
+  );
+  const reportSphereEstimateFailure = useCallback(
+    (reason: string) => publish(publishers.current.sphereEstimateStatus, { data: reason }),
     [publish],
   );
   const setRelativeTranslationWorld = useCallback((deltaMeters: Point3): boolean => {
@@ -376,11 +400,14 @@ export function useRosBridge(url: string, handSide: HandSide) {
     setPoseType,
     setAlpha1,
     setTeachingMode,
+    setCompensationMode,
     setRotationMatrix,
     setRelativeRotationDegrees,
     setContinuousRotation,
     toggleBlindDirection,
+    setBlindTactileMode,
     setSphereCenterWorld,
+    reportSphereEstimateFailure,
     setRelativeTranslationWorld,
   };
 }

@@ -191,8 +191,12 @@ export function App() {
             handToWorldRotation={ros.handToWorldRotation}
             orientationFromTopic={ros.lastRotationAt !== null}
             rotationControlsEnabled={connected && selectedHand === "right"}
+            compensationControlsEnabled={controlsReady}
             onRotationMatrix={ros.setRotationMatrix}
+            onCompensationMode={ros.setCompensationMode}
+            onBlindTactileMode={ros.setBlindTactileMode}
             onSphereCenterWorld={ros.setSphereCenterWorld}
+            onSphereEstimateFailure={ros.reportSphereEstimateFailure}
           />
           <ForceHistoryPanel
             debug={ros.debug}

@@ -62,6 +62,7 @@ def generate_launch_description():
                     "continuous_rotation_topic": "/dg5f_grasp_control/right/continuous_rotation_cmd",
                     "rotation_matrix_topic": "/dg5f_grasp_control/right/rotation_matrix_cmd",
                     "teaching_mode_topic": "/dg5f_grasp_control/right/teaching_mode",
+                    "compensation_mode_topic": "/dg5f_grasp_control/right/compensation_mode",
                     "debug_topic": "/dg5f_grasp_control/right/debug",
                     "fric_scale": ParameterValue(fric_scale, value_type=float),
                     "hand_limit": ParameterValue(hand_limit, value_type=float),

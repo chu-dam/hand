@@ -75,7 +75,6 @@ def build_grasp_debug_message(
         translation_forces = {}
         translation_torques = np.zeros(JOINT_COUNT, dtype=np.float64)
         rotation_forces = {}
-        center_hold_forces = {}
         collision_forces = {}
         total_forces = {}
     else:
@@ -87,7 +86,6 @@ def build_grasp_debug_message(
         translation_forces = output.translation_forces
         translation_torques = output.translation_torques
         rotation_forces = output.rotation_forces
-        center_hold_forces = output.center_hold_forces
         collision_forces = output.collision_forces
         total_forces = output.total_forces
 
@@ -180,11 +178,6 @@ def build_grasp_debug_message(
         if output is not None
         else controller.relative_translation_command_force
     )
-    relative_translation_torque_target = (
-        output.relative_translation_torque_target
-        if output is not None
-        else 0.0
-    )
     relative_translation_force_scale = (
         output.relative_translation_force_scale
         if output is not None
@@ -195,35 +188,10 @@ def build_grasp_debug_message(
         if output is not None
         else "idle"
     )
-    relative_translation_dls_sigma_min = (
-        output.relative_translation_dls_sigma_min
-        if output is not None
-        else 0.0
-    )
-    relative_translation_dls_condition = (
-        output.relative_translation_dls_condition
-        if output is not None
-        else 0.0
-    )
-    relative_translation_joint_error = (
-        output.relative_translation_joint_error
-        if output is not None
-        else np.zeros(JOINT_COUNT, dtype=np.float64)
-    )
     relative_translation_position_torques = (
         output.relative_translation_position_torques
         if output is not None
         else np.zeros(JOINT_COUNT, dtype=np.float64)
-    )
-    relative_translation_nullspace_grasp_torques = (
-        output.relative_translation_nullspace_grasp_torques
-        if output is not None
-        else np.zeros(JOINT_COUNT, dtype=np.float64)
-    )
-    inactive_collision_min_clearance_m = (
-        output.inactive_collision_min_clearance_m
-        if output is not None
-        else controller.inactive_collision_min_clearance_m
     )
     inactive_collision_avoidance_offsets_rad = (
         output.inactive_collision_avoidance_offsets_rad
@@ -259,6 +227,7 @@ def build_grasp_debug_message(
     message.header.stamp = stamp
     message.header.frame_id = str(frame_id)
     message.finger_ids = list(FINGER_IDS)
+    message.active_finger_ids = list(controller.use_fingers)
     message.fingertip_positions = [
         _point(
             fingertip_positions[finger]
@@ -279,9 +248,6 @@ def build_grasp_debug_message(
     message.blind_sphere_fit_rms_error_m = float(
         controller.blind_sphere_fit_rms_error_m
     )
-    message.blind_four_finger_polygon_area_m2 = float(
-        controller.blind_four_finger_polygon_area_m2
-    )
     message.relative_rotation_start_centroid = _point(
         relative_rotation_start_centroid
     )
@@ -300,23 +266,6 @@ def build_grasp_debug_message(
     message.relative_rotation_control_mode = str(
         relative_rotation_control_mode
     )
-    message.relative_rotation_center_error = _vector(
-        np.zeros(3, dtype=np.float64)
-    )
-    message.relative_rotation_dls_sigma_min = 0.0
-    message.relative_rotation_dls_condition = 0.0
-    message.relative_rotation_center_joint_error = np.zeros(
-        JOINT_COUNT,
-        dtype=np.float64,
-    ).tolist()
-    message.relative_rotation_center_position_torques = np.zeros(
-        JOINT_COUNT,
-        dtype=np.float64,
-    ).tolist()
-    message.relative_rotation_nullspace_torques = np.zeros(
-        JOINT_COUNT,
-        dtype=np.float64,
-    ).tolist()
     message.relative_translation_start_centroid = _point(
         relative_translation_start
     )
@@ -331,9 +280,6 @@ def build_grasp_debug_message(
     message.relative_translation_command_force = _vector(
         relative_translation_force
     )
-    message.relative_translation_torque_target = float(
-        relative_translation_torque_target
-    )
     message.relative_translation_force_scale = float(
         relative_translation_force_scale
     )
@@ -341,27 +287,10 @@ def build_grasp_debug_message(
     message.relative_translation_control_mode = str(
         relative_translation_control_mode
     )
-    message.relative_translation_dls_sigma_min = float(
-        relative_translation_dls_sigma_min
-    )
-    message.relative_translation_dls_condition = float(
-        relative_translation_dls_condition
-    )
-    message.relative_translation_joint_error = np.asarray(
-        relative_translation_joint_error,
-        dtype=np.float64,
-    ).tolist()
     message.relative_translation_position_torques = np.asarray(
         relative_translation_position_torques,
         dtype=np.float64,
     ).tolist()
-    message.relative_translation_nullspace_grasp_torques = np.asarray(
-        relative_translation_nullspace_grasp_torques,
-        dtype=np.float64,
-    ).tolist()
-    message.inactive_collision_min_clearance_m = float(
-        inactive_collision_min_clearance_m
-    )
     message.inactive_collision_avoidance_offsets_rad = np.asarray(
         inactive_collision_avoidance_offsets_rad,
         dtype=np.float64,
@@ -373,7 +302,6 @@ def build_grasp_debug_message(
     message.grasp_forces = _vectors_for_all_fingers(grasp_forces)
     message.translation_forces = _vectors_for_all_fingers(translation_forces)
     message.rotation_forces = _vectors_for_all_fingers(rotation_forces)
-    message.center_hold_forces = _vectors_for_all_fingers(center_hold_forces)
     message.collision_forces = _vectors_for_all_fingers(collision_forces)
     message.total_forces = _vectors_for_all_fingers(total_forces)
     message.translation_torques = np.asarray(

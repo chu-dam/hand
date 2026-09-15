@@ -13,6 +13,7 @@ grasp_real:
     continuous_rotation_topic: /dg5f_grasp_control/continuous_rotation_cmd
     rotation_matrix_topic: /dg5f_grasp_control/rotation_matrix_cmd
     teaching_mode_topic: /dg5f_grasp_control/teaching_mode
+    compensation_mode_topic: /dg5f_grasp_control/compensation_mode
     debug_topic: /dg5f_grasp_control/debug
     debug_frame_id: link_base
     debug_publish_hz: 20.0

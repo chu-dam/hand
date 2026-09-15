@@ -22,6 +22,11 @@ grasp_real:
     blind_rotation_grasp_settle_sec: 0.50
     blind_pinky_regrasp_sec: 0.50
     blind_reverse_sphere_estimate_sec: 0.50
+    blind_motion_min_sec: 0.08
+    blind_motion_stable_sec: 0.08
+    blind_joint_velocity_threshold_rad_s: 0.05
+    blind_sphere_stable_sample_count: 3
+    blind_sphere_stable_max_deviation_m: 0.002
     blind_pinky_regrasp_alpha1: 5.0
     blind_finger_release_deg: 8.0
     blind_middle_release_deg: 3.0
@@ -40,24 +45,24 @@ grasp_real:
     blind_thumb_missed_down_j2_target_rad: -1.6336
     blind_thumb_missed_down_j3_target_rad: 0.2443
     blind_thumb_missed_down_j4_target_rad: 0.2649
-    blind_reverse_thumb_missed_down_j1_target_rad: 0.3641
-    blind_reverse_thumb_missed_down_j2_target_rad: -1.3364
-    blind_reverse_thumb_missed_down_j3_target_rad: 0.2763
-    blind_reverse_thumb_missed_down_j4_target_rad: 0.2896
-    blind_reverse_thumb_j1_target_rad: 0.3848
-    blind_reverse_thumb_j2_target_rad: -1.3345
-    blind_reverse_thumb_j3_target_rad: -0.0300
-    blind_reverse_thumb_j4_target_rad: 0.7479
+    blind_reverse_thumb_missed_down_j1_target_rad: 0.3368
+    blind_reverse_thumb_missed_down_j2_target_rad: -1.3441
+    blind_reverse_thumb_missed_down_j3_target_rad: 0.2843
+    blind_reverse_thumb_missed_down_j4_target_rad: 0.2733
+    blind_reverse_thumb_j1_target_rad: 0.3238
+    blind_reverse_thumb_j2_target_rad: -1.3102
+    blind_reverse_thumb_j3_target_rad: -0.1991
+    blind_reverse_thumb_j4_target_rad: 0.8927
     blind_reverse_pinky_release_deg: 10.0
     blind_sphere_lift_world_z_threshold_m: 0.140
     blind_thumb_lift_j1_target_rad: 0.1136
     blind_thumb_lift_j2_target_rad: -1.6558
     blind_thumb_lift_j3_target_rad: -0.2618
-    blind_thumb_lift_j4_target_rad: 1.2217
-    blind_reverse_thumb_lift_j1_target_rad: 0.3756
-    blind_reverse_thumb_lift_j2_target_rad: -1.3345
-    blind_reverse_thumb_lift_j3_target_rad: -0.4346
-    blind_reverse_thumb_lift_j4_target_rad: 1.4331
+    blind_thumb_lift_j4_target_rad: 1.5010
+    blind_reverse_thumb_lift_j1_target_rad: 0.3506
+    blind_reverse_thumb_lift_j2_target_rad: -1.3271
+    blind_reverse_thumb_lift_j3_target_rad: -0.4472
+    blind_reverse_thumb_lift_j4_target_rad: 1.5382
     blind_sphere_effective_radius_m: 0.0375
     blind_sphere_fit_max_error_m: 0.008
 

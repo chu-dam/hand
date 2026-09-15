@@ -33,11 +33,12 @@ MAX_JVEL_DEG_S = 70.0
 
 # From rb5_hand.xml:
 # <body name="link_mount" pos="0 -0.0965 0" quat="0.5 0.5 0.5 -0.5">
-# This maps the hand root frame, link_mount, into the RB5 link6/TCP frame.
+# This maps the hand root frame, mounted 180 deg about its local Z axis,
+# into the RB5 link6/TCP frame.
 R_LINK_MOUNT_TO_LINK6 = np.array([
-    [0.0, 1.0, 0.0],
+    [0.0, -1.0, 0.0],
     [0.0, 0.0, -1.0],
-    [-1.0, 0.0, 0.0],
+    [1.0, 0.0, 0.0],
 ], dtype=np.float64)
 
 

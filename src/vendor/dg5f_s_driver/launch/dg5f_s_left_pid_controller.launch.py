@@ -44,7 +44,7 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             "delto_ip",
-            default_value="169.254.186.73",
+            default_value="169.254.186.77",
             description="IP address for gripper"
         )
     )

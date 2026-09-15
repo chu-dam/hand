@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <robot name="dg5f_s_15dof_left" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-    <xacro:arg name="delto_ip" default="169.254.186.73" />
+    <xacro:arg name="delto_ip" default="169.254.186.77" />
     <xacro:arg name="delto_port" default="502" />
     <xacro:arg name="delto_model" default="24372" />
     <xacro:arg name="fingertip_sensor" default="false" />

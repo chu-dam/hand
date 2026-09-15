@@ -5,7 +5,7 @@ import numpy as np
 
 from dg5f_grasp_control.config import RuntimeConfig
 from dg5f_grasp_control.grasp_controller import GraspController
-from dg5f_grasp_control.grasp_real_node import GraspRealRunner
+from dg5f_grasp_control.grasp_real_node import GraspRealRunner, compensation_effort
 from dg5f_grasp_control.hand_model import FINGER_JOINT_INDEX
 from dg5f_grasp_control.poses import (
     LEFT_POSE_TYPE_TARGETS,
@@ -19,6 +19,14 @@ from dg5f_grasp_control.poses import (
 
 
 class PoseSideTest(unittest.TestCase):
+    def test_compensation_effort_modes(self):
+        gravity = np.array([1.0, 2.0])
+        friction = np.array([0.1, -0.2])
+
+        np.testing.assert_allclose(compensation_effort(0, gravity, friction), friction)
+        np.testing.assert_allclose(compensation_effort(1, gravity, friction), gravity)
+        np.testing.assert_allclose(compensation_effort(2, gravity, friction), gravity + friction)
+
     def test_controller_selects_pose_table_for_hand_side(self):
         left = GraspController(RuntimeConfig(hand_side="left"), log=None)
         right = GraspController(RuntimeConfig(hand_side="right"), log=None)

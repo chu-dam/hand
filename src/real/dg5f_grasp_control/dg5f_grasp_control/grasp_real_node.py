@@ -9,7 +9,7 @@ from ament_index_python.packages import get_package_share_directory
 from dg5f_grasp_interfaces.msg import GraspDebug
 from geometry_msgs.msg import Vector3Stamped
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Bool, Float64, Float64MultiArray, Int32
+from std_msgs.msg import Bool, Float64, Float64MultiArray, Int32, String
 
 from dg5f_grasp_control.config import RuntimeConfig
 from dg5f_grasp_control.control_utils import pose_pd, publish_effort, zero_effort
@@ -31,6 +31,17 @@ from dg5f_grasp_control.ros_debug import build_grasp_debug_message
 
 
 FINGER_NAMES = ("thumb", "index", "middle", "ring", "pinky")
+COMPENSATION_MODE_NAMES = ("FRICTION_ONLY", "GRAVITY_ONLY", "GRAVITY_FRICTION")
+
+
+def compensation_effort(mode, gravity, friction):
+    if mode == 0:
+        return friction.copy()
+    if mode == 1:
+        return gravity.copy()
+    if mode == 2:
+        return gravity + friction
+    raise ValueError(f"invalid compensation mode: {mode}")
 
 
 def _default_model_path(hand_side):
@@ -73,6 +84,7 @@ class GraspRealRunner:
         self.pending_finger_count = None
         self.pending_pose_type = None
         self.pending_teaching_mode = None
+        self.pending_teaching_compensation_mode = None
         self.pending_relative_rotation_rad = None
         self.pending_relative_translation_hand = None
         self.pending_continuous_rotation = None
@@ -81,6 +93,7 @@ class GraspRealRunner:
         self.last_debug_publish_time = 0.0
 
         self.teaching_mode = cfg.start_teaching_mode
+        self.teaching_compensation_mode = 2
         self.teaching_hold_active = False
         self.teaching_hold_pose = np.zeros(JOINT_COUNT, dtype=np.float64)
 
@@ -130,6 +143,12 @@ class GraspRealRunner:
             10,
         )
         node.create_subscription(
+            Int32,
+            cfg.compensation_mode_topic,
+            self.compensation_mode_cb,
+            10,
+        )
+        node.create_subscription(
             Bool,
             cfg.continuous_rotation_topic,
             self.continuous_rotation_cb,
@@ -142,6 +161,12 @@ class GraspRealRunner:
             10,
         )
         node.create_subscription(
+            Bool,
+            f"/dg5f_grasp_control/{cfg.hand_side}/blind_tactile_mode",
+            self.blind_tactile_mode_cb,
+            10,
+        )
+        node.create_subscription(
             Float64MultiArray,
             cfg.rotation_matrix_topic,
             self.rotation_matrix_cb,
@@ -151,6 +176,12 @@ class GraspRealRunner:
             Float64MultiArray,
             f"/dg5f_grasp_control/{cfg.hand_side}/ui_sphere_center_world",
             self.ui_sphere_center_world_cb,
+            10,
+        )
+        node.create_subscription(
+            String,
+            f"/dg5f_grasp_control/{cfg.hand_side}/ui_sphere_estimate_status",
+            self.ui_sphere_estimate_status_cb,
             10,
         )
 
@@ -202,6 +233,9 @@ class GraspRealRunner:
             return
         self.controller.set_ui_sphere_center_world(data[:3])
 
+    def ui_sphere_estimate_status_cb(self, msg):
+        self.node.get_logger().warn(f"[FK_SPHERE] estimate failed: {msg.data}")
+
     def command_cb(self, msg):
         if self.teaching_mode or self.pending_teaching_mode is True:
             self.node.get_logger().warn(
@@ -238,7 +272,19 @@ class GraspRealRunner:
         enable = bool(msg.data)
         self.pending_teaching_mode = enable
         if enable:
+            self.pending_teaching_compensation_mode = 2
             self.pending_relative_rotation_rad = None
+
+    def compensation_mode_cb(self, msg):
+        mode = int(msg.data)
+        if mode not in range(len(COMPENSATION_MODE_NAMES)):
+            self.node.get_logger().warn(
+                f"Ignore invalid compensation mode: {mode}. Use 0, 1, or 2."
+            )
+            return
+        self.pending_teaching_compensation_mode = mode
+        self.pending_teaching_mode = True
+        self.pending_relative_rotation_rad = None
 
     def continuous_rotation_cb(self, msg):
         enable = bool(msg.data)
@@ -254,6 +300,9 @@ class GraspRealRunner:
     def blind_direction_toggle_cb(self, msg):
         if int(msg.data):
             self.controller.request_blind_direction_change()
+
+    def blind_tactile_mode_cb(self, msg):
+        self.controller.set_blind_use_tactile_estimation(bool(msg.data))
 
     def alpha1_cb(self, msg):
         if self.controller.continuous_rotation_active:
@@ -377,26 +426,33 @@ class GraspRealRunner:
         self.pending_teaching_mode = None
 
         if enable:
-            if self.teaching_mode:
+            mode = self.pending_teaching_compensation_mode
+            self.pending_teaching_compensation_mode = None
+            mode = 2 if mode is None else mode
+            if self.teaching_mode and self.teaching_compensation_mode == mode:
                 return
 
+            entering_teaching = not self.teaching_mode
             self.teaching_mode = True
+            self.teaching_compensation_mode = mode
             self.teaching_hold_active = False
-            self.pending_finger_count = None
-            self.pending_pose_type = None
-            self.pending_relative_rotation_rad = None
-            self.pending_relative_translation_hand = None
-            self.pending_continuous_rotation = None
-            self.controller.cancel_continuous_rotation()
-            self.controller.cancel_relative_rotation()
-            self.controller.cancel_relative_translation()
-            self.controller.cancel_card_grasp()
+            if entering_teaching:
+                self.pending_finger_count = None
+                self.pending_pose_type = None
+                self.pending_relative_rotation_rad = None
+                self.pending_relative_translation_hand = None
+                self.pending_continuous_rotation = None
+                self.controller.cancel_continuous_rotation()
+                self.controller.cancel_relative_rotation()
+                self.controller.cancel_relative_translation()
+                self.controller.cancel_card_grasp()
             print(
-                "[TEACHING_MODE] ON -> gravity + friction compensation only; "
+                f"[TEACHING_MODE] ON -> {COMPENSATION_MODE_NAMES[mode]}; "
                 "grasp/pose commands are ignored"
             )
             return
 
+        self.pending_teaching_compensation_mode = None
         if not self.teaching_mode:
             return
 
@@ -500,6 +556,7 @@ class GraspRealRunner:
         print(f"[RELATIVE_TRANSLATION_TOPIC] {self.cfg.relative_translation_topic}")
         print(f"[ROTATION_MATRIX_TOPIC] {self.cfg.rotation_matrix_topic}")
         print(f"[TEACHING_MODE_TOPIC] {self.cfg.teaching_mode_topic}")
+        print(f"[COMPENSATION_MODE_TOPIC] {self.cfg.compensation_mode_topic}")
         print(
             f"[DEBUG_TOPIC] {self.cfg.debug_topic} "
             f"({self.cfg.debug_publish_hz:.1f} Hz, frame={self.cfg.debug_frame_id})"
@@ -780,9 +837,11 @@ class GraspRealRunner:
                 hold_err = np.zeros(JOINT_COUNT, dtype=np.float64)
 
                 if self.teaching_mode:
-                    # Teaching Mode: remove all grasp/pose control and leave only
-                    # gravity and friction compensation for manual hand motion.
-                    effort = gravity + friction
+                    effort = compensation_effort(
+                        self.teaching_compensation_mode,
+                        gravity,
+                        friction,
+                    )
                     controller_torques = np.zeros(JOINT_COUNT, dtype=np.float64)
                 elif self.teaching_hold_active:
                     # After Teaching Mode is turned off, capture and hold the
@@ -810,7 +869,9 @@ class GraspRealRunner:
                 publish_effort(self.pub, effort)
 
                 if self.teaching_mode:
-                    debug_state = "TEACHING_MODE"
+                    debug_state = COMPENSATION_MODE_NAMES[
+                        self.teaching_compensation_mode
+                    ]
                     debug_phase = "active"
                 elif self.teaching_hold_active:
                     debug_state = "TEACHING_HOLD"

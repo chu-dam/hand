@@ -532,6 +532,44 @@ input[type="range"] { accent-color: var(--teal); }
   touch-action: none;
 }
 
+.sphere-estimation-controls {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.sphere-estimation-controls span {
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.06em;
+}
+
+.sphere-estimation-controls button {
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.sphere-estimation-controls button.active {
+  border-color: var(--teal);
+  background: var(--teal);
+  color: #fff;
+}
+
 .scene-orientation-controls {
   position: absolute;
   left: 12px;
@@ -554,6 +592,12 @@ input[type="range"] { accent-color: var(--teal); }
 .scene-orientation-controls button:hover:not(:disabled) {
   border-color: var(--teal);
   color: var(--teal-dark);
+}
+
+.scene-orientation-controls .compensation-button.active {
+  border-color: var(--teal);
+  background: var(--teal);
+  color: #fff;
 }
 
 .sphere-position-overlay {
@@ -1226,15 +1270,6 @@ input[type="range"] { accent-color: var(--teal); }
   white-space: nowrap;
 }
 
-.ui-only-badge {
-  padding: 4px 6px;
-  border-radius: 5px;
-  background: var(--amber-soft);
-  color: #8a6108;
-  font-size: 8px;
-  font-weight: 900;
-  letter-spacing: 0.07em;
-}
 
 .task-space-stage-note {
   color: var(--muted);
@@ -1380,8 +1415,6 @@ input[type="range"] { accent-color: var(--teal); }
 }
 
 .two-column { grid-template-columns: repeat(2, 1fr); }
-.three-column { grid-template-columns: repeat(3, 1fr); }
-.four-column { grid-template-columns: repeat(4, 1fr); }
 .pose-grid { grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); }
 .right-pose-grid { grid-template-columns: repeat(3, 1fr); }
 

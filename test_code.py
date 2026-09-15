@@ -30,7 +30,7 @@ import sys
 import time
 
 DEFAULT_IP = "169.254.186.72"   # 오른손
-LEFT_IP = "169.254.186.73"
+LEFT_IP = "169.254.186.77"
 PORT = 502
 
 REQUEST = bytes.fromhex("00040105")
