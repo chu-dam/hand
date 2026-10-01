@@ -22,23 +22,26 @@ export function averageCenters(centers: THREE.Vector3[]): THREE.Vector3 | null {
     .multiplyScalar(1 / centers.length);
 }
 
-export function sphereEstimationFingerIds(graspType: number, activeFingerIds: number[]): number[] {
-  return graspType === 3 ? activeFingerIds.slice(0, 3) : [];
-}
-
 export function sphereEstimationConfigurations(
   graspType: number,
   activeFingerIds: number[],
 ): { fingerIds: number[]; disambiguationFinger?: number }[] {
-  if (graspType >= 4) {
-    return [
-      { fingerIds: [1, 2, 3], disambiguationFinger: 4 },
-      { fingerIds: [1, 2, 4], disambiguationFinger: 3 },
-      { fingerIds: [1, 3, 4], disambiguationFinger: 2 },
-    ];
+  const active = [...new Set(activeFingerIds)]
+    .filter((finger) => finger >= 1 && finger <= 4);
+  if (graspType < 3 || !active.includes(1) || active.length < 3) return [];
+
+  const others = active.filter((finger) => finger !== 1);
+  const configurations: { fingerIds: number[]; disambiguationFinger?: number }[] = [];
+  for (let first = 0; first < others.length - 1; first += 1) {
+    for (let second = first + 1; second < others.length; second += 1) {
+      const pair = [others[first], others[second]];
+      configurations.push({
+        fingerIds: [1, ...pair],
+        disambiguationFinger: others.find((finger) => !pair.includes(finger)),
+      });
+    }
   }
-  const fingerIds = sphereEstimationFingerIds(graspType, activeFingerIds);
-  return fingerIds.length === 3 ? [{ fingerIds }] : [];
+  return configurations;
 }
 
 export function fitSphereCenterFromContactTriangle(

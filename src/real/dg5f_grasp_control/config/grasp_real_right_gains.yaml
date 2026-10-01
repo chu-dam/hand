@@ -10,7 +10,7 @@ grasp_real:
     pre_rotation_pinky_j1_kp: 1.00
     pre_rotation_pinky_j1_kd: 0.09
     pre_rotation_pinky_j1_tau_limit: 0.60
-    blind_grasp_pre_rotation_pose_kp: 1.1
+    blind_grasp_pre_rotation_pose_kp: 1.2
     blind_grasp_pre_rotation_pose_kd: 0.14
 
     continuous_rotation_release_deg: 15.0
@@ -25,17 +25,17 @@ grasp_real:
     blind_motion_min_sec: 0.08
     blind_motion_stable_sec: 0.08
     blind_joint_velocity_threshold_rad_s: 0.05
-    blind_sphere_stable_sample_count: 3
-    blind_sphere_stable_max_deviation_m: 0.002
+    blind_sphere_stable_sample_count: 5
+    blind_sphere_stable_max_deviation_m: 0.001
     blind_pinky_regrasp_alpha1: 5.0
     blind_finger_release_deg: 8.0
-    blind_middle_release_deg: 3.0
+    blind_middle_release_deg: 2.0
     blind_forward_middle_j3_release_deg: 5.0
-    blind_pinky_release_deg: 10.0
-    blind_pinky_regrasp_j1_target_rad: 0.8358
-    blind_pinky_regrasp_j2_target_rad: 1.2861
-    blind_pinky_regrasp_j3_target_rad: 0.7721
-    blind_pinky_regrasp_j4_target_rad: 0.6557
+    blind_pinky_release_deg: 8.0
+    blind_pinky_regrasp_j1_target_rad: 0.6948
+    blind_pinky_regrasp_j2_target_rad: 1.1952
+    blind_pinky_regrasp_j3_target_rad: 0.7905
+    blind_pinky_regrasp_j4_target_rad: 0.8992
     blind_finger_j1_release_deg: 19.0
     blind_thumb_j1_target_rad: 0.1168
     blind_thumb_j2_target_rad: -1.6596
@@ -53,8 +53,13 @@ grasp_real:
     blind_reverse_thumb_j2_target_rad: -1.3102
     blind_reverse_thumb_j3_target_rad: -0.1991
     blind_reverse_thumb_j4_target_rad: 0.8927
-    blind_reverse_pinky_release_deg: 10.0
-    blind_sphere_lift_world_z_threshold_m: 0.140
+    blind_reverse_pinky_release_deg: 8.0
+    blind_sphere_lift_hand_x_threshold_m: 0.1014456
+    blind_fk_sphere_target_hand_x_m: 0.097
+    blind_sphere_min_hand_x_m: 0.0837876
+    blind_sphere_max_hand_x_m: 0.1146891
+    blind_fk_hand_x_gain: 1.0
+    blind_fk_hand_x_deadband_m: 0.0005
     blind_thumb_lift_j1_target_rad: 0.1136
     blind_thumb_lift_j2_target_rad: -1.6558
     blind_thumb_lift_j3_target_rad: -0.2618

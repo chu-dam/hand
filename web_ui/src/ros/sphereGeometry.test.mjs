@@ -6,7 +6,6 @@ import {
   contactTriangleQuality,
   fitSphereCenterFromContactTriangle,
   sphereEstimationConfigurations,
-  sphereEstimationFingerIds,
 } from "./sphereGeometry.ts";
 
 assert.deepEqual(averageCenters([
@@ -25,7 +24,11 @@ assert.equal(contactTriangleQuality([
   new THREE.Vector3(2, 0, 0),
 ]), 0);
 
-assert.deepEqual(sphereEstimationFingerIds(3, [1, 3, 5]), [1, 3, 5]);
+assert.deepEqual(sphereEstimationConfigurations(3, [1, 3, 5]), []);
+assert.deepEqual(sphereEstimationConfigurations(4, [1, 2, 4, 5]), [
+  { fingerIds: [1, 2, 4], disambiguationFinger: undefined },
+]);
+assert.deepEqual(sphereEstimationConfigurations(4, [2, 3, 4, 5]), []);
 assert.deepEqual(sphereEstimationConfigurations(5, [1, 2, 3, 4, 5]), [
   { fingerIds: [1, 2, 3], disambiguationFinger: 4 },
   { fingerIds: [1, 2, 4], disambiguationFinger: 3 },

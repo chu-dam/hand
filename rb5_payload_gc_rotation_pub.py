@@ -16,7 +16,7 @@ XML_PATH = os.path.join(
     "rb5_850e_payload_1kg.xml",
 )
 
-ROTATION_MATRIX_TOPIC = "/dg5f_grasp_control/rotation_matrix_cmd"
+ROTATION_MATRIX_TOPIC = "/dg5f_grasp_control/right/rotation_matrix_cmd"
 FINGER_COUNT_TOPIC = "/dg5f_grasp_control/finger_count_cmd"
 
 PUBLISH_FINGER_COUNT_ON_START = True

@@ -118,6 +118,7 @@ interface ControlPanelProps {
   onRotationMatrix: (value: number[]) => boolean;
   onRelativeTranslation: (deltaWorldMeters: Point3) => boolean;
   onRelativeRotation: (degrees: number) => boolean;
+  onJointRotationTest: () => boolean;
   onContinuousRotation: (enable: boolean) => boolean;
   onBlindDirectionToggle: () => boolean;
   handToWorldRotation: RotationMatrix3;
@@ -136,6 +137,7 @@ export function ControlPanel({
   onRotationMatrix,
   onRelativeTranslation,
   onRelativeRotation,
+  onJointRotationTest,
   onContinuousRotation,
   onBlindDirectionToggle,
   handToWorldRotation,
@@ -186,6 +188,7 @@ export function ControlPanel({
   const rotationCommandEnabled = rotationSectionActive
     && rotationDegreesValid
     && parsedRotationDegrees !== 0;
+  const rotationTestEnabled = handSide === "right" && rotationSectionActive;
   const continuousRotationAvailable = (
     handSide === "right"
     && ready
@@ -202,8 +205,15 @@ export function ControlPanel({
     handSide === "right"
     && ready
     && !teaching
-    && debug?.controller_state === "PRE_GRASP_POSE"
+    && !continuousRotationActive
     && debug?.pose_type === 6
+    && (
+      debug?.controller_state === "PRE_GRASP_POSE"
+      || (
+        debug?.controller_state === "GROPED_GRASP"
+        && debug?.grasp_type === 5
+      )
+    )
   );
   const blindDirectionAvailable = (
     handSide === "right"
@@ -602,6 +612,16 @@ export function ControlPanel({
                         : "Closed-loop estimate uses fingertip contacts, not an object-angle sensor."}
               </p>
               <button
+                className="secondary-wide rotation-test-button"
+                disabled={!rotationTestEnabled}
+                onClick={() => report(
+                  onJointRotationTest(),
+                  "4F joint rotation test 요청을 전송했습니다.",
+                )}
+              >
+                TEST
+              </button>
+              <button
                 className="apply-button rotation-prepare-button"
                 disabled={!rotationCommandEnabled}
                 onClick={prepareRelativeRotation}
@@ -635,7 +655,7 @@ export function ControlPanel({
               disabled={!blindGraspContinuousRotationAvailable}
               title={blindGraspContinuousRotationAvailable
                 ? "Run middle, index+ring, thumb, then pinky release sequence"
-                : "Available only in the right-hand Pre-rotation (Blind Grasping) pose"}
+                : "Available in right-hand Blind Pre-rotation or its active 5F grasp"}
               onClick={() => report(
                 onContinuousRotation(true),
                 "Blind regrasp sequence 시작 요청을 전송했습니다.",

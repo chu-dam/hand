@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
 import os
-from time import sleep, time
+from pathlib import Path
+from time import perf_counter, sleep, time
 
 import numpy as np
 import rclpy
@@ -28,6 +29,7 @@ from dg5f_grasp_control.hand_model import (
 from dg5f_grasp_control.kinematics import set_hand_side
 from dg5f_grasp_control.mujoco_gravity import MujocoGravityCompensator
 from dg5f_grasp_control.ros_debug import build_grasp_debug_message
+from dg5f_grasp_control.rotation_timing import RotationPhaseTimer, phase_metrics
 
 
 FINGER_NAMES = ("thumb", "index", "middle", "ring", "pinky")
@@ -88,6 +90,7 @@ class GraspRealRunner:
         self.pending_relative_rotation_rad = None
         self.pending_relative_translation_hand = None
         self.pending_continuous_rotation = None
+        self.pending_joint_rotation_test = False
         self.rotation_hand_to_world = np.eye(3, dtype=np.float64)
         self.gravity_in_hand_frame = None
         self.last_debug_publish_time = 0.0
@@ -98,6 +101,9 @@ class GraspRealRunner:
         self.teaching_hold_pose = np.zeros(JOINT_COUNT, dtype=np.float64)
 
         self.controller = GraspController(cfg, log=print)
+        timing_path = Path.home() / ".ros" / f"dg5f_{cfg.hand_side}_rotation_phase_metrics.csv"
+        self.rotation_phase_timer = RotationPhaseTimer(timing_path)
+        node.get_logger().info(f"Rotation phase timing CSV: {timing_path}")
         self.gravity_comp = MujocoGravityCompensator(model_xml_path)
         self.controller.set_tactile_link_pose_provider(
             self.gravity_comp.tactile_link_pose
@@ -155,6 +161,12 @@ class GraspRealRunner:
             10,
         )
         node.create_subscription(
+            Bool,
+            f"/dg5f_grasp_control/{cfg.hand_side}/joint_rotation_test_cmd",
+            self.joint_rotation_test_cb,
+            10,
+        )
+        node.create_subscription(
             Int32,
             f"/dg5f_grasp_control/{cfg.hand_side}/blind_direction_toggle",
             self.blind_direction_toggle_cb,
@@ -174,8 +186,8 @@ class GraspRealRunner:
         )
         node.create_subscription(
             Float64MultiArray,
-            f"/dg5f_grasp_control/{cfg.hand_side}/ui_sphere_center_world",
-            self.ui_sphere_center_world_cb,
+            f"/dg5f_grasp_control/{cfg.hand_side}/ui_sphere_center_hand",
+            self.ui_sphere_center_hand_cb,
             10,
         )
         node.create_subscription(
@@ -227,11 +239,11 @@ class GraspRealRunner:
             return
         self.controller.set_tactile_contacts(data[:25].reshape(5, 5))
 
-    def ui_sphere_center_world_cb(self, msg):
+    def ui_sphere_center_hand_cb(self, msg):
         data = np.asarray(msg.data, dtype=np.float64)
         if data.size < 3 or not np.all(np.isfinite(data[:3])):
             return
-        self.controller.set_ui_sphere_center_world(data[:3])
+        self.controller.set_ui_sphere_center_hand(data[:3])
 
     def ui_sphere_estimate_status_cb(self, msg):
         self.node.get_logger().warn(f"[FK_SPHERE] estimate failed: {msg.data}")
@@ -296,6 +308,16 @@ class GraspRealRunner:
             )
             return
         self.pending_continuous_rotation = enable
+
+    def joint_rotation_test_cb(self, msg):
+        if not bool(msg.data):
+            return
+        if self.teaching_mode or self.pending_teaching_mode is True:
+            self.node.get_logger().warn(
+                "Ignore joint rotation test while Teaching Mode is active."
+            )
+            return
+        self.pending_joint_rotation_test = True
 
     def blind_direction_toggle_cb(self, msg):
         if int(msg.data):
@@ -495,10 +517,17 @@ class GraspRealRunner:
                 else:
                     self.node.get_logger().warn(
                         "Continuous rotation requires right-hand "
-                        "Pre-rotation or Pre-rotation (Blind Grasping) pose."
+                        "Pre-rotation, Blind Pre-rotation, or its active 5F grasp."
                     )
             else:
                 self.controller.stop_continuous_rotation(now)
+
+        if self.pending_joint_rotation_test:
+            self.pending_joint_rotation_test = False
+            if not self.controller.start_joint_rotation_test(now):
+                self.node.get_logger().warn(
+                    "Joint rotation test requires a right-hand active grasp."
+                )
 
         if self.pending_relative_rotation_rad is not None:
             angle_rad = self.pending_relative_rotation_rad
@@ -803,6 +832,7 @@ class GraspRealRunner:
 
                 now = time()
                 qdot = self.hand_qdot.copy()
+                previous_pd_target = self.controller.inactive_pd_target.copy()
 
                 self.controller.sync_joint_state(self.hand_q)
                 if (
@@ -867,6 +897,7 @@ class GraspRealRunner:
                     self.cfg.hand_limit,
                 )
                 publish_effort(self.pub, effort)
+                self._record_rotation_phase(previous_pd_target, qdot)
 
                 if self.teaching_mode:
                     debug_state = COMPENSATION_MODE_NAMES[
@@ -910,6 +941,39 @@ class GraspRealRunner:
         finally:
             print("[STOP] zero effort")
             zero_effort(self.pub)
+            self._record_rotation_phase(stop=True)
+
+    def _record_rotation_phase(self, previous_pd_target=None, qdot=None, stop=False):
+        if self.rotation_phase_timer is None:
+            return
+        phase = (
+            self.controller.continuous_rotation_phase
+            if self.controller.continuous_rotation_active
+            and not (stop or self.teaching_mode or self.teaching_hold_active)
+            else None
+        )
+        target_error_deg = None
+        joint_velocity_rad_s = None
+        previous_phase = self.rotation_phase_timer.phase
+        if previous_phase is not None and previous_phase != phase:
+            target = (
+                self.controller.inactive_pd_target
+                if previous_pd_target is None
+                else previous_pd_target
+            )
+            target_error_deg, joint_velocity_rad_s = phase_metrics(
+                previous_phase,
+                self.hand_q,
+                self.hand_qdot if qdot is None else qdot,
+                target,
+            )
+        try:
+            self.rotation_phase_timer.record(
+                phase, perf_counter(), target_error_deg, joint_velocity_rad_s
+            )
+        except OSError as exc:
+            self.node.get_logger().warn(f"Rotation phase timing disabled: {exc}")
+            self.rotation_phase_timer = None
 
 
 def main(args=None):

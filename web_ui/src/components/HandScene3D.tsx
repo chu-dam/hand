@@ -16,7 +16,7 @@ import {
   type TactileSample,
   TACTILE_Y_ORIGIN_OFFSET_M,
 } from "../ros/types";
-import { IDENTITY_ROTATION_MATRIX, rotateVectorToWorld } from "../ros/frames";
+import { IDENTITY_ROTATION_MATRIX } from "../ros/frames";
 import {
   averageCenters,
   fitSphereCenterFromContactTriangle,
@@ -38,9 +38,19 @@ const DEMO_ROTATION_MATRIX: RotationMatrix3 = [
   0, 1, 0,
   0.8829, 0, 0.4695,
 ];
+const UPWARD_ROTATION_MATRIX: RotationMatrix3 = [
+  0, 0, -1,
+  0, 1, 0,
+  1, 0, 0,
+];
+const DOWNWARD_ROTATION_MATRIX: RotationMatrix3 = [
+  0, 0, 1,
+  0, 1, 0,
+  -1, 0, 0,
+];
 const MODEL_PACKAGE = "dg5f_s_description";
 const MODEL_ROOT = "robot/dg5f_s_description";
-const FK_TIP_TO_BALL_CENTER_M = 0.0375 + 0.0095;
+const FK_TIP_TO_BALL_CENTER_M = 0.0375 + 0.0090;
 const FK_CIRCUMRADIUS_TOLERANCE_M = 0.002;
 
 type ViewerStatus = "loading" | "ready" | "error";
@@ -64,12 +74,14 @@ interface HandScene3DProps {
   onRotationMatrix: (value: number[]) => boolean;
   onCompensationMode: (value: number) => boolean;
   onBlindTactileMode: (value: boolean) => boolean;
-  onSphereCenterWorld: (center: Point3) => boolean;
+  onSphereCenterHand: (center: Point3) => boolean;
   onSphereEstimateFailure: (reason: string) => boolean;
 }
 
 interface DebugOverlay {
   fingertips: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>[];
+  tipStarts: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>[];
+  fkEndpoints: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>[];
   forces: THREE.ArrowHelper[];
   geometricCentroid: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
   virtualCentroid: THREE.Mesh<THREE.OctahedronGeometry, THREE.MeshBasicMaterial>;
@@ -188,6 +200,20 @@ function createDebugOverlay(): DebugOverlay {
     return marker;
   });
 
+  const referenceMarkers = (name: string, color: number) => FINGER_COLORS.map((_, index) => {
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.0015, 18, 12),
+      new THREE.MeshBasicMaterial({ color, depthTest: false, depthWrite: false }),
+    );
+    marker.name = `${name}-${index + 1}`;
+    marker.visible = false;
+    marker.renderOrder = 11;
+    group.add(marker);
+    return marker;
+  });
+  const tipStarts = referenceMarkers("physical-tip-start", 0x2563eb);
+  const fkEndpoints = referenceMarkers("fk-endpoint", 0xff2d55);
+
   const forces = FINGER_COLORS.map((_, index) => {
     const arrow = new THREE.ArrowHelper(
       new THREE.Vector3(0, 0, 1),
@@ -260,11 +286,13 @@ function createDebugOverlay(): DebugOverlay {
 
   return {
     fingertips,
+    tipStarts,
+    fkEndpoints,
     forces,
     geometricCentroid,
     virtualCentroid,
     estimatedSphere,
-    fkPreviousCenters: [null, null, null],
+    fkPreviousCenters: Array(6).fill(null),
     fkAverageSphere,
     fkAverageCenter,
     lastFkSphereFailure: "",
@@ -342,6 +370,8 @@ function createWorldAxes(): THREE.Group {
 
 function addOverlayToFrame(frame: THREE.Group, overlay: DebugOverlay) {
   overlay.fingertips.forEach((marker) => frame.add(marker));
+  overlay.tipStarts.forEach((marker) => frame.add(marker));
+  overlay.fkEndpoints.forEach((marker) => frame.add(marker));
   overlay.forces.forEach((arrow) => frame.add(arrow));
   frame.add(
     overlay.geometricCentroid,
@@ -370,11 +400,24 @@ function updateDebugOverlay(
   const updateBlindSphere = blindSphereMode
     && (
       !debug.controller_phase.startsWith("blind_")
-      || debug.controller_phase === "blind_pinky_regrasp"
       || debug.controller_phase === "blind_forward_sphere_estimate"
       || debug.controller_phase === "blind_reverse_sphere_estimate"
       || debug.controller_phase === "blind_direction_sphere_estimate"
     );
+
+  overlay.fkEndpoints.forEach((marker, index) => {
+    const point = debug?.fingertip_positions[index];
+    marker.visible = showWorldOverlay && isFinitePoint(point);
+    if (marker.visible && point) marker.position.set(point.x, point.y, point.z);
+  });
+  overlay.tipStarts.forEach((marker, index) => {
+    const tipLink = robot?.links[`link_${index + 1}_tip`];
+    marker.visible = Boolean(showWorldOverlay && tipLink && handFrame);
+    if (!marker.visible || !tipLink || !handFrame) return;
+    tipLink.updateMatrixWorld(true);
+    const worldPoint = tipLink.localToWorld(new THREE.Vector3(0.003, 0, 0));
+    marker.position.copy(handFrame.worldToLocal(worldPoint));
+  });
 
   overlay.fingertips.forEach((marker, index) => {
     const point = debug?.fingertip_positions[index];
@@ -495,12 +538,13 @@ function updateDebugOverlay(
     const disambiguationPoint = configuration?.disambiguationFinger
       ? debug?.fingertip_positions[configuration.disambiguationFinger - 1]
       : undefined;
+    const trianglePoints = configuration.fingerIds
+      .map((finger) => debug?.fingertip_positions[finger - 1])
+      .filter(isFinitePoint)
+      .map((point) => new THREE.Vector3(point.x, point.y, point.z));
     const center = sphereEstimationMode === "fk" && updateBlindSphere && configuration
       ? fitSphereCenterFromContactTriangle(
-        configuration.fingerIds
-          .map((finger) => debug?.fingertip_positions[finger - 1])
-          .filter(isFinitePoint)
-          .map((point) => new THREE.Vector3(point.x, point.y, point.z)),
+        trianglePoints,
         FK_TIP_TO_BALL_CENTER_M,
         overlay.fkPreviousCenters[index] ?? new THREE.Vector3(),
         (reason) => { fkFailures[index] = reason; },
@@ -520,10 +564,9 @@ function updateDebugOverlay(
     }
     return center;
   });
-  const contactTriangleCenter = fkSphereCenters.length === fkConfigurations.length
-    && fkSphereCenters.every((center) => center !== null)
-    ? averageCenters(fkSphereCenters as THREE.Vector3[])
-    : null;
+  const validFkCenters = fkSphereCenters
+    .filter((center): center is THREE.Vector3 => center !== null);
+  const contactTriangleCenter = averageCenters(validFkCenters);
   overlay.fkAverageSphere.visible = Boolean(showWorldOverlay && contactTriangleCenter);
   overlay.fkAverageCenter.visible = overlay.fkAverageSphere.visible;
   if (contactTriangleCenter) {
@@ -576,7 +619,7 @@ export function HandScene3D({
   onRotationMatrix,
   onCompensationMode,
   onBlindTactileMode,
-  onSphereCenterWorld,
+  onSphereCenterHand,
   onSphereEstimateFailure,
 }: HandScene3DProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -656,15 +699,12 @@ export function HandScene3D({
       sphereEstimationMode,
       onSphereEstimateFailure,
     );
-    const worldCenter = center
-      ? rotateVectorToWorld(center, handToWorldRotation)
-      : null;
-    if (worldCenter) {
-      setContactSphereCenter(worldCenter);
-      onSphereCenterWorld(worldCenter);
+    if (center) {
+      setContactSphereCenter(center);
+      onSphereCenterHand(center);
     }
     renderRef.current();
-  }, [debug, tactileSamples, forceScale, handToWorldRotation, onSphereCenterWorld, onSphereEstimateFailure, sphereEstimationMode]);
+  }, [debug, tactileSamples, forceScale, onSphereCenterHand, onSphereEstimateFailure, sphereEstimationMode]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -1074,6 +1114,20 @@ export function HandScene3D({
           >
             RESET
           </button>
+          <button
+            type="button"
+            disabled={!rotationControlsEnabled}
+            onClick={() => onRotationMatrix([...UPWARD_ROTATION_MATRIX])}
+          >
+            UPWARD
+          </button>
+          <button
+            type="button"
+            disabled={!rotationControlsEnabled}
+            onClick={() => onRotationMatrix([...DOWNWARD_ROTATION_MATRIX])}
+          >
+            DOWNWARD
+          </button>
           {[
             [0, "FRICTION", "FRICTION_ONLY"],
             [1, "GRAVITY", "GRAVITY_ONLY"],
@@ -1092,7 +1146,7 @@ export function HandScene3D({
         </div>
 
         <div className={`sphere-position-overlay ${sphereCenter ? "live" : "waiting"}`}>
-          <span>SPHERE · WORLD</span>
+          <span>SPHERE · WRIST</span>
           <div><b>X</b><strong>{sphereCenter ? millimeters(sphereCenter.x) : "—"}</strong></div>
           <div><b>Y</b><strong>{sphereCenter ? millimeters(sphereCenter.y) : "—"}</strong></div>
           <div><b>Z</b><strong>{sphereCenter ? millimeters(sphereCenter.z) : "—"}</strong></div>
@@ -1125,6 +1179,8 @@ export function HandScene3D({
 
       <div className="scene-legend hand-scene-legend">
         <span><i className="legend-model" />URDF hand · JointState</span>
+        <span><i className="legend-dot tip-start" />Physical tip start</span>
+        <span><i className="legend-dot fk-endpoint" />FK endpoint</span>
         <span><i className="legend-dot fingertip" />Debug fingertip</span>
         <span><i className="legend-dot cg" />Geometric centroid</span>
         <span><i className="legend-diamond" />Virtual centroid</span>

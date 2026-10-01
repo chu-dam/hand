@@ -195,7 +195,7 @@ export function App() {
             onRotationMatrix={ros.setRotationMatrix}
             onCompensationMode={ros.setCompensationMode}
             onBlindTactileMode={ros.setBlindTactileMode}
-            onSphereCenterWorld={ros.setSphereCenterWorld}
+            onSphereCenterHand={ros.setSphereCenterHand}
             onSphereEstimateFailure={ros.reportSphereEstimateFailure}
           />
           <ForceHistoryPanel
@@ -222,6 +222,7 @@ export function App() {
           onRotationMatrix={ros.setRotationMatrix}
           onRelativeTranslation={ros.setRelativeTranslationWorld}
           onRelativeRotation={ros.setRelativeRotationDegrees}
+          onJointRotationTest={ros.startJointRotationTest}
           onContinuousRotation={ros.setContinuousRotation}
           onBlindDirectionToggle={ros.toggleBlindDirection}
           handToWorldRotation={ros.handToWorldRotation}

@@ -27,12 +27,13 @@ function topicsForHand(side: HandSide) {
     rotation: `${prefix}/rotation_matrix_cmd`,
     relativeRotationDegrees: `${prefix}/relative_rotation_deg_cmd`,
     continuousRotation: `${prefix}/continuous_rotation_cmd`,
+    jointRotationTest: `${prefix}/joint_rotation_test_cmd`,
     blindDirectionToggle: `${prefix}/blind_direction_toggle`,
     blindTactileMode: `${prefix}/blind_tactile_mode`,
     relativeTranslation: `${prefix}/relative_translation_cmd`,
     tactile: `/dg5f_s_${side}/tactile_contacts`,
     tactileContactPoints: `${prefix}/tactile_contact_points`,
-    sphereCenterWorld: `${prefix}/ui_sphere_center_world`,
+    sphereCenterHand: `${prefix}/ui_sphere_center_hand`,
     sphereEstimateStatus: `${prefix}/ui_sphere_estimate_status`,
   };
 }
@@ -61,9 +62,10 @@ interface Publishers {
   rotation: CommandTopic | null;
   relativeRotationDegrees: CommandTopic | null;
   continuousRotation: CommandTopic | null;
+  jointRotationTest: CommandTopic | null;
   blindDirectionToggle: CommandTopic | null;
   blindTactileMode: CommandTopic | null;
-  sphereCenterWorld: CommandTopic | null;
+  sphereCenterHand: CommandTopic | null;
   sphereEstimateStatus: CommandTopic | null;
   relativeTranslation: RelativeTranslationTopic | null;
 }
@@ -77,9 +79,10 @@ const EMPTY_PUBLISHERS: Publishers = {
   rotation: null,
   relativeRotationDegrees: null,
   continuousRotation: null,
+  jointRotationTest: null,
   blindDirectionToggle: null,
   blindTactileMode: null,
-  sphereCenterWorld: null,
+  sphereCenterHand: null,
   sphereEstimateStatus: null,
   relativeTranslation: null,
 };
@@ -198,9 +201,10 @@ export function useRosBridge(url: string, handSide: HandSide) {
       rotation: commandTopic(topics.rotation, "std_msgs/msg/Float64MultiArray"),
       relativeRotationDegrees: commandTopic(topics.relativeRotationDegrees, "std_msgs/msg/Float64"),
       continuousRotation: commandTopic(topics.continuousRotation, "std_msgs/msg/Bool"),
+      jointRotationTest: commandTopic(topics.jointRotationTest, "std_msgs/msg/Bool"),
       blindDirectionToggle: commandTopic(topics.blindDirectionToggle, "std_msgs/msg/Int32"),
       blindTactileMode: commandTopic(topics.blindTactileMode, "std_msgs/msg/Bool"),
-      sphereCenterWorld: commandTopic(topics.sphereCenterWorld, "std_msgs/msg/Float64MultiArray"),
+      sphereCenterHand: commandTopic(topics.sphereCenterHand, "std_msgs/msg/Float64MultiArray"),
       sphereEstimateStatus: commandTopic(topics.sphereEstimateStatus, "std_msgs/msg/String"),
       relativeTranslation: new Topic<Vector3StampedMessage>({
         ros,
@@ -348,13 +352,17 @@ export function useRosBridge(url: string, handSide: HandSide) {
     (value: boolean) => publish(publishers.current.continuousRotation, { data: value }),
     [publish],
   );
+  const startJointRotationTest = useCallback(
+    () => publish(publishers.current.jointRotationTest, { data: true }),
+    [publish],
+  );
   const toggleBlindDirection = useCallback(() => publish(publishers.current.blindDirectionToggle, { data: 1 }), [publish]);
   const setBlindTactileMode = useCallback(
     (value: boolean) => publish(publishers.current.blindTactileMode, { data: value }),
     [publish],
   );
-  const setSphereCenterWorld = useCallback(
-    (center: Point3) => publish(publishers.current.sphereCenterWorld, {
+  const setSphereCenterHand = useCallback(
+    (center: Point3) => publish(publishers.current.sphereCenterHand, {
       layout: { dim: [], data_offset: 0 },
       data: [center.x, center.y, center.z],
     }),
@@ -404,9 +412,10 @@ export function useRosBridge(url: string, handSide: HandSide) {
     setRotationMatrix,
     setRelativeRotationDegrees,
     setContinuousRotation,
+    startJointRotationTest,
     toggleBlindDirection,
     setBlindTactileMode,
-    setSphereCenterWorld,
+    setSphereCenterHand,
     reportSphereEstimateFailure,
     setRelativeTranslationWorld,
   };

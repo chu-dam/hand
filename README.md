@@ -854,14 +854,14 @@ model에서 `link_mount`와 `link_base`는 위치 차이만 있고 축 방향은
 
 RB5 테스트에서는 RB5 제어와 hand 제어를 별도 process로 실행합니다.
 
-Terminal 1: 왼손 hand controller
+Terminal 1: 오른손 hand controller
 
 ```bash
 cd ~/hand
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 export ROS_DOMAIN_ID=73
-ros2 launch dg5f_grasp_control grasp_with_effort.launch.py
+ros2 launch dg5f_grasp_control grasp_with_effort_right.launch.py
 ```
 
 Terminal 2: RB5 rotation matrix publisher
@@ -877,11 +877,11 @@ python3 rb5_payload_gc_rotation_pub.py
 테스트 코드가 발행하는 topic:
 
 ```text
-/dg5f_grasp_control/rotation_matrix_cmd
+/dg5f_grasp_control/right/rotation_matrix_cmd
 ```
 
-이 예제 publisher는 왼손 공통 topic을 발행합니다. 오른손과 연결할 때는
-`ROTATION_MATRIX_TOPIC`을 `/dg5f_grasp_control/right/rotation_matrix_cmd`로
+이 예제 publisher는 오른손 topic을 발행합니다. 왼손과 연결할 때는
+`ROTATION_MATRIX_TOPIC`을 `/dg5f_grasp_control/rotation_matrix_cmd`로
 바꿔 실행합니다.
 
 `rb5_payload_gc_rotation_pub.py` 대신 다른 로봇팔을 사용해도 hand 측 코드는 변경할
