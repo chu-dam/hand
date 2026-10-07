@@ -107,15 +107,15 @@ def make_trial_table(df):
 
     rows = []
 
-    group_cols = ["source_file", "trial_id"]
+    group_cols = ["source_file", "trial_id", "joint_index"]
 
-    for (source_file, trial_id), g in df.groupby(group_cols):
+    for (source_file, trial_id, joint_index), g in df.groupby(group_cols):
         g = g.sort_values("sample_time")
 
         if len(g) < 5:
             continue
 
-        joint_index = int(g["joint_index"].iloc[0])
+        joint_index = int(joint_index)
         joint_name = str(g["joint_name"].iloc[0])
         direction = int(g["direction"].iloc[0])
         test_effort = float(g["test_effort"].iloc[0])

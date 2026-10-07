@@ -39,7 +39,11 @@ JOINT_STATE_TIMEOUT = 0.25
 # =====================================================
 # Friction identification setting
 # =====================================================
-TARGET_JOINT_INDEX = 15
+TARGET_JOINT_INDEX = 12
+
+LOCK_JOINT_ENABLE = True
+LOCK_JOINT_INDEX = 13
+LOCK_JOINT_TARGET = 1.5708       # rad
 
 TEST_EFFORTS = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30]
 REPEAT_COUNT = 10
@@ -73,9 +77,7 @@ HOLD_PD_LIMIT = 0.25
 #   TARGET_JOINT_INDEX = 5
 #   LOCK_JOINT_INDEX   = 4
 # =====================================================
-LOCK_JOINT_ENABLE = True
-LOCK_JOINT_INDEX = 12
-LOCK_JOINT_TARGET = 0.0#1.5708       # rad
+
 
 LOCK_KP = 1.2
 LOCK_KD = 0.04

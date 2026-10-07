@@ -6,7 +6,7 @@
     python3 left_hand_aging.py --self-test  # 장비 연결 없는 검사
 
 연결 직후 0도 이동 후 pose_1 → pose_2 → pose_3 → pose_4 → 0도를 반복한다.
-사이클별 작동시간은 1.0 → 0.8 → 0.6 → 0.4초로 반복한다.
+사이클별 작동시간은 0.6 → 0.4 → 0.2초로 반복한다.
 목표 도달 여부와 관계없이 작동시간 + 0.2초 뒤 다음 자세로 넘어간다.
 전원만 켰을 때 자동 실행되는 펌웨어 설정은 변경하지 않는다.
 새 자세는 POSES와 SEQUENCE에 J1~J20 순서로 추가한다. 각도 단위는 degree.
@@ -57,7 +57,7 @@ POSES = {
     ],
 }
 SEQUENCE = ("pose_1", "pose_2", "pose_3", "pose_4", "0")
-MOTION_TIMES = (1.0, 0.8, 0.6, 0.4)
+MOTION_TIMES = (0.8, 0.6)
 TIMEOUT_MARGIN = 0.2
 
 
