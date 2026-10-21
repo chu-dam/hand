@@ -8,7 +8,6 @@ import { ForceHistoryPanel } from "./components/ForceHistoryPanel";
 import { HandScene3D } from "./components/HandScene3D";
 import { JointTable } from "./components/JointTable";
 import { StatusPill } from "./components/StatusPill";
-import { TactileSensorPanel } from "./components/TactileSensorPanel";
 import { defaultRosbridgeUrl, useRosBridge } from "./ros/useRosBridge";
 import type { HandSide } from "./ros/types";
 
@@ -47,10 +46,8 @@ export function App() {
   const jointAge = ageSeconds(ros.lastJointAt, now);
   const debugAge = ageSeconds(ros.lastDebugAt, now);
   const rotationAge = ageSeconds(ros.lastRotationAt, now);
-  const tactileAge = ageSeconds(ros.lastTactileAt, now);
   const handConnected = connected && jointAge !== null && jointAge < 1;
   const debugLive = connected && debugAge !== null && debugAge < 1;
-  const tactileLive = connected && tactileAge !== null && tactileAge < 1;
   const controlsReady = connected && handConnected && debugLive;
 
   useEffect(() => {
@@ -186,15 +183,13 @@ export function App() {
             handSide={selectedHand}
             jointState={ros.jointState}
             debug={ros.debug}
-            tactileSamples={ros.tactileSamples}
-            tactileContactPoints={ros.tactileContactPoints}
             handToWorldRotation={ros.handToWorldRotation}
             orientationFromTopic={ros.lastRotationAt !== null}
             rotationControlsEnabled={connected && selectedHand === "right"}
             compensationControlsEnabled={controlsReady}
             onRotationMatrix={ros.setRotationMatrix}
             onCompensationMode={ros.setCompensationMode}
-            onBlindTactileMode={ros.setBlindTactileMode}
+            onHumanHandMode={ros.setHumanHandMode}
             onSphereCenterHand={ros.setSphereCenterHand}
             onSphereEstimateFailure={ros.reportSphereEstimateFailure}
           />
@@ -203,10 +198,6 @@ export function App() {
             live={debugLive}
             handToWorldRotation={ros.handToWorldRotation}
             orientationFromTopic={ros.lastRotationAt !== null}
-          />
-          <TactileSensorPanel
-            samples={ros.tactileSamples}
-            live={tactileLive}
           />
           <DebugReadout debug={ros.debug} />
         </div>
@@ -221,8 +212,8 @@ export function App() {
           onTeaching={ros.setTeachingMode}
           onRotationMatrix={ros.setRotationMatrix}
           onRelativeTranslation={ros.setRelativeTranslationWorld}
-          onRelativeRotation={ros.setRelativeRotationDegrees}
-          onJointRotationTest={ros.startJointRotationTest}
+          onRelativeRotation={ros.setPaperRotationDegrees}
+          onPaperRotation={ros.setSequentialPaperRotationDegrees}
           onContinuousRotation={ros.setContinuousRotation}
           onBlindDirectionToggle={ros.toggleBlindDirection}
           handToWorldRotation={ros.handToWorldRotation}

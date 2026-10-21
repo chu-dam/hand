@@ -91,10 +91,47 @@ def polygon_centroid_3d(points):
     )
 
 
+def contact_polygon_area_3d(points, fingertip_radius=0.009):
+    """Area enclosed by fingertip spheres on the contacts' best-fit plane."""
+    points = np.asarray(points, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3 or points.shape[0] < 3:
+        raise ValueError("points must have shape (N, 3) with N >= 3")
+    if not np.isfinite(fingertip_radius) or fingertip_radius <= 0.0:
+        raise ValueError("fingertip_radius must be finite and > 0")
+
+    origin = np.mean(points, axis=0)
+    centered = points - origin
+    _, singular_values, basis = np.linalg.svd(centered, full_matrices=False)
+    if singular_values[1] <= np.finfo(np.float64).eps:
+        raise ValueError("contact points are collinear")
+    axis_u, axis_v = basis[:2]
+    normal = np.cross(axis_u, axis_v)
+    projected = np.column_stack((centered @ axis_u, centered @ axis_v))
+    normal_distance = centered @ normal
+    section_radius_sq = fingertip_radius ** 2 - normal_distance ** 2
+    planar_distance = np.linalg.norm(projected, axis=1)
+    if np.any(section_radius_sq <= 0.0):
+        raise ValueError("best-fit plane does not intersect every fingertip sphere")
+    section_radius = np.sqrt(section_radius_sq)
+    if np.any(planar_distance <= section_radius):
+        raise ValueError("grasp center lies inside a fingertip section")
+    contacts = projected * (1.0 - section_radius / planar_distance)[:, None]
+    contacts = contacts[np.argsort(np.arctan2(contacts[:, 1], contacts[:, 0]))]
+    following = np.roll(contacts, -1, axis=0)
+    twice_area = float(np.sum(
+        contacts[:, 0] * following[:, 1]
+        - following[:, 0] * contacts[:, 1]
+    ))
+    if abs(twice_area) <= np.finfo(np.float64).eps:
+        raise ValueError("contact polygon has zero signed area")
+    return abs(twice_area) / 2.0
+
+
 class GraspPolicy:
-    def __init__(self, use_fingers, cfg):
+    def __init__(self, use_fingers, cfg, human_hand_mode=False):
         self.use_fingers = list(use_fingers)
         self.cfg = cfg
+        self.human_hand_mode = bool(human_hand_mode)
 
     def _calc_force_balanced_alpha(
         self,
@@ -431,7 +468,13 @@ class GraspPolicy:
                 raise ValueError("each fingertip force must be a finite 3-vector")
             idxs = FINGER_JOINT_INDEX[finger]
             jacobian = tip_jacobian(q, finger, eps=self.cfg.jacobian_eps)
-            tau[idxs] = jacobian.T @ force * GRASP_TAU_SIGN[idxs]
+            joint_count = 3 if self.human_hand_mode and finger != 1 else 4
+            controlled = idxs[:joint_count]
+            tau[controlled] = (
+                jacobian[:, :joint_count].T
+                @ force
+                * GRASP_TAU_SIGN[controlled]
+            )
 
         tau = np.clip(
             tau,

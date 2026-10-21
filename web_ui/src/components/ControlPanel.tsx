@@ -118,7 +118,7 @@ interface ControlPanelProps {
   onRotationMatrix: (value: number[]) => boolean;
   onRelativeTranslation: (deltaWorldMeters: Point3) => boolean;
   onRelativeRotation: (degrees: number) => boolean;
-  onJointRotationTest: () => boolean;
+  onPaperRotation: (degrees: number) => boolean;
   onContinuousRotation: (enable: boolean) => boolean;
   onBlindDirectionToggle: () => boolean;
   handToWorldRotation: RotationMatrix3;
@@ -137,7 +137,7 @@ export function ControlPanel({
   onRotationMatrix,
   onRelativeTranslation,
   onRelativeRotation,
-  onJointRotationTest,
+  onPaperRotation,
   onContinuousRotation,
   onBlindDirectionToggle,
   handToWorldRotation,
@@ -188,25 +188,19 @@ export function ControlPanel({
   const rotationCommandEnabled = rotationSectionActive
     && rotationDegreesValid
     && parsedRotationDegrees !== 0;
-  const rotationTestEnabled = handSide === "right" && rotationSectionActive;
+  const rotationTestEnabled = handSide === "right" && rotationCommandEnabled;
   const continuousRotationAvailable = (
     handSide === "right"
     && ready
     && !teaching
-    && (
-      continuousRotationActive
-      || (
-        debug?.controller_state === "PRE_GRASP_POSE"
-        && debug?.pose_type === 5
-      )
-    )
+    && continuousRotationActive
   );
   const blindGraspContinuousRotationAvailable = (
     handSide === "right"
     && ready
     && !teaching
     && !continuousRotationActive
-    && debug?.pose_type === 6
+    && (debug?.pose_type === 5 || debug?.pose_type === 6)
     && (
       debug?.controller_state === "PRE_GRASP_POSE"
       || (
@@ -219,7 +213,7 @@ export function ControlPanel({
     handSide === "right"
     && ready
     && !teaching
-    && debug?.pose_type === 6
+    && (debug?.pose_type === 5 || debug?.pose_type === 6)
     && (
       continuousRotationActive
       || debug?.controller_state === "GROPED_GRASP"
@@ -600,11 +594,21 @@ export function ControlPanel({
             <div className="rotation-action-row">
               <p className="rotation-stage-note">
                 {rotationPhase === "rotating"
-                  ? "ROTATING · tangential force and centroid hold are active."
+                  ? "ROTATING · " + (debug?.relative_rotation_control_mode === "paper_rotate_then_center_xy"
+                    ? "Grasp + rotation only; world X/Y return follows."
+                    : debug?.relative_rotation_control_mode === "paper_centroid_tangential"
+                    ? "Paper centroid-tangent force control is active."
+                    : "Thumb-pivot fingertip tracking is active.")
+                  : rotationPhase === "centering"
+                    ? "CENTERING · rotation force off; returning world X/Y to the start center."
                   : rotationPhase === "rotation_reached"
-                    ? "REACHED · target contact angle is being held."
+                    ? (debug?.relative_rotation_control_mode === "paper_rotate_then_center_xy"
+                      ? "COMPLETE · rotation and world X/Y return finished; grasp remains active."
+                      : debug?.relative_rotation_control_mode === "paper_centroid_tangential"
+                      ? "REACHED · rotation force removed; grasp remains active."
+                      : "REACHED · target contact angle is being held.")
                     : rotationPhase === "rotation_timeout"
-                      ? "TIMEOUT · rotation force was removed. Check contact slip and retry."
+                      ? "TIMEOUT · additional forces removed; grasp remains active. Check contacts and retry."
                       : rotationPhase === "rotation_error"
                         ? "ERROR · rotation force was removed because the contact geometry is invalid."
                         : rotationPhase === "force_balance_error"
@@ -614,12 +618,13 @@ export function ControlPanel({
               <button
                 className="secondary-wide rotation-test-button"
                 disabled={!rotationTestEnabled}
+                title="Grasp + rotation, then return the centroid's world X/Y; no world Z position control"
                 onClick={() => report(
-                  onJointRotationTest(),
-                  "4F joint rotation test 요청을 전송했습니다.",
+                  onPaperRotation(parsedRotationDegrees),
+                  `${signedRotationDegrees} 회전 후 월드 X/Y 중심 복귀 테스트를 요청했습니다.`,
                 )}
               >
-                TEST
+                Paper TEST
               </button>
               <button
                 className="apply-button rotation-prepare-button"
@@ -637,7 +642,7 @@ export function ControlPanel({
               ? continuousRotationActive
                 ? "Stop continuous rotation"
                 : "Start continuous rotation"
-              : "Available only in the right-hand Pre-rotation pose"}
+              : "Available while a right-hand regrasp sequence is active"}
             onClick={() => report(
               onContinuousRotation(!continuousRotationActive),
               continuousRotationActive
@@ -655,7 +660,7 @@ export function ControlPanel({
               disabled={!blindGraspContinuousRotationAvailable}
               title={blindGraspContinuousRotationAvailable
                 ? "Run middle, index+ring, thumb, then pinky release sequence"
-                : "Available in right-hand Blind Pre-rotation or its active 5F grasp"}
+                : "Available in either right-hand Pre-rotation pose or its active 5F grasp"}
               onClick={() => report(
                 onContinuousRotation(true),
                 "Blind regrasp sequence 시작 요청을 전송했습니다.",

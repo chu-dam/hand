@@ -6,12 +6,10 @@ import numpy as np
 from dg5f_grasp_control.config import RuntimeConfig
 from dg5f_grasp_control.grasp_controller import GraspController
 from dg5f_grasp_control.grasp_real_node import GraspRealRunner, compensation_effort
-from dg5f_grasp_control.hand_model import FINGER_JOINT_INDEX
 from dg5f_grasp_control.poses import (
     LEFT_POSE_TYPE_TARGETS,
     RIGHT_HAND_BLIND_GRASP_INITIAL_POSE,
     RIGHT_HAND_BLIND_GRASP_PRE_ROTATION_POSE,
-    RIGHT_HAND_CONTINUOUS_ROTATION_POSE,
     RIGHT_HAND_PRE_ROTATION_POSE,
     RIGHT_POSE_TYPE_TARGETS,
     get_pose_type_targets,
@@ -68,8 +66,6 @@ class PoseSideTest(unittest.TestCase):
                 0.6767, 1.2765, 0.9765, 0.9097,
             ],
         )
-        self.assertEqual(RIGHT_HAND_CONTINUOUS_ROTATION_POSE.shape, (20,))
-        self.assertTrue(np.all(np.isfinite(RIGHT_HAND_CONTINUOUS_ROTATION_POSE)))
         np.testing.assert_allclose(
             RIGHT_HAND_PRE_ROTATION_POSE,
             [
@@ -96,55 +92,34 @@ class PoseSideTest(unittest.TestCase):
 
         self.assertEqual(runner.pending_pose_type, 5)
 
-    def test_pre_rotation_uses_its_own_pose_pd_gains(self):
+    def test_both_pre_rotation_poses_use_same_pd_gains(self):
         controller = GraspController(
             RuntimeConfig(
                 hand_side="right",
                 pose_kp=0.10,
                 pose_kd=0.0,
                 pose_pd_limit=1.0,
-                pre_rotation_pose_kp=0.20,
-                pre_rotation_pose_kd=0.0,
-                pre_rotation_pose_pd_limit=1.0,
-                pre_rotation_pinky_j1_kp=0.40,
-                pre_rotation_pinky_j1_kd=0.0,
-                pre_rotation_pinky_j1_tau_limit=2.0,
-            ),
-            log=None,
-        )
-        controller.apply_pose_type(5, now=1.0)
-        target = RIGHT_HAND_PRE_ROTATION_POSE
-
-        output = controller.step(
-            target - 0.1,
-            np.zeros(20),
-            now=1.1,
-        )
-
-        expected = np.full(20, 0.02)
-        expected[FINGER_JOINT_INDEX[5][0]] = 0.04
-        np.testing.assert_allclose(output.tau, expected, atol=1e-12)
-
-    def test_blind_grasp_pre_rotation_uses_its_own_pose_pd_gains(self):
-        controller = GraspController(
-            RuntimeConfig(
-                hand_side="right",
                 blind_grasp_pre_rotation_pose_kp=3.0,
                 blind_grasp_pre_rotation_pose_kd=5.0,
                 pre_rotation_pose_pd_limit=10.0,
             ),
             log=None,
         )
-        controller.apply_pose_type(6, now=1.0)
-        target = RIGHT_HAND_BLIND_GRASP_PRE_ROTATION_POSE
-
-        output = controller.step(
-            target - 0.1,
-            np.full(20, 0.01),
-            now=1.1,
-        )
-
-        np.testing.assert_allclose(output.tau, np.full(20, 0.25), atol=1e-12)
+        for pose_type, target in (
+            (5, RIGHT_HAND_PRE_ROTATION_POSE),
+            (6, RIGHT_HAND_BLIND_GRASP_PRE_ROTATION_POSE),
+        ):
+            controller.apply_pose_type(pose_type, now=1.0)
+            output = controller.step(
+                target - 0.1,
+                np.full(20, 0.01),
+                now=1.1,
+            )
+            np.testing.assert_allclose(
+                output.tau,
+                np.full(20, 0.25),
+                atol=1e-12,
+            )
 
 if __name__ == "__main__":
     unittest.main()

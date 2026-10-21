@@ -238,16 +238,6 @@ def build_grasp_debug_message(
     ]
     message.geometric_centroid = _point(cg)
     message.virtual_centroid = _point(cv)
-    message.blind_sphere_estimate_valid = bool(
-        controller.blind_sphere_estimate_valid
-    )
-    message.blind_sphere_center = _point(controller.blind_sphere_center)
-    message.blind_sphere_effective_radius_m = float(
-        controller.blind_sphere_effective_radius_m
-    )
-    message.blind_sphere_fit_rms_error_m = float(
-        controller.blind_sphere_fit_rms_error_m
-    )
     message.relative_rotation_start_centroid = _point(
         relative_rotation_start_centroid
     )

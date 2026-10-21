@@ -113,7 +113,7 @@ def _sphere_mesh(radius, latitude_count=12, longitude_count=24):
 
 
 def build_model():
-    """Load the right tactile-tip hand and add a free 75 mm ball."""
+    """Load the right hand and add a free 75 mm ball."""
     set_kinematics_hand_side("right")
     spec = mujoco.MjSpec.from_file(str(URDF_PATH), assets=_model_assets())
     demo_quat = np.empty(4, dtype=np.float64)
@@ -267,8 +267,8 @@ def _joint_addresses(model):
     return np.asarray(qpos_addresses, dtype=int), np.asarray(dof_addresses, dtype=int)
 
 
-def tactile_tip_center(model, data, finger):
-    """Return the tactile STL bounding-box center after fingertip FK."""
+def fingertip_center(model, data, finger):
+    """Return the fingertip STL bounding-box center after FK."""
     body_id = mujoco.mj_name2id(
         model, mujoco.mjtObj.mjOBJ_BODY, f"link_{finger}_4"
     )
@@ -306,7 +306,7 @@ def reset_at_grasp_pose(model, data):
     mujoco.mj_forward(model, data)
 
     tip_centers = np.asarray(
-        [tactile_tip_center(model, data, finger) for finger in BALL_CENTER_FINGERS]
+        [fingertip_center(model, data, finger) for finger in BALL_CENTER_FINGERS]
     )
     controller_tips_world = np.asarray(
         [

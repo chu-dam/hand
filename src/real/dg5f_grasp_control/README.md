@@ -105,6 +105,89 @@ margin; defaults
 are `Kp=0.5`, `Kd=0.10`, and `limit=0.25 N.m`. The remaining three joints stay
 at pre-grasp, and ENV does not use this avoidance path.
 
+## Paper rotation test
+
+The Rotation panel's **Rotate** sends the entered signed angle to
+`<relative_rotation_deg_topic>/paper` (`std_msgs/Float64`, degrees), preserving
+the simultaneous rotation and 3D centroid-hold controller below.
+Right-hand **Paper TEST** sends it to
+`<relative_rotation_deg_topic>/paper_sequential`, testing this separate sequence:
+
+1. Capture the command-time FK centroid's world X/Y coordinates.
+2. Apply grasp plus angle-controlled rotation, with no center force. After the
+   reference ramp (0.5 seconds), require three consecutive estimated angular-speed
+   samples below 0.05 rad/s; a faster sample resets the count. Neither angular
+   error nor center drift blocks this stage.
+3. Enter `centering`: remove rotation force, retain the same grasp/finger set,
+   and apply world-X/Y centroid PD. World-Z position and velocity components
+   are excluded before mapping the correction back to the hand frame.
+4. After XY error is within 2 mm and XY speed within 0.01 m/s for 0.08 seconds,
+   report `rotation_reached`/COMPLETE and remove all additional forces, retaining grasp.
+
+Paper TEST uses the same center gains and 3 N total force cap, but center
+correction runs only after rotation. The rotation timeout is unchanged;
+centering has its own `paper_rotation_center_timeout_sec=3.0` deadline. A
+timeout/error removes additional forces and does not report success. The UI
+shows ROTATING, CENTERING, and COMPLETE separately. World coordinates use the
+published hand-to-world orientation and assume a fixed hand-base origin;
+world Z is uncontrolled, not physically locked. The return can change the
+physical object angle through rolling/slip; this experiment adds no angle hold
+during centering.
+
+The continuous regrasp sequence uses saved grasp
+joint targets. The original thumb-pivot controller remains available through
+the non-paper relative-rotation ROS topic.
+Run an active regular grasp before using the test; it preserves that finger set.
+
+The test uses the tangent direction from equations (15)-(16) at every active
+fingertip, including the thumb, with an angle-PD magnitude:
+`Fr,i = normalize(axis x (Pi-Cg)) * (Kr*angle_error-Kd*angular_velocity)`.
+The inverse-radius factor in equation (17) is deliberately omitted, so equal
+angle/velocity errors give equal force magnitudes regardless of contact radius.
+The current FK contact centroid defines the tangents. Command-time contacts and
+centroid define the signed relative-angle estimate, which removes common
+translation. Ordinary grasp forces remain active and `J.T` maps the sum of
+grasp, tangent, collision and centroid-hold forces to torques; Human mode
+keeps its existing DIP coupling.
+
+Centroid hold saves `C0` at each rotation command and adds
+`Fcenter=Kc*(C0-Cg)-Dc*Cdot_g`, shared equally among active fingers.
+Defaults are `paper_rotation_center_kp=225` N/m,
+`paper_rotation_center_kd=4.5` N*s/m and
+`paper_rotation_center_force_limit=3` N for the total correction force.
+The right-hand configuration overrides center Kp to 450 N/m; Kd and the force cap are unchanged.
+The centroid velocity differentiates the same polygon-centroid function,
+so asymmetric 4F/5F rigid rotation does not look like center translation.
+The correction is exposed separately as `center_hold_forces`.
+
+`paper_rotation_kr=13.333333333333334` N/rad, `paper_rotation_kd=1.6` N*s/rad and
+`paper_rotation_tolerance_deg=1.0` configure the test. The per-finger
+rotation-force cap and rotation timeout still apply (right-hand YAML:
+3 seconds). The angle reference ramps smoothly over
+`paper_rotation_reference_ramp_sec=0.5` seconds. Angular velocity uses the
+`relative_rotation_velocity_alpha=0.2` low-pass filter. Inside the final angle
+tolerance the P term is disabled and only damping remains. Outside it the
+P error is `sign(e)*max(abs(e)-tolerance,0)`, avoiding a force jump at the
+boundary. Damping uses filtered velocity clipped between zero and the current
+unfiltered velocity, preventing filter lag from assisting a velocity reversal.
+Completion also requires center error within
+`paper_rotation_center_tolerance_m=0.002` m and center speed at most 0.01 m/s.
+After these conditions and angle/velocity tolerances hold for `blind_motion_stable_sec=0.08`
+seconds, `rotation_reached` latches and additional rotation forces stay zero
+until a new request. Centroid hold remains active after the angle is reached,
+until timeout or cancellation.
+This also prevents repeated force reversals near the angle goal.
+These gains approximate the former inverse-radius controller's 0.5/0.06 gains
+at a 37.5 mm radius (75 mm sphere diameter). The old FK contact radius can differ
+from the physical sphere radius, so this is a nominal calibration only;
+runtime force magnitude remains independent of radius.
+
+Estimated angle is contact-geometry rotation, not measured object orientation.
+Slip/rolling can break that correspondence. Tangent forces can have a nonzero
+resultant on asymmetric contacts. Centroid feedback reduces the resulting
+translation, but holding the FK contact centroid does not guarantee holding
+the physical object's center when contacts roll or slip.
+
 ## Relative rotation command
 
 `/dg5f_grasp_control/relative_rotation_deg_cmd` contains a signed angle in
@@ -135,23 +218,62 @@ angle. There is no timed `Cv -> Cg` transition; the obsolete
 centroid-transition stage has been removed.
 
 For the right hand, `/dg5f_grasp_control/right/continuous_rotation_cmd=true`
-starts a repeating sequence from `pose_type=5`: middle, ring+index, thumb, and
-pinky move in order. After the thumb move, fingers 1--4 return to the
-Pre-rotation pose while only pinky J1 releases. Pinky J1 returns when the next
-middle release starts. The sequence uses the Pre-rotation pose PD; pinky J1
-keeps its configured gain scale.
+starts the same five-finger blind regrasp sequence from either `pose_type=5`
+or `pose_type=6`. The selected pose keeps its own name and pre-grasp joint
+targets; the grasp and rotation state machine is shared.
 
-From right-hand `pose_type=6`, the same command starts a five-finger blind
-grasp, waits `blind_rotation_grasp_settle_sec`, and releases middle alone for
-0.18 seconds with its fixed J1 offset, J2/J3 opened by 3 degrees, and J4 at its
-initial value. After a 0.28-second regrasp, index and ring release together for
-0.18 seconds and regrasp for 0.28 seconds. Thumb then releases together with
-middle and ring for 0.18 seconds: thumb uses J1=0.2436, J2=-1.5139, J3=0.1232,
-and J4=0.8207 rad; middle and ring open J2/J3 by 3 degrees from their current
-angles while keeping J1/J4 fixed. All three regrasp for 0.28 seconds. Pinky J1
-then opens by 10 degrees and stays released while fingers 1--4 return to
-`RIGHT_HAND_BLIND_GRASP_INITIAL_POSE` for 0.28 seconds. The sequence repeats
-from the middle-only release, regrasping pinky at the same instant.
+The command starts a five-finger blind grasp and captures its initial joint
+angles and contact-area scale when settling finishes. Middle releases and
+regrasps, then index and ring release and regrasp together. During those
+regrasps each returning finger holds its measured entry J1 with PD and applies
+grasp torque to its other joints. Thumb release leaves index/pinky grasping and
+middle/ring holding their entry poses. Thumb J3 release uses
+`initial_J3 + 1.1*area_scale*(release_J3-initial_J3)` in both directions;
+thumb J1/J2/J4 retain their existing release targets.
+When index/middle/ring J1 headroom limits the common release motion, only
+thumb J1/J2 targets are interpolated from the initial 5F thumb angles by
+`common_J1_delta / area_requested_J1_delta`. Thumb J3 retains its area-scaled,
+1.1-multiplied release displacement, and J4 retains its existing release target,
+preserving clearance independently of the common sideways rotation limit.
+With no common headroom, only thumb J1/J2 stay at their initial grasp angles.
+Thumb regrasp uses thumb/index/pinky
+grasp for 0.1 seconds, then all five fingers grasp for 0.08 seconds.
+
+Index/middle/ring release use a shared J1 displacement:
+`min(area_requested_delta, index_headroom, middle_headroom, ring_headroom)`.
+All three J1 reference angles are captured together after initial 5F settling,
+again after each rotation/regrasp cycle, and on a direction switch, keeping
+the separately executed releases consistent. Their J1 targets use these
+references, while J2-J4 still use the current entry angles and release offsets.
+The final J1 targets remain clamped to each hand's URDF joint range.
+Right-hand J1 ranges are
+index [-48,15], middle [-33,42], and ring [-12,48] degrees. The existing
+area-scale cap also bounds the nominal 19-degree offset to 23.75 degrees at
+the default maximum scale of 1.25. These bounds constrain commanded targets,
+not the physical joint angle under external loading.
+
+Pinky release captures its first J1-J4 target for each direction and reuses it
+on later cycles, instead of deriving a new target from potentially drifting
+measured joints. A new sequence clears these references. The first target uses
+the measured entry angles, with the usual area-scaled J1 release offset.
+
+After pinky release, middle also releases. Thumb J1-J4 and index/ring J1-J2 track
+the joint angles captured at the initial 5F grasp, adapting the target to the
+grasped sphere size without a known diameter. Thumb J1/J2 use pose PD only;
+thumb J3/J4 add grasp torque. Index/ring add grasp torque to J1/J2 pose PD, with
+their other joints grasp-controlled. Middle and pinky retain release pose PD.
+Human-mode non-thumb DIP coupling keeps its normal priority.
+
+The joint-return phase ends after its controlled joints stay within 3 degrees
+and below 0.05 rad/s for 0.08 seconds, or the existing
+`continuous_rotation_move_sec=0.28` timeout expires. It then enters
+`blind_pose_alignment`: thumb/index/middle/ring J1-J4 track the initial saved
+grasp angles, while pinky remains released. Thumb/index/ring retain grasp
+torques in alignment; middle has pose PD only. Each joint receives one pose
+PD term, without stacking middle's inactive pre-grasp PD. Once fingers 1-4
+are stopped for 0.08 seconds or another 0.28 seconds expires, 5F regrasp
+starts before the next cycle. This sequence does not command a fixed 15-degree object
+rotation and does not use Paper TEST's tangent forces or centroid hold.
 
 ## Relative task-space translation
 

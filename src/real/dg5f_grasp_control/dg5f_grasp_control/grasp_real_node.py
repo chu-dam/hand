@@ -88,6 +88,8 @@ class GraspRealRunner:
         self.pending_teaching_mode = None
         self.pending_teaching_compensation_mode = None
         self.pending_relative_rotation_rad = None
+        self.pending_paper_rotation = False
+        self.pending_center_after_rotation = False
         self.pending_relative_translation_hand = None
         self.pending_continuous_rotation = None
         self.pending_joint_rotation_test = False
@@ -105,28 +107,10 @@ class GraspRealRunner:
         self.rotation_phase_timer = RotationPhaseTimer(timing_path)
         node.get_logger().info(f"Rotation phase timing CSV: {timing_path}")
         self.gravity_comp = MujocoGravityCompensator(model_xml_path)
-        self.controller.set_tactile_link_pose_provider(
-            self.gravity_comp.tactile_link_pose
-        )
-        self.controller.set_tactile_contact_geometry_provider(
-            self.gravity_comp.tactile_contact_geometry
-        )
 
         self.pub = node.create_publisher(Float64MultiArray, cfg.effort_topic, 10)
         self.debug_pub = node.create_publisher(GraspDebug, cfg.debug_topic, 10)
-        self.tactile_contact_pub = node.create_publisher(
-            Float64MultiArray,
-            f"/dg5f_grasp_control/{cfg.hand_side}/tactile_contact_points",
-            10,
-        )
         node.create_subscription(JointState, cfg.joint_state_topic, self.joint_cb, 10)
-        tactile_topic = cfg.tactile_topic or f"/dg5f_s_{cfg.hand_side}/tactile_contacts"
-        node.create_subscription(
-            Float64MultiArray,
-            tactile_topic,
-            self.tactile_cb,
-            10,
-        )
         node.create_subscription(Int32, cfg.command_topic, self.command_cb, 10)
         node.create_subscription(Int32, cfg.pose_topic, self.pose_type_cb, 10)
         node.create_subscription(Float64, cfg.alpha1_topic, self.alpha1_cb, 10)
@@ -134,6 +118,18 @@ class GraspRealRunner:
             Float64,
             cfg.relative_rotation_deg_topic,
             self.relative_rotation_deg_cb,
+            10,
+        )
+        node.create_subscription(
+            Float64,
+            cfg.relative_rotation_deg_topic + "/paper",
+            lambda msg: self.relative_rotation_deg_cb(msg, paper=True),
+            10,
+        )
+        node.create_subscription(
+            Float64,
+            cfg.relative_rotation_deg_topic + "/paper_sequential",
+            lambda msg: self.relative_rotation_deg_cb(msg, paper=True, center_after_rotation=True),
             10,
         )
         node.create_subscription(
@@ -174,8 +170,8 @@ class GraspRealRunner:
         )
         node.create_subscription(
             Bool,
-            f"/dg5f_grasp_control/{cfg.hand_side}/blind_tactile_mode",
-            self.blind_tactile_mode_cb,
+            f"/dg5f_grasp_control/{cfg.hand_side}/human_hand_mode",
+            self.human_hand_mode_cb,
             10,
         )
         node.create_subscription(
@@ -232,12 +228,6 @@ class GraspRealRunner:
         self.hand_q = new_q
         self.got_state = True
         self.last_joint_state_time = now
-
-    def tactile_cb(self, msg):
-        data = np.asarray(msg.data, dtype=np.float64)
-        if data.size < 25 or not np.all(np.isfinite(data[:25])):
-            return
-        self.controller.set_tactile_contacts(data[:25].reshape(5, 5))
 
     def ui_sphere_center_hand_cb(self, msg):
         data = np.asarray(msg.data, dtype=np.float64)
@@ -323,8 +313,8 @@ class GraspRealRunner:
         if int(msg.data):
             self.controller.request_blind_direction_change()
 
-    def blind_tactile_mode_cb(self, msg):
-        self.controller.set_blind_use_tactile_estimation(bool(msg.data))
+    def human_hand_mode_cb(self, msg):
+        self.controller.set_human_hand_mode(bool(msg.data))
 
     def alpha1_cb(self, msg):
         if self.controller.continuous_rotation_active:
@@ -341,7 +331,7 @@ class GraspRealRunner:
         self.cfg = self.controller.cfg
         self.node.get_logger().info(f"Updated alpha1: {alpha1:.4f}")
 
-    def relative_rotation_deg_cb(self, msg):
+    def relative_rotation_deg_cb(self, msg, *, paper=False, center_after_rotation=False):
         if self.teaching_mode or self.pending_teaching_mode is True:
             self.node.get_logger().warn(
                 "Ignore relative rotation command while Teaching Mode is active."
@@ -363,6 +353,8 @@ class GraspRealRunner:
             return
 
         self.pending_relative_rotation_rad = float(np.deg2rad(angle_deg))
+        self.pending_paper_rotation = paper
+        self.pending_center_after_rotation = center_after_rotation
         self.pending_relative_translation_hand = None
         self.node.get_logger().info(
             f"Queued relative rotation: {angle_deg:.4f} deg "
@@ -534,7 +526,10 @@ class GraspRealRunner:
             self.pending_relative_rotation_rad = None
             angle_deg = float(np.rad2deg(angle_rad))
             try:
-                accepted = self.controller.prepare_relative_rotation(angle_rad, now)
+                accepted = self.controller.prepare_relative_rotation(
+                    angle_rad, now, paper=self.pending_paper_rotation,
+                    center_after_rotation=self.pending_center_after_rotation,
+                )
             except ValueError as exc:
                 self.node.get_logger().warn(
                     f"Relative rotation target rejected: {exc}"
@@ -676,18 +671,35 @@ class GraspRealRunner:
             controller_phase=controller_phase,
         )
         self.debug_pub.publish(message)
-        points = Float64MultiArray()
-        points.data = [
-            float(v)
-            for finger in range(1, 6)
-            for v in self.controller.tactile_contact_points.get(
-                finger, np.zeros(3, dtype=np.float64)
-            )
-        ]
-        self.tactile_contact_pub.publish(points)
 
     def _print_status(self, output, gravity, friction, effort, qdot):
         if output.state == "GROPED_GRASP":
+            if (
+                self.controller.paper_rotation_active
+                and output.relative_rotation_phase in {"rotating", "rotation_reached", "centering"}
+            ):
+                center_error = self.controller.relative_rotation_pivot - output.cg
+                center_force = sum(output.center_hold_forces.values(), np.zeros(3))
+                error_frame = "hand"
+                if self.controller.paper_center_after_rotation:
+                    rotation = self.controller.rotation_hand_to_world
+                    center_error = self.controller.paper_center_target_world - rotation @ output.cg
+                    center_error[2] = 0.0
+                    center_force = rotation @ center_force
+                    error_frame = "world_xy"
+                center_force_norm = float(np.linalg.norm(center_force))
+                center_limit = float(self.cfg.paper_rotation_center_force_limit)
+                self.node.get_logger().info(
+                    "[ROTATION_CENTER] "
+                    f"phase={output.relative_rotation_phase} | frame={error_frame} | "
+                    f"error_mm={np.round(1000.0 * center_error, 2).tolist()} | "
+                    f"error_norm_mm={1000.0 * np.linalg.norm(center_error):.2f} | "
+                    f"force_N={np.round(center_force, 3).tolist()} | "
+                    f"force_norm_N={center_force_norm:.3f}/{center_limit:.3f} | "
+                    f"saturated={center_limit > 0.0 and center_force_norm >= center_limit - 1e-6} | "
+                    f"kp={self.cfg.paper_rotation_center_kp} | "
+                    f"kd={self.cfg.paper_rotation_center_kd}"
+                )
             pinky_j1 = int(FINGER_JOINT_INDEX[PINKY_FINGER_ID][0])
             pinky_target = output.inactive_pd_target[pinky_j1]
             target_text = "nan" if np.isnan(pinky_target) else f"{pinky_target:.4f}"

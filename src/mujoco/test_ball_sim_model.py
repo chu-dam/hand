@@ -37,7 +37,7 @@ from dg5f_grasp_control import kinematics, kinematics_right
 
 
 class BallSimModelTest(unittest.TestCase):
-    def test_tactile_tip_ball_reset(self):
+    def test_fingertip_ball_reset(self):
         model = build_model()
         data = mujoco.MjData(model)
         center, tip_centers = reset_at_grasp_pose(model, data)
@@ -88,7 +88,7 @@ class BallSimModelTest(unittest.TestCase):
         )
         geom_1 = int(finger_1_geoms[0])
         geom_2 = int(finger_2_geoms[0])
-        tactile_geom = next(
+        fingertip_geom = next(
             int(candidate)
             for candidate in finger_1_geoms
             if mujoco.mj_id2name(
@@ -98,7 +98,7 @@ class BallSimModelTest(unittest.TestCase):
             ) == "tactile_tip"
         )
         self.assertAlmostEqual(
-            model.geom_friction[tactile_geom, 0],
+            model.geom_friction[fingertip_geom, 0],
             SILICONE_PLA_SLIDING_FRICTION,
         )
         self.assertTrue(

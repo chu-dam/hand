@@ -4,9 +4,40 @@ import * as THREE from "three";
 import {
   averageCenters,
   contactTriangleQuality,
+  estimateContactPolygon3D,
   fitSphereCenterFromContactTriangle,
   sphereEstimationConfigurations,
 } from "./sphereGeometry.ts";
+
+const polygonCenter = new THREE.Vector3(0.01, 0.02, 0.03);
+const fingertipCenters = Array.from({ length: 5 }, (_, index) => {
+    const angle = 2 * Math.PI * index / 5;
+    return polygonCenter.clone().add(
+      new THREE.Vector3(0, 0.05 * Math.cos(angle), 0.05 * Math.sin(angle)),
+    );
+  });
+const contactPolygon = estimateContactPolygon3D(fingertipCenters);
+assert(contactPolygon);
+assert(contactPolygon.center.distanceTo(polygonCenter) < 1e-12);
+contactPolygon.contactPoints.forEach((point) => {
+  assert(fingertipCenters.some((tip) => Math.abs(point.distanceTo(tip) - 0.009) < 1e-12));
+  assert(Math.abs(point.clone().sub(polygonCenter).dot(contactPolygon.normal)) < 1e-12);
+});
+
+const tiltedU = new THREE.Vector3(1, 1, 0).normalize();
+const tiltedV = new THREE.Vector3(0, 0, 1);
+const tiltedTips = Array.from({ length: 5 }, (_, index) => {
+  const angle = 2 * Math.PI * index / 5;
+  return polygonCenter.clone()
+    .addScaledVector(tiltedU, 0.05 * Math.cos(angle))
+    .addScaledVector(tiltedV, 0.05 * Math.sin(angle));
+});
+const tiltedPolygon = estimateContactPolygon3D(tiltedTips);
+assert(tiltedPolygon);
+assert(Math.abs(tiltedPolygon.normal.dot(tiltedU.clone().cross(tiltedV))) > 1 - 1e-12);
+tiltedPolygon.contactPoints.forEach((point) => {
+  assert(tiltedTips.some((tip) => Math.abs(point.distanceTo(tip) - 0.009) < 1e-12));
+});
 
 assert.deepEqual(averageCenters([
   new THREE.Vector3(1, 2, 3),

@@ -9,12 +9,6 @@ geometry_msgs/Point[] fingertip_positions
 geometry_msgs/Point geometric_centroid
 geometry_msgs/Point virtual_centroid
 
-# Latest 75 mm sphere estimate from four or more tactile FK contact points.
-bool blind_sphere_estimate_valid
-geometry_msgs/Point blind_sphere_center
-float64 blind_sphere_effective_radius_m
-float64 blind_sphere_fit_rms_error_m
-
 # Relative rotation about the configured palm-normal axis. The current angle
 # is estimated from the fingertip contact constellation, not an object sensor.
 # The command-time thumb position is the pivot. Thumb rotation force is zero;

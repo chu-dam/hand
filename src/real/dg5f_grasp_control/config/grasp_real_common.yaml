@@ -24,6 +24,9 @@ grasp_real:
 
     use_finger_count: 3
 
+    # Unknown-object rotation: do not estimate or adapt to a known sphere.
+    blind_sphere_adaptation_enabled: false
+
     pose_kp: 0.285
     pose_kd: 0.05
     pose_pd_limit: 0.25
