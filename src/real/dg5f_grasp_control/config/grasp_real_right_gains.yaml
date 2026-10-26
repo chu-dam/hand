@@ -43,7 +43,8 @@ grasp_real:
     blind_reverse_thumb_j3_target_rad: -0.1991
     blind_reverse_thumb_j4_target_rad: 0.8927
     blind_reverse_pinky_release_deg: 8.0
-    blind_fk_sphere_target_hand_x_m: 0.097
+    # Neutral 98.5 mm; orientation adjusts this to 97~100 mm.
+    blind_fk_sphere_target_hand_x_m: 0.0985
     blind_sphere_min_hand_x_m: 0.0837876
     blind_sphere_max_hand_x_m: 0.1146891
     blind_fk_hand_x_gain: 1.0

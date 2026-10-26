@@ -48,6 +48,29 @@ port_listening() {
   [[ -n "$(ss -H -ltn "sport = :${port}" 2>/dev/null)" ]]
 }
 
+port_listener_pid() {
+  local port="$1"
+  local listener
+  listener="$(ss -H -ltnp "sport = :${port}" 2>/dev/null)"
+  if [[ "${listener}" =~ pid=([0-9]+) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  fi
+}
+
+process_uses_workspace() {
+  local pid="$1"
+  local entry
+  [[ -r "/proc/${pid}/environ" ]] || return 1
+  while IFS= read -r entry; do
+    case "${entry}" in
+      "COLCON_PREFIX_PATH=${ROOT_DIR}/install"|"COLCON_PREFIX_PATH=${ROOT_DIR}/install:"*)
+        return 0
+        ;;
+    esac
+  done < <(tr '\0' '\n' < "/proc/${pid}/environ")
+  return 1
+}
+
 wait_for_process_exit() {
   local pid="$1"
   local attempts="$2"
@@ -127,13 +150,13 @@ trap 'exit 129' HUP
 
 [[ -r /opt/ros/humble/setup.bash ]] \
   || die "/opt/ros/humble/setup.bash를 찾을 수 없습니다."
-[[ -r "${ROOT_DIR}/install/setup.bash" ]] \
-  || die "${ROOT_DIR}/install/setup.bash를 찾을 수 없습니다. 먼저 colcon build를 실행하세요."
+[[ -r "${ROOT_DIR}/install/local_setup.bash" ]] \
+  || die "${ROOT_DIR}/install/local_setup.bash를 찾을 수 없습니다. 먼저 colcon build를 실행하세요."
 
 # ROS/colcon setup files may read optional unset variables.
 set +u
 source /opt/ros/humble/setup.bash
-source "${ROOT_DIR}/install/setup.bash"
+source "${ROOT_DIR}/install/local_setup.bash"
 set -u
 
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-73}"
@@ -160,6 +183,11 @@ ros2 pkg prefix rosbridge_server >/dev/null 2>&1 \
   || die "rosbridge_server를 찾을 수 없습니다. ros-humble-rosbridge-suite를 설치하세요."
 
 if port_listening 9090; then
+  EXISTING_BRIDGE_PID="$(port_listener_pid 9090)"
+  [[ -n "${EXISTING_BRIDGE_PID}" ]] \
+    || die "9090 포트의 기존 프로세스를 확인할 수 없습니다."
+  process_uses_workspace "${EXISTING_BRIDGE_PID}" \
+    || die "9090 포트의 rosbridge가 다른 workspace 환경으로 실행 중입니다. 기존 rosbridge를 종료하세요."
   BRIDGE_REUSED=true
   log "기존 rosbridge 재사용 · 127.0.0.1:9090"
 fi

@@ -52,7 +52,7 @@ const MODEL_ROOT = "robot/dg5f_s_description";
 const FINGERTIP_RADIUS_M = 0.009;
 const FK_TIP_TO_BALL_CENTER_M = 0.0375 + 0.0090;
 const FK_CIRCUMRADIUS_TOLERANCE_M = 0.002;
-const BLIND_SPHERE_ADAPTATION_ENABLED = false;
+const BLIND_SPHERE_ADAPTATION_ENABLED = true;
 
 type ViewerStatus = "loading" | "ready" | "error";
 interface ViewerState {

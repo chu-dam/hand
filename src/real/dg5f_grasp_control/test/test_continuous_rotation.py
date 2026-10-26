@@ -197,13 +197,43 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         )
 
     def test_blind_rotation_also_starts_from_active_five_finger_grasp(self):
+        for pose_type in (5, 6):
+            with self.subTest(pose_type=pose_type):
+                controller = GraspController(
+                    RuntimeConfig(hand_side="right"), log=None
+                )
+                controller.apply_pose_type(pose_type, now=1.0)
+                controller.apply_grasp_type(5, now=1.5)
+
+                self.assertTrue(controller.start_continuous_rotation(now=2.0))
+                self.assertEqual(controller.use_fingers, [1, 2, 3, 4, 5])
+                self.assertEqual(
+                    controller.continuous_rotation_phase,
+                    "blind_grasp_settle",
+                )
+
+    def test_five_finger_grasp_can_switch_grasp_or_pre_grasp_pose(self):
+        for grasp_type in (4, 3, 2):
+            with self.subTest(grasp_type=grasp_type):
+                controller = GraspController(
+                    RuntimeConfig(hand_side="right"), log=None
+                )
+                controller.apply_pose_type(6, now=1.0)
+                controller.apply_grasp_type(5, now=1.5)
+
+                controller.apply_grasp_type(grasp_type, now=2.0)
+
+                self.assertEqual(controller.active_finger_count, grasp_type)
+                self.assertEqual(controller.state, "GROPED_GRASP")
+
         controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
         controller.apply_pose_type(6, now=1.0)
         controller.apply_grasp_type(5, now=1.5)
 
-        self.assertTrue(controller.start_continuous_rotation(now=2.0))
-        self.assertEqual(controller.use_fingers, [1, 2, 3, 4, 5])
-        self.assertEqual(controller.continuous_rotation_phase, "blind_grasp_settle")
+        controller.apply_pose_type(5, now=2.0)
+
+        self.assertEqual(controller.pose_type, 5)
+        self.assertEqual(controller.state, "PRE_GRASP_POSE")
 
     def test_blind_sequence_rotates_without_middle_or_pinky(self):
         logs = []
@@ -350,7 +380,7 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
             tip = tip_position(q, 1)
             base_tip = controller.blind_thumb_release_tip_hand[-initial_direction]
             np.testing.assert_allclose(tip[1:], base_tip[1:], atol=5e-4)
-            self.assertAlmostEqual(tip[0], base_tip[0] - 0.0035, delta=5e-4)
+            self.assertAlmostEqual(tip[0], base_tip[0] - 0.0020, delta=5e-4)
 
     def test_direction_change_during_pose_rotation_reverses_in_place(self):
         controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
@@ -863,7 +893,7 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         q[thumb] = controller.continuous_rotation_pose_target[thumb]
         adjusted_tip = tip_position(q, 1)
         np.testing.assert_allclose(adjusted_tip[1:], base_tip[1:], atol=5e-4)
-        self.assertAlmostEqual(adjusted_tip[0], base_tip[0] - 0.005, delta=5e-4)
+        self.assertAlmostEqual(adjusted_tip[0], base_tip[0] - 0.0035, delta=5e-4)
         self.assertEqual(
             q[thumb[0]], controller._blind_thumb_release_target()[0]
         )
@@ -909,7 +939,7 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
             )
             self.assertAlmostEqual(
                 adjusted_tip[0],
-                base_tip[0] - 0.005,
+                base_tip[0] - 0.0035,
                 delta=5e-4,
             )
 
@@ -919,7 +949,31 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
             RIGHT_HAND_BLIND_GRASP_INITIAL_POSE[middle],
         )
 
-    def test_fk_height_offset_uses_maximum_reachable_distance(self):
+    def test_fk_target_tracks_orientation_and_is_held_until_next_estimate(self):
+        cases = (
+            (np.array([[0, 0, -1], [0, 1, 0], [1, 0, 0]]), 0.100),
+            (np.array([[0, 0, 1], [0, 1, 0], [-1, 0, 0]]), 0.097),
+            (np.eye(3), 0.0985),
+        )
+        for rotation, expected_target in cases:
+            with self.subTest(target=expected_target):
+                controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
+                controller.set_rotation_hand_to_world(rotation)
+                controller.blind_sphere_hand_x_samples = [expected_target - 0.002]
+
+                self.assertTrue(controller._finish_blind_sphere_sampling())
+                self.assertAlmostEqual(
+                    controller.blind_sphere_sampled_target_hand_x,
+                    expected_target,
+                )
+
+                controller.set_rotation_hand_to_world(np.eye(3))
+                self.assertAlmostEqual(
+                    controller.blind_sphere_sampled_target_hand_x,
+                    expected_target,
+                )
+
+    def test_fk_height_error_is_clamped_to_four_mm(self):
         controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
         controller.sync_joint_state(RIGHT_HAND_BLIND_GRASP_INITIAL_POSE)
         controller.blind_sphere_sampled_hand_x = 0.110
@@ -944,7 +998,7 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
             adjusted_tip = tip_position(adjusted_q, finger)
 
             self.assertGreater(adjusted_tip[0] - base_tip[0], 0.0005)
-            self.assertLess(adjusted_tip[0] - base_tip[0], 0.020)
+            self.assertLessEqual(adjusted_tip[0] - base_tip[0], 0.0045)
             np.testing.assert_allclose(
                 adjusted_tip[1:], base_tip[1:], atol=5e-4
             )

@@ -189,17 +189,10 @@ export function ControlPanel({
     && rotationDegreesValid
     && parsedRotationDegrees !== 0;
   const rotationTestEnabled = handSide === "right" && rotationCommandEnabled;
-  const continuousRotationAvailable = (
+  const blindRotationStartAvailable = (
     handSide === "right"
     && ready
     && !teaching
-    && continuousRotationActive
-  );
-  const blindGraspContinuousRotationAvailable = (
-    handSide === "right"
-    && ready
-    && !teaching
-    && !continuousRotationActive
     && (debug?.pose_type === 5 || debug?.pose_type === 6)
     && (
       debug?.controller_state === "PRE_GRASP_POSE"
@@ -208,6 +201,15 @@ export function ControlPanel({
         && debug?.grasp_type === 5
       )
     )
+  );
+  const continuousRotationAvailable = (
+    handSide === "right"
+    && ready
+    && !teaching
+    && (continuousRotationActive || blindRotationStartAvailable)
+  );
+  const blindGraspContinuousRotationAvailable = (
+    !continuousRotationActive && blindRotationStartAvailable
   );
   const blindDirectionAvailable = (
     handSide === "right"
@@ -642,7 +644,7 @@ export function ControlPanel({
               ? continuousRotationActive
                 ? "Stop continuous rotation"
                 : "Start continuous rotation"
-              : "Available while a right-hand regrasp sequence is active"}
+              : "Available in either right-hand Pre-rotation pose or its active 5F grasp"}
             onClick={() => report(
               onContinuousRotation(!continuousRotationActive),
               continuousRotationActive

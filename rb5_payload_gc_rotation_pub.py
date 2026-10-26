@@ -10,7 +10,7 @@ import rclpy
 from std_msgs.msg import Float64MultiArray, Int32
 
 
-ROBOT_ADDRESS = "169.254.186.20"
+ROBOT_ADDRESS = "169.254.186.10"
 XML_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "rb5_850e_payload_1kg.xml",

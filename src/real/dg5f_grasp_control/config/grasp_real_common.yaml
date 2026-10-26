@@ -24,8 +24,8 @@ grasp_real:
 
     use_finger_count: 3
 
-    # Unknown-object rotation: do not estimate or adapt to a known sphere.
-    blind_sphere_adaptation_enabled: false
+    # Known 75 mm sphere: estimate its center from fingertip FK and adapt releases.
+    blind_sphere_adaptation_enabled: true
 
     pose_kp: 0.285
     pose_kd: 0.05

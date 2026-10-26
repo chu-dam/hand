@@ -295,6 +295,9 @@ class GraspController:
         self.blind_sphere_hand_x_samples = []
         self.blind_sphere_hand_samples = []
         self.blind_sphere_sampled_hand_x = None
+        self.blind_sphere_sampled_target_hand_x = float(
+            self.cfg.blind_fk_sphere_target_hand_x_m
+        )
         self.blind_grasp_contact_polygon_area_m2 = None
         self.blind_j1_release_scale = 1.0
         self.blind_initial_grasp_q = None
@@ -463,9 +466,15 @@ class GraspController:
             return False
         average_x = float(np.mean(self.blind_sphere_hand_x_samples))
         self.blind_sphere_sampled_hand_x = average_x
+        # Snapshot orientation with the sphere estimate so a later frame update cannot move the target.
+        self.blind_sphere_sampled_target_hand_x = (
+            float(self.cfg.blind_fk_sphere_target_hand_x_m)
+            + 0.0015 * float(np.clip(self.rotation_hand_to_world[2, 0], -1.0, 1.0))
+        )
         self._log(
             "[BLIND_SPHERE] average hand X; "
             f"x={average_x * 1000.0:.2f}mm, "
+            f"fk_target_x={self.blind_sphere_sampled_target_hand_x * 1000.0:.2f}mm, "
             "mode=fk, action=adaptive"
         )
         return True
@@ -474,6 +483,9 @@ class GraspController:
         self.blind_sphere_hand_x_samples.clear()
         self.blind_sphere_hand_samples.clear()
         self.blind_sphere_sampled_hand_x = None
+        self.blind_sphere_sampled_target_hand_x = float(
+            self.cfg.blind_fk_sphere_target_hand_x_m
+        )
 
     def _blind_sphere_estimate_ready(self) -> bool:
         sample_count = max(1, int(self.cfg.blind_sphere_stable_sample_count))
@@ -689,9 +701,11 @@ class GraspController:
         if sphere_x is None or not np.isfinite(sphere_x):
             return target
 
-        x_error = float(sphere_x) - float(
-            self.cfg.blind_fk_sphere_target_hand_x_m
-        )
+        x_error = float(np.clip(
+            float(sphere_x) - self.blind_sphere_sampled_target_hand_x,
+            -0.004,
+            0.004,
+        ))
         if abs(x_error) <= float(self.cfg.blind_fk_hand_x_deadband_m):
             return target
         x_offset = float(self.cfg.blind_fk_hand_x_gain) * x_error

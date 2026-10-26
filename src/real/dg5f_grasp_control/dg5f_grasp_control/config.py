@@ -68,7 +68,8 @@ class RuntimeConfig:
     blind_reverse_thumb_j3_target_rad: float = -0.1991
     blind_reverse_thumb_j4_target_rad: float = 0.8927
     blind_reverse_pinky_release_deg: float = 8.0
-    blind_fk_sphere_target_hand_x_m: float = 0.100
+    # Neutral target; world-up projection of hand +X adds up to +/- 1.5 mm.
+    blind_fk_sphere_target_hand_x_m: float = 0.0985
     blind_sphere_min_hand_x_m: float = 0.0837876
     blind_sphere_max_hand_x_m: float = 0.1146891
     blind_fk_hand_x_gain: float = 1.0
