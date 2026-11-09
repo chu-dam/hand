@@ -1,7 +1,5 @@
 export type HandSide = "left" | "right";
 
-export const TACTILE_Y_ORIGIN_OFFSET_M = 0.0032;
-
 export interface RosTime {
   sec: number;
   nanosec: number;
@@ -32,14 +30,6 @@ export interface Float64MultiArrayMessage {
   };
 }
 
-export interface TactileSample {
-  x: number;
-  y: number;
-  fx: number;
-  fy: number;
-  fz: number;
-}
-
 export interface Vector3StampedMessage {
   header: RosHeader;
   vector: Point3;
@@ -64,6 +54,11 @@ export interface GraspDebugMessage {
   blind_sphere_center?: Point3;
   blind_sphere_effective_radius_m?: number;
   blind_sphere_fit_rms_error_m?: number;
+  sphere_radius_m?: number;
+  sphere_fit_rms_m?: number;
+  sphere_center?: Point3;
+  sphere_center_valid?: boolean;
+  sphere_estimation_state?: string;
   relative_rotation_start_centroid?: Point3;
   relative_rotation_pivot?: Point3;
   relative_rotation_axis?: Point3;

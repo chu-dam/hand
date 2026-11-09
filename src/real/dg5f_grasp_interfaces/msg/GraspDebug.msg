@@ -15,6 +15,14 @@ geometry_msgs/Point blind_sphere_center
 float64 blind_sphere_effective_radius_m
 float64 blind_sphere_fit_rms_error_m
 
+# Initial 5F FK radius lock and fixed-radius center reconstruction.
+# Radius <= 0 means not locked; center_valid marks a fresh center.
+float64 sphere_radius_m
+float64 sphere_fit_rms_m
+geometry_msgs/Point sphere_center
+bool sphere_center_valid
+string sphere_estimation_state
+
 # Relative rotation about the configured palm-normal axis. The current angle
 # is estimated from the fingertip contact constellation, not an object sensor.
 # The command-time thumb position is the pivot. Thumb rotation force is zero;

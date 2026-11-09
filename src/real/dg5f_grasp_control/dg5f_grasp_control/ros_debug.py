@@ -248,6 +248,14 @@ def build_grasp_debug_message(
     message.blind_sphere_fit_rms_error_m = float(
         controller.blind_sphere_fit_rms_error_m
     )
+    sphere = controller.sphere_estimator
+    message.sphere_radius_m = float(sphere.radius or 0.0)
+    message.sphere_fit_rms_m = float(sphere.rms)
+    message.sphere_center = _point(
+        sphere.last_center if sphere.last_center is not None else np.zeros(3)
+    )
+    message.sphere_center_valid = bool(sphere.center is not None)
+    message.sphere_estimation_state = str(sphere.state)
     message.relative_rotation_start_centroid = _point(
         relative_rotation_start_centroid
     )

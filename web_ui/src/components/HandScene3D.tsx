@@ -6,22 +6,14 @@ import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import URDFLoader, { type URDFRobot } from "urdf-loader";
 
 import {
-  decodeFingerIds,
   vectorMagnitude,
   type GraspDebugMessage,
   type HandSide,
   type JointStateMessage,
   type Point3,
   type RotationMatrix3,
-  type TactileSample,
-  TACTILE_Y_ORIGIN_OFFSET_M,
 } from "../ros/types";
 import { IDENTITY_ROTATION_MATRIX } from "../ros/frames";
-import {
-  averageCenters,
-  fitSphereCenterFromContactTriangle,
-  sphereEstimationConfigurations,
-} from "../ros/sphereGeometry";
 
 const EXPECTED_JOINTS = new Set(
   Array.from({ length: 5 }, (_, fingerIndex) =>
@@ -50,11 +42,7 @@ const DOWNWARD_ROTATION_MATRIX: RotationMatrix3 = [
 ];
 const MODEL_PACKAGE = "dg5f_s_description";
 const MODEL_ROOT = "robot/dg5f_s_description";
-const FK_TIP_TO_BALL_CENTER_M = 0.0375 + 0.0090;
-const FK_CIRCUMRADIUS_TOLERANCE_M = 0.002;
-
 type ViewerStatus = "loading" | "ready" | "error";
-type SphereEstimationMode = "tactile" | "fk";
 
 interface ViewerState {
   status: ViewerStatus;
@@ -65,31 +53,23 @@ interface HandScene3DProps {
   handSide: HandSide;
   jointState: JointStateMessage | null;
   debug: GraspDebugMessage | null;
-  tactileSamples: TactileSample[];
-  tactileContactPoints: Point3[];
   handToWorldRotation: RotationMatrix3;
   orientationFromTopic: boolean;
   rotationControlsEnabled: boolean;
   compensationControlsEnabled: boolean;
   onRotationMatrix: (value: number[]) => boolean;
   onCompensationMode: (value: number) => boolean;
-  onBlindTactileMode: (value: boolean) => boolean;
   onSphereCenterHand: (center: Point3) => boolean;
-  onSphereEstimateFailure: (reason: string) => boolean;
 }
 
 interface DebugOverlay {
-  fingertips: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>[];
   tipStarts: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>[];
   fkEndpoints: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>[];
   forces: THREE.ArrowHelper[];
   geometricCentroid: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
   virtualCentroid: THREE.Mesh<THREE.OctahedronGeometry, THREE.MeshBasicMaterial>;
   estimatedSphere: THREE.Mesh<THREE.SphereGeometry, THREE.MeshPhongMaterial>;
-  fkPreviousCenters: (THREE.Vector3 | null)[];
-  fkAverageSphere: THREE.Mesh<THREE.SphereGeometry, THREE.MeshPhongMaterial>;
-  fkAverageCenter: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
-  lastFkSphereFailure: string;
+  estimatedCenter: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
 }
 
 function assetUrl(path: string): string {
@@ -110,55 +90,6 @@ function isFinitePoint(point: Point3 | undefined): point is Point3 {
 
 function millimeters(value: number): string {
   return `${(value * 1000).toFixed(1)} mm`;
-}
-
-function setTipVisualMode(
-  tactileVisuals: THREE.Object3D[],
-  fkVisuals: THREE.Object3D[],
-  mode: SphereEstimationMode,
-) {
-  tactileVisuals.forEach((visual) => { visual.visible = mode === "tactile"; });
-  fkVisuals.forEach((visual) => { visual.visible = mode === "fk"; });
-}
-
-function fitFixedRadiusCenter(
-  points: THREE.Vector3[],
-  radius: number,
-  previous?: THREE.Vector3,
-): THREE.Vector3 | null {
-  if (points.length < 3) return null;
-  const center = previous?.clone() ?? points
-    .reduce((sum, point) => sum.add(point), new THREE.Vector3())
-    .multiplyScalar(1 / points.length);
-
-  for (let iteration = 0; iteration < 12; iteration += 1) {
-    const h = Array(9).fill(0) as number[];
-    const gradient = new THREE.Vector3();
-    for (const point of points) {
-      const offset = center.clone().sub(point);
-      const distance = offset.length();
-      if (distance < 1e-9) return null;
-      const jacobian = offset.multiplyScalar(1 / distance);
-      const residual = distance - radius;
-      gradient.addScaledVector(jacobian, residual);
-      const values = [jacobian.x, jacobian.y, jacobian.z];
-      for (let row = 0; row < 3; row += 1) {
-        for (let column = 0; column < 3; column += 1) {
-          h[row * 3 + column] += values[row] * values[column];
-        }
-      }
-    }
-    h[0] += 1e-6;
-    h[4] += 1e-6;
-    h[8] += 1e-6;
-    const matrix = new THREE.Matrix3().set(...h as [number, number, number, number, number, number, number, number, number]);
-    if (Math.abs(matrix.determinant()) < 1e-12) return null;
-    const step = gradient.applyMatrix3(matrix.invert()).multiplyScalar(-1);
-    if (step.length() > 0.02) step.setLength(0.02);
-    center.add(step);
-    if (step.length() < 1e-8) break;
-  }
-  return [center.x, center.y, center.z].every(Number.isFinite) ? center : null;
 }
 
 function applyJointState(robot: URDFRobot, state: JointStateMessage | null): number {
@@ -183,22 +114,6 @@ function applyJointState(robot: URDFRobot, state: JointStateMessage | null): num
 function createDebugOverlay(): DebugOverlay {
   const group = new THREE.Group();
   group.name = "grasp-debug-overlay";
-
-  const fingertips = FINGER_COLORS.map((color, index) => {
-    const marker = new THREE.Mesh(
-      new THREE.SphereGeometry(0.0025, 18, 12),
-      new THREE.MeshBasicMaterial({
-        color,
-        depthTest: false,
-        depthWrite: false,
-      }),
-    );
-    marker.name = `debug-fingertip-${index + 1}`;
-    marker.visible = false;
-    marker.renderOrder = 4;
-    group.add(marker);
-    return marker;
-  });
 
   const referenceMarkers = (name: string, color: number) => FINGER_COLORS.map((_, index) => {
     const marker = new THREE.Mesh(
@@ -246,23 +161,7 @@ function createDebugOverlay(): DebugOverlay {
   group.add(virtualCentroid);
 
   const estimatedSphere = new THREE.Mesh(
-    new THREE.SphereGeometry(0.0375, 40, 28),
-    new THREE.MeshPhongMaterial({
-      color: 0xf59e0b,
-      visible: false,
-      transparent: true,
-      opacity: 0.32,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    }),
-  );
-  estimatedSphere.name = "debug-estimated-75mm-sphere";
-  estimatedSphere.visible = false;
-  estimatedSphere.renderOrder = 3;
-  group.add(estimatedSphere);
-
-  const fkAverageSphere = new THREE.Mesh(
-    new THREE.SphereGeometry(0.0375, 40, 28),
+    new THREE.SphereGeometry(1, 40, 28),
     new THREE.MeshPhongMaterial({
       color: 0x7c3aed,
       transparent: true,
@@ -271,31 +170,27 @@ function createDebugOverlay(): DebugOverlay {
       side: THREE.DoubleSide,
     }),
   );
-  fkAverageSphere.name = "debug-fk-average-sphere";
-  fkAverageSphere.visible = false;
-  fkAverageSphere.renderOrder = 4;
-  group.add(fkAverageSphere);
-  const fkAverageCenter = new THREE.Mesh(
+  estimatedSphere.name = "debug-estimated-sphere";
+  estimatedSphere.visible = false;
+  estimatedSphere.renderOrder = 4;
+  group.add(estimatedSphere);
+  const estimatedCenter = new THREE.Mesh(
     new THREE.SphereGeometry(0.004, 20, 14),
     new THREE.MeshBasicMaterial({ color: 0x7c3aed, depthTest: false }),
   );
-  fkAverageCenter.name = "debug-fk-average-center";
-  fkAverageCenter.visible = false;
-  fkAverageCenter.renderOrder = 10;
-  group.add(fkAverageCenter);
+  estimatedCenter.name = "debug-estimated-center";
+  estimatedCenter.visible = false;
+  estimatedCenter.renderOrder = 10;
+  group.add(estimatedCenter);
 
   return {
-    fingertips,
     tipStarts,
     fkEndpoints,
     forces,
     geometricCentroid,
     virtualCentroid,
     estimatedSphere,
-    fkPreviousCenters: Array(6).fill(null),
-    fkAverageSphere,
-    fkAverageCenter,
-    lastFkSphereFailure: "",
+    estimatedCenter,
   };
 }
 
@@ -369,7 +264,6 @@ function createWorldAxes(): THREE.Group {
 }
 
 function addOverlayToFrame(frame: THREE.Group, overlay: DebugOverlay) {
-  overlay.fingertips.forEach((marker) => frame.add(marker));
   overlay.tipStarts.forEach((marker) => frame.add(marker));
   overlay.fkEndpoints.forEach((marker) => frame.add(marker));
   overlay.forces.forEach((arrow) => frame.add(arrow));
@@ -377,33 +271,20 @@ function addOverlayToFrame(frame: THREE.Group, overlay: DebugOverlay) {
     overlay.geometricCentroid,
     overlay.virtualCentroid,
     overlay.estimatedSphere,
-    overlay.fkAverageSphere,
-    overlay.fkAverageCenter,
+    overlay.estimatedCenter,
   );
 }
 
 function updateDebugOverlay(
   overlay: DebugOverlay,
   debug: GraspDebugMessage | null,
-  tactileSamples: TactileSample[],
   forceScaleMillimeters: number,
   worldOrientationAvailable: boolean,
   robot: URDFRobot | null = null,
   handFrame: THREE.Group | null = null,
-  sphereEstimationMode: SphereEstimationMode = "fk",
-  onFkSphereFailure?: (reason: string) => void,
 ): THREE.Vector3 | null {
   const frameMatches = debug?.header.frame_id === "link_base";
   const showWorldOverlay = frameMatches && worldOrientationAvailable;
-  const blindSphereMode = debug?.controller_state === "GROPED_GRASP"
-    && debug.grasp_type >= 3;
-  const updateBlindSphere = blindSphereMode
-    && (
-      !debug.controller_phase.startsWith("blind_")
-      || debug.controller_phase === "blind_forward_sphere_estimate"
-      || debug.controller_phase === "blind_reverse_sphere_estimate"
-      || debug.controller_phase === "blind_direction_sphere_estimate"
-    );
 
   overlay.fkEndpoints.forEach((marker, index) => {
     const point = debug?.fingertip_positions[index];
@@ -417,47 +298,6 @@ function updateDebugOverlay(
     tipLink.updateMatrixWorld(true);
     const worldPoint = tipLink.localToWorld(new THREE.Vector3(0.003, 0, 0));
     marker.position.copy(handFrame.worldToLocal(worldPoint));
-  });
-
-  overlay.fingertips.forEach((marker, index) => {
-    const point = debug?.fingertip_positions[index];
-    const sample = tactileSamples[index];
-    const hasContact = sample && (Math.abs(sample.x) > 1e-6 || Math.abs(sample.y) > 1e-6);
-    marker.visible = sphereEstimationMode === "tactile"
-      && showWorldOverlay
-      && isFinitePoint(point)
-      && Boolean(hasContact);
-    if (marker.visible && point) {
-      const tipLink = robot?.links[`link_${index + 1}_tip`];
-      if (tipLink && handFrame && sample) {
-        // Sensor x/y are tip-local coordinates; raycast the actual tip mesh
-        // to determine the remaining coordinate on its curved surface.
-        const tipMeshes: THREE.Mesh[] = [];
-        tipLink.traverse((object) => {
-          if (object instanceof THREE.Mesh) tipMeshes.push(object);
-        });
-        tipLink.updateMatrixWorld(true);
-        const tipLocal = new THREE.Vector3(
-          TACTILE_Y_ORIGIN_OFFSET_M + sample.y * 0.001,
-          0.1,
-          sample.x * 0.001,
-        );
-        const worldPoint = tipLink.localToWorld(tipLocal.clone());
-        const worldDirection = tipLink
-          .localToWorld(new THREE.Vector3(tipLocal.x, -0.1, tipLocal.z))
-          .sub(worldPoint)
-          .normalize();
-        const raycaster = new THREE.Raycaster(worldPoint, worldDirection);
-        const hit = raycaster.intersectObjects(tipMeshes, true)[0];
-        if (hit) {
-          marker.position.copy(handFrame.worldToLocal(hit.point.clone()));
-        } else {
-          marker.position.set(point.x, point.y, point.z);
-        }
-      } else {
-        marker.position.set(point.x, point.y, point.z);
-      }
-    }
   });
 
   overlay.forces.forEach((arrow, index) => {
@@ -501,89 +341,19 @@ function updateDebugOverlay(
     overlay.virtualCentroid.position.set(virtualPoint.x, virtualPoint.y, virtualPoint.z);
   }
 
-  const sphereCenter = sphereEstimationMode === "tactile"
-    && updateBlindSphere
-    && overlay.fingertips[0].visible
-    ? fitFixedRadiusCenter(
-      overlay.fingertips
-        .filter((marker, index) => marker.visible && index !== 4)
-        .map((marker) => marker.position),
-      0.0375,
-      overlay.estimatedSphere.visible
-        ? overlay.estimatedSphere.position
-        : isFinitePoint(debug?.geometric_centroid)
-          ? new THREE.Vector3(
-            debug.geometric_centroid.x,
-            debug.geometric_centroid.y,
-            debug.geometric_centroid.z,
-          )
-          : undefined,
-    )
-    : null;
-  overlay.estimatedSphere.visible = Boolean(
-    sphereEstimationMode === "tactile" && showWorldOverlay && sphereCenter,
-  );
-  if (sphereCenter) {
-    overlay.estimatedSphere.position.copy(sphereCenter);
-  }
-  const fkFailures: string[] = [];
-  const activeFingerIds = debug
-    ? decodeFingerIds(debug.active_finger_ids ?? debug.finger_ids)
-    : [];
-  const fkConfigurations = sphereEstimationConfigurations(
-    debug?.grasp_type ?? 0,
-    activeFingerIds,
-  );
-  const fkSphereCenters = fkConfigurations.map((configuration, index) => {
-    const disambiguationPoint = configuration?.disambiguationFinger
-      ? debug?.fingertip_positions[configuration.disambiguationFinger - 1]
-      : undefined;
-    const trianglePoints = configuration.fingerIds
-      .map((finger) => debug?.fingertip_positions[finger - 1])
-      .filter(isFinitePoint)
-      .map((point) => new THREE.Vector3(point.x, point.y, point.z));
-    const center = sphereEstimationMode === "fk" && updateBlindSphere && configuration
-      ? fitSphereCenterFromContactTriangle(
-        trianglePoints,
-        FK_TIP_TO_BALL_CENTER_M,
-        overlay.fkPreviousCenters[index] ?? new THREE.Vector3(),
-        (reason) => { fkFailures[index] = reason; },
-        FK_CIRCUMRADIUS_TOLERANCE_M,
-        configuration.fingerIds,
-        isFinitePoint(disambiguationPoint)
-          ? new THREE.Vector3(
-            disambiguationPoint.x,
-            disambiguationPoint.y,
-            disambiguationPoint.z,
-          )
-          : undefined,
-      )
-      : null;
-    if (center) {
-      overlay.fkPreviousCenters[index] = center.clone();
-    }
-    return center;
-  });
-  const validFkCenters = fkSphereCenters
-    .filter((center): center is THREE.Vector3 => center !== null);
-  const contactTriangleCenter = averageCenters(validFkCenters);
-  overlay.fkAverageSphere.visible = Boolean(showWorldOverlay && contactTriangleCenter);
-  overlay.fkAverageCenter.visible = overlay.fkAverageSphere.visible;
-  if (contactTriangleCenter) {
-    overlay.fkAverageSphere.position.copy(contactTriangleCenter);
-    overlay.fkAverageCenter.position.copy(contactTriangleCenter);
-  }
-  const fkFailure = fkFailures.find(Boolean) ?? "";
-  if (sphereEstimationMode === "fk" && updateBlindSphere && onFkSphereFailure) {
-    if (contactTriangleCenter) {
-      overlay.lastFkSphereFailure = "";
-    } else if (fkFailure && fkFailure !== overlay.lastFkSphereFailure) {
-      overlay.lastFkSphereFailure = fkFailure;
-      console.warn(`[FK_SPHERE] estimate failed: ${fkFailure}`);
-      onFkSphereFailure(fkFailure);
-    }
-  }
-  return sphereEstimationMode === "tactile" ? sphereCenter : contactTriangleCenter;
+  const sphereRadius = debug?.sphere_radius_m ?? 0;
+  const sphereCenter = debug?.sphere_center;
+  const showEstimatedSphere = showWorldOverlay
+    && Number.isFinite(sphereRadius)
+    && sphereRadius > 0
+    && isFinitePoint(sphereCenter);
+  overlay.estimatedSphere.visible = showEstimatedSphere;
+  overlay.estimatedCenter.visible = showEstimatedSphere;
+  if (!showEstimatedSphere || !sphereCenter) return null;
+  overlay.estimatedSphere.position.set(sphereCenter.x, sphereCenter.y, sphereCenter.z);
+  overlay.estimatedSphere.scale.setScalar(sphereRadius);
+  overlay.estimatedCenter.position.copy(overlay.estimatedSphere.position);
+  return new THREE.Vector3(sphereCenter.x, sphereCenter.y, sphereCenter.z);
 }
 
 function disposeObject(root: THREE.Object3D) {
@@ -611,33 +381,25 @@ export function HandScene3D({
   handSide,
   jointState,
   debug,
-  tactileSamples,
   handToWorldRotation,
   orientationFromTopic,
   rotationControlsEnabled,
   compensationControlsEnabled,
   onRotationMatrix,
   onCompensationMode,
-  onBlindTactileMode,
   onSphereCenterHand,
-  onSphereEstimateFailure,
 }: HandScene3DProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const robotRef = useRef<URDFRobot | null>(null);
   const handFrameRef = useRef<THREE.Group | null>(null);
   const overlayRef = useRef<DebugOverlay | null>(null);
-  const tactileTipVisualsRef = useRef<THREE.Object3D[]>([]);
-  const fkTipVisualsRef = useRef<THREE.Object3D[]>([]);
   const latestJointState = useRef(jointState);
   const latestDebug = useRef(debug);
-  const latestTactile = useRef(tactileSamples);
   const latestHandToWorldRotation = useRef(handToWorldRotation);
   const latestForceScale = useRef(16);
-  const latestSphereEstimationMode = useRef<SphereEstimationMode>("fk");
   const renderRef = useRef<() => void>(() => undefined);
   const resetViewRef = useRef<() => void>(() => undefined);
   const [forceScale, setForceScale] = useState(16);
-  const [sphereEstimationMode, setSphereEstimationMode] = useState<SphereEstimationMode>("fk");
   const [contactSphereCenter, setContactSphereCenter] = useState<Point3 | null>(null);
   const [viewer, setViewer] = useState<ViewerState>({
     status: "loading",
@@ -671,12 +433,10 @@ export function HandScene3D({
       updateDebugOverlay(
         overlay,
         latestDebug.current,
-        latestTactile.current,
         latestForceScale.current,
         true,
         robotRef.current,
         handFrameRef.current,
-        latestSphereEstimationMode.current,
       );
     }
     renderRef.current();
@@ -684,27 +444,25 @@ export function HandScene3D({
 
   useEffect(() => {
     latestDebug.current = debug;
-    latestTactile.current = tactileSamples;
     latestForceScale.current = forceScale;
     const overlay = overlayRef.current;
     if (!overlay) return;
     const center = updateDebugOverlay(
       overlay,
       debug,
-      tactileSamples,
       forceScale,
       true,
       robotRef.current,
       handFrameRef.current,
-      sphereEstimationMode,
-      onSphereEstimateFailure,
     );
     if (center) {
       setContactSphereCenter(center);
-      onSphereCenterHand(center);
+      if (debug?.sphere_center_valid) onSphereCenterHand(center);
+    } else {
+      setContactSphereCenter(null);
     }
     renderRef.current();
-  }, [debug, tactileSamples, forceScale, onSphereCenterHand, onSphereEstimateFailure, sphereEstimationMode]);
+  }, [debug, forceScale, onSphereCenterHand]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -783,12 +541,10 @@ export function HandScene3D({
     updateDebugOverlay(
       overlay,
       latestDebug.current,
-      latestTactile.current,
       latestForceScale.current,
       true,
       robotRef.current,
       handFrame,
-      latestSphereEstimationMode.current,
     );
 
     const render = () => renderer.render(scene, camera);
@@ -953,12 +709,10 @@ export function HandScene3D({
           const joint = robot.joints[jointName];
           if (joint) joint.ignoreLimits = true;
         });
-        tactileTipVisualsRef.current = [];
-        fkTipVisualsRef.current = [];
         for (let finger = 1; finger <= 5; finger += 1) {
           const tipLink = robot.links[`link_${finger}_tip`];
           if (!tipLink) continue;
-          tactileTipVisualsRef.current.push(...tipLink.children);
+          tipLink.children.forEach((visual) => { visual.visible = false; });
           new STLLoader(manager).load(
             assetUrl(`${MODEL_ROOT}/meshes/dg5fs_${handSide}/link_${finger}_tip.STL`),
             (geometry) => {
@@ -970,33 +724,24 @@ export function HandScene3D({
                 geometry,
                 new THREE.MeshPhongMaterial({ color: 0xf1f3f2, shininess: 18 }),
               );
-              visual.name = `fk-default-tip-${finger}`;
+              visual.name = `default-tip-${finger}`;
               visual.position.x = 0.003;
-              visual.visible = latestSphereEstimationMode.current === "fk";
               tipLink.add(visual);
-              fkTipVisualsRef.current.push(visual);
               render();
             },
             undefined,
             (error) => failedAssets.push(errorText(error)),
           );
         }
-        setTipVisualMode(
-          tactileTipVisualsRef.current,
-          fkTipVisualsRef.current,
-          latestSphereEstimationMode.current,
-        );
         handFrame.add(robot);
         applyJointState(robot, latestJointState.current);
         updateDebugOverlay(
           overlay,
           latestDebug.current,
-          latestTactile.current,
           latestForceScale.current,
           true,
           robot,
           handFrame,
-          latestSphereEstimationMode.current,
         );
         render();
       },
@@ -1022,8 +767,6 @@ export function HandScene3D({
       if (robotRef.current === robotForCleanup) robotRef.current = null;
       if (handFrameRef.current === handFrame) handFrameRef.current = null;
       if (overlayRef.current === overlay) overlayRef.current = null;
-      tactileTipVisualsRef.current = [];
-      fkTipVisualsRef.current = [];
       renderRef.current = () => undefined;
       resetViewRef.current = () => undefined;
     };
@@ -1032,6 +775,10 @@ export function HandScene3D({
   const frameMatches = !debug || debug.header.frame_id === "link_base";
   const live = viewer.status === "ready" && mappedJointCount === EXPECTED_JOINTS.size;
   const sphereCenter = contactSphereCenter;
+  const sphereRadius = debug?.sphere_radius_m ?? 0;
+  const estimatedSphereDiameter = Number.isFinite(sphereRadius) && sphereRadius > 0
+    ? 2 * sphereRadius
+    : null;
 
   return (
     <section className="panel scene-panel">
@@ -1072,32 +819,6 @@ export function HandScene3D({
 
       <div className="scene-wrap hand-scene-wrap">
         <div ref={mountRef} className="hand-canvas-mount" />
-
-        <div className="sphere-estimation-controls">
-          <span>SPHERE ESTIMATE</span>
-          {(["tactile", "fk"] as SphereEstimationMode[]).map((mode) => (
-            <button
-              key={mode}
-              type="button"
-              className={sphereEstimationMode === mode ? "active" : ""}
-              disabled={!rotationControlsEnabled}
-              onClick={() => {
-                if (onBlindTactileMode(mode === "tactile")) {
-                  latestSphereEstimationMode.current = mode;
-                  setSphereEstimationMode(mode);
-                  setTipVisualMode(
-                    tactileTipVisualsRef.current,
-                    fkTipVisualsRef.current,
-                    mode,
-                  );
-                  renderRef.current();
-                }
-              }}
-            >
-              {mode.toUpperCase()}
-            </button>
-          ))}
-        </div>
 
         <div className="scene-orientation-controls">
           <button
@@ -1150,6 +871,7 @@ export function HandScene3D({
           <div><b>X</b><strong>{sphereCenter ? millimeters(sphereCenter.x) : "—"}</strong></div>
           <div><b>Y</b><strong>{sphereCenter ? millimeters(sphereCenter.y) : "—"}</strong></div>
           <div><b>Z</b><strong>{sphereCenter ? millimeters(sphereCenter.z) : "—"}</strong></div>
+          <div><b>Ø</b><strong>{estimatedSphereDiameter ? millimeters(estimatedSphereDiameter) : "—"}</strong></div>
         </div>
 
         {viewer.status !== "ready" && (
@@ -1181,7 +903,6 @@ export function HandScene3D({
         <span><i className="legend-model" />URDF hand · JointState</span>
         <span><i className="legend-dot tip-start" />Physical tip start</span>
         <span><i className="legend-dot fk-endpoint" />FK endpoint</span>
-        <span><i className="legend-dot fingertip" />Debug fingertip</span>
         <span><i className="legend-dot cg" />Geometric centroid</span>
         <span><i className="legend-diamond" />Virtual centroid</span>
         <span><i className="legend-line" />Calculated total force</span>

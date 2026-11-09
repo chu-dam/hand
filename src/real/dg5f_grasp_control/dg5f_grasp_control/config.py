@@ -53,7 +53,7 @@ class RuntimeConfig:
     blind_sphere_stable_sample_count: int = 5
     blind_sphere_stable_max_deviation_m: float = 0.001
     blind_pinky_regrasp_alpha1: float = 5.0
-    blind_finger_release_deg: float = 6.0
+    blind_finger_release_deg: float = 8.0
     blind_middle_release_deg: float = 2.0
     blind_forward_middle_j3_release_deg: float = 5.0
     blind_pinky_release_deg: float = 8.0
