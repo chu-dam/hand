@@ -21,6 +21,7 @@ float64 sphere_radius_m
 float64 sphere_fit_rms_m
 geometry_msgs/Point sphere_center
 bool sphere_center_valid
+float64 sphere_target_hand_x_m
 string sphere_estimation_state
 
 # Relative rotation about the configured palm-normal axis. The current angle

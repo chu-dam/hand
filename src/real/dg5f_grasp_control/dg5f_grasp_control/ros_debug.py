@@ -255,6 +255,9 @@ def build_grasp_debug_message(
         sphere.last_center if sphere.last_center is not None else np.zeros(3)
     )
     message.sphere_center_valid = bool(sphere.center is not None)
+    message.sphere_target_hand_x_m = float(
+        controller._blind_fk_sphere_target_hand_x()
+    )
     message.sphere_estimation_state = str(sphere.state)
     message.relative_rotation_start_centroid = _point(
         relative_rotation_start_centroid

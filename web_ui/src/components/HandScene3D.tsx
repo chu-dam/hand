@@ -779,6 +779,7 @@ export function HandScene3D({
   const estimatedSphereDiameter = Number.isFinite(sphereRadius) && sphereRadius > 0
     ? 2 * sphereRadius
     : null;
+  const sphereTargetX = debug?.sphere_target_hand_x_m;
 
   return (
     <section className="panel scene-panel">
@@ -869,6 +870,7 @@ export function HandScene3D({
         <div className={`sphere-position-overlay ${sphereCenter ? "live" : "waiting"}`}>
           <span>SPHERE · WRIST</span>
           <div><b>X</b><strong>{sphereCenter ? millimeters(sphereCenter.x) : "—"}</strong></div>
+          <div><b>X TARGET</b><strong>{Number.isFinite(sphereTargetX) ? millimeters(sphereTargetX!) : "—"}</strong></div>
           <div><b>Y</b><strong>{sphereCenter ? millimeters(sphereCenter.y) : "—"}</strong></div>
           <div><b>Z</b><strong>{sphereCenter ? millimeters(sphereCenter.z) : "—"}</strong></div>
           <div><b>Ø</b><strong>{estimatedSphereDiameter ? millimeters(estimatedSphereDiameter) : "—"}</strong></div>

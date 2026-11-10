@@ -340,10 +340,10 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         target = controller.continuous_rotation_pose_target
         self.assertEqual(controller.use_fingers, [1, 2, 3, 4])
         self.assertEqual(controller.continuous_rotation_phase, "blind_pinky_release")
-        self.assertAlmostEqual(
-            target[pinky[0]], initial[pinky[0]] - np.deg2rad(8.0)
+        np.testing.assert_allclose(
+            target[pinky],
+            measured[pinky] + np.deg2rad([-5.0, 0.0, -5.0, 0.0]),
         )
-        np.testing.assert_allclose(target[pinky[1:]], measured[pinky[1:]])
 
         self.finish_blind_motion(controller, (5,), 4.001)
         self.assertEqual(controller.use_fingers, [1, 2, 4])
@@ -402,7 +402,7 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
             "blind_index_ring_release",
         )
 
-    def test_direction_change_reestimates_before_thumb_release(self):
+    def test_direction_change_defers_center_estimate_until_reverse_cycle_end(self):
         for initial_direction in (1, -1):
             controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
             controller.apply_pose_type(6, now=1.0)
@@ -414,28 +414,7 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
             controller._process_continuous_rotation(3.01)
 
             self.assertEqual(controller.blind_rotation_direction, -initial_direction)
-            self.assertEqual(
-                controller.continuous_rotation_phase,
-                "blind_direction_sphere_estimate",
-            )
-            controller._process_continuous_rotation(3.511)
-            self.assertEqual(
-                controller.continuous_rotation_phase,
-                "blind_direction_sphere_estimate",
-            )
-
-            for x in (0.0961, 0.0965, 0.0969, 0.0963, 0.0967):
-                controller.set_ui_sphere_center_hand([x, 0.0, 0.05])
-            controller._process_continuous_rotation(3.512)
-
-            thumb = np.asarray(FINGER_JOINT_INDEX[1], dtype=int)
             self.assertEqual(controller.continuous_rotation_phase, "blind_thumb_release")
-            q = np.zeros(20)
-            q[thumb] = controller.continuous_rotation_pose_target[thumb]
-            tip = tip_position(q, 1)
-            base_tip = controller.blind_thumb_release_tip_hand[-initial_direction]
-            np.testing.assert_allclose(tip[1:], base_tip[1:], atol=5e-4)
-            self.assertAlmostEqual(tip[0], base_tip[0] - 0.0035, delta=5e-4)
 
     def test_direction_change_during_pose_rotation_reverses_in_place(self):
         controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
@@ -515,18 +494,22 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         for direction in (1, -1):
             controller.blind_rotation_direction = direction
             for finger, delta_deg in (
-                (2, [-2.0, 2.0, 2.0] if direction > 0 else [-8.0, -8.0, 0.0]),
+                (2, [-2.0, 2.0, 2.0] if direction > 0 else [-15.0, 2.0, 2.0]),
                 (3, [0.0, -5.0, 0.0]),
-                (4, [-10.0, 2.0, 2.0] if direction > 0 else [0.0, 0.0, 0.0]),
+                (4, [-15.0, 2.0, 2.0] if direction > 0 else [-2.0, 2.0, 2.0]),
             ):
                 indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
                 target = controller._blind_release_target(finger)
                 self.assertAlmostEqual(
                     target[0],
                     (
-                        measured[indices[0]] - np.deg2rad(19.0)
+                        measured[indices[0]] - np.deg2rad(
+                            11.4 if finger == 4 else 19.0
+                        )
                         if direction > 0
-                        else measured[indices[0]]
+                        else measured[indices[0]] + np.deg2rad(
+                            13.3 if finger == 2 else 19.0
+                        )
                     ),
                 )
                 np.testing.assert_allclose(
@@ -554,8 +537,28 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
                 target = controller._blind_release_target(finger)
                 self.assertAlmostEqual(
                     target[0],
-                    measured[indices[0]] - np.deg2rad(expected_deg),
+                    measured[indices[0]] - np.deg2rad(
+                        0.6 * expected_deg if finger == 4 else expected_deg
+                    ),
                 )
+
+    def test_reverse_index_j1_moves_seventy_percent_of_ring(self):
+        controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
+        measured = np.linspace(-0.4, 0.4, 20)
+        controller.sync_joint_state(measured)
+        controller.blind_rotation_direction = -1
+        for diameter_mm, release_deg in ((55.0, 8.0), (65.0, 13.5), (75.0, 19.0)):
+            controller.sphere_estimator.radius = diameter_mm / 2000.0
+            index = np.asarray(FINGER_JOINT_INDEX[2], dtype=int)
+            ring = np.asarray(FINGER_JOINT_INDEX[4], dtype=int)
+            index_target = controller._blind_release_target(2)
+            ring_target = controller._blind_release_target(4)
+            self.assertAlmostEqual(
+                index_target[0] - measured[index[0]], np.deg2rad(0.7 * release_deg)
+            )
+            self.assertAlmostEqual(
+                ring_target[0] - measured[ring[0]], np.deg2rad(release_deg)
+            )
 
     def test_reverse_thumb_release_uses_supplied_target(self):
         controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
@@ -593,7 +596,7 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         controller._start_blind_regrasp(2, now=2.2)
         self.assertEqual(controller.use_fingers, [1, 2, 3, 4, 5])
 
-    def test_reverse_pinky_release_matches_forward_eight_degrees(self):
+    def test_reverse_pinky_release_offsets_current_grasp_without_snapshot(self):
         controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
         controller.blind_rotation_direction = -1
         pinky = np.asarray(FINGER_JOINT_INDEX[5], dtype=int)
@@ -604,27 +607,30 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         controller._start_blind_pinky_release(now=2.0)
         target = controller.continuous_rotation_pose_target[pinky]
 
-        self.assertAlmostEqual(
-            target[0], measured[pinky[0]] - np.deg2rad(8.0)
+        np.testing.assert_allclose(
+            target,
+            measured[pinky] + np.deg2rad([-5.0, 0.0, -5.0, 0.0]),
         )
-        np.testing.assert_allclose(target[1:], measured[pinky[1:]])
 
-    def test_forward_pinky_release_keeps_measured_j2_to_j4(self):
+    def test_forward_pinky_release_offsets_saved_initial_grasp(self):
         controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
         pinky = np.asarray(FINGER_JOINT_INDEX[5], dtype=int)
         measured = np.zeros(20)
         measured[pinky] = [0.70, 1.22, 0.93, 0.38]
         controller.sync_joint_state(measured)
+        initial_grasp = measured.copy()
+        initial_grasp[pinky] = [0.68, 1.27, 0.98, 0.91]
+        controller.blind_initial_sphere_q = initial_grasp
 
         controller._start_blind_pinky_release(now=2.0)
         target = controller.continuous_rotation_pose_target[pinky]
 
-        self.assertAlmostEqual(
-            target[0], measured[pinky[0]] - np.deg2rad(8.0)
+        np.testing.assert_allclose(
+            target,
+            initial_grasp[pinky] + np.deg2rad([-5.0, 0.0, -5.0, 0.0]),
         )
-        np.testing.assert_allclose(target[1:], measured[pinky[1:]])
 
-    def test_pinky_regrasp_combines_target_pd_with_grasp_force(self):
+    def test_pinky_regrasp_uses_blind_grasp_without_pose_pd(self):
         controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
         controller.continuous_rotation_active = True
         controller.continuous_rotation_pose_target = np.zeros(20)
@@ -634,13 +640,9 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         output = controller.step(np.zeros(20), np.zeros(20), now=2.001)
 
         self.assertEqual(controller.use_fingers, [1, 2, 3, 4, 5])
-        self.assertEqual(controller.policy.cfg.alpha1, 5.0)
-        self.assertEqual(controller.cfg.alpha1, 3.0)
-        np.testing.assert_allclose(
-            output.inactive_pd_target[pinky],
-            [0.6948, 1.1952, 0.7905, 0.8992],
-        )
-        self.assertTrue(np.any(np.abs(output.inactive_pd[pinky]) > 0.0))
+        self.assertEqual(controller.policy.cfg.alpha1, controller.cfg.alpha1)
+        self.assertTrue(np.all(np.isnan(output.inactive_pd_target[pinky])))
+        np.testing.assert_allclose(output.inactive_pd[pinky], 0.0)
         self.assertTrue(np.any(np.abs(output.grasp_tau[pinky]) > 0.0))
         middle = np.asarray(FINGER_JOINT_INDEX[3], dtype=int)
         self.assertTrue(np.all(np.isnan(output.inactive_pd_target[middle])))
@@ -649,19 +651,6 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         self.assertEqual(
             controller.continuous_rotation_phase,
             "blind_forward_sphere_estimate",
-        )
-        self.assertEqual(controller.policy.cfg.alpha1, 3.0)
-
-    def test_reverse_pinky_regrasp_keeps_previous_target(self):
-        controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
-        controller.blind_rotation_direction = -1
-        controller.continuous_rotation_pose_target = np.zeros(20)
-        controller._start_blind_regrasp(3, now=2.0)
-        pinky = np.asarray(FINGER_JOINT_INDEX[5], dtype=int)
-
-        np.testing.assert_allclose(
-            controller.continuous_rotation_pose_target[pinky],
-            [0.6948, 1.1952, 0.7905, 0.8992],
         )
 
     def test_reverse_pose_rotation_uses_supplied_non_pinky_target(self):
@@ -749,6 +738,7 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
 
     def test_fk_sphere_hand_x_continuously_offsets_thumb_release_tip(self):
         controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
+        controller.blind_reverse_base_q = np.zeros(20)
         base_tip = controller.blind_thumb_release_tip_hand[1].copy()
         controller.blind_sphere_hand_x_samples = [0.095]
         self.assertTrue(controller._finish_blind_sphere_sampling())
@@ -766,8 +756,19 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         self.assertLessEqual(q[thumb[0]], 0.9250245036)
         self.assertEqual(controller.continuous_rotation_phase, "blind_thumb_release")
 
+    def test_fk_target_x_drops_two_mm_when_local_x_faces_world_down(self):
+        controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
+        upward = np.array([[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]])
+        downward = np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]])
+
+        controller.set_rotation_hand_to_world(upward)
+        self.assertAlmostEqual(controller._blind_fk_sphere_target_hand_x(), 0.100)
+        controller.set_rotation_hand_to_world(downward)
+        self.assertAlmostEqual(controller._blind_fk_sphere_target_hand_x(), 0.098)
+
     def test_fk_height_offset_applies_to_index_and_ring_releases(self):
         controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
+        controller.blind_reverse_base_q = np.zeros(20)
         controller.sync_joint_state(RIGHT_HAND_BLIND_GRASP_INITIAL_POSE)
         controller.blind_sphere_sampled_hand_x = 0.095
         base_targets = {
@@ -832,8 +833,9 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
             base_tip = tip_position(base_q, finger)
             adjusted_tip = tip_position(adjusted_q, finger)
 
-            self.assertGreater(adjusted_tip[0] - base_tip[0], 0.0005)
-            self.assertLess(adjusted_tip[0] - base_tip[0], 0.020)
+            self.assertAlmostEqual(
+                adjusted_tip[0] - base_tip[0], 0.006, delta=5e-4
+            )
             np.testing.assert_allclose(
                 adjusted_tip[1:], base_tip[1:], atol=5e-4
             )
@@ -879,6 +881,22 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         controller._process_continuous_rotation(1.084)
 
         self.assertEqual(controller.continuous_rotation_phase, "blind_pose_rotation")
+
+    def test_regrasp_advances_after_eighty_percent_speed_drop(self):
+        controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
+        thumb = np.asarray(FINGER_JOINT_INDEX[1], dtype=int)
+        controller._set_continuous_rotation_phase("blind_thumb_regrasp", 1.0)
+        controller.hand_qdot[thumb] = 0.2
+        self.assertFalse(controller._blind_motion_ready(1.01, (1,), 1.0))
+        controller.hand_qdot[thumb] = 0.039
+        self.assertFalse(controller._blind_motion_ready(1.09, (1,), 1.0))
+
+        controller.blind_sphere_sampled_hand_x = 0.097
+        controller._set_continuous_rotation_phase("blind_thumb_regrasp", 2.0)
+        controller.hand_qdot[thumb] = 0.2
+        self.assertFalse(controller._blind_motion_ready(2.01, (1,), 1.0))
+        controller.hand_qdot[thumb] = 0.039
+        self.assertTrue(controller._blind_motion_ready(2.09, (1,), 1.0))
 
     def test_pose_rotation_aligns_all_four_fingers_before_pinky_regrasp(self):
         controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
@@ -926,6 +944,40 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
 
         controller.apply_grasp_type(5, now=2.0)
         self.assertIsNone(controller.blind_initial_sphere_q)
+
+    def test_first_forward_thumb_regrasp_captures_reverse_base_pose(self):
+        controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
+        controller.apply_pose_type(6, now=1.0)
+        controller.continuous_rotation_active = True
+        controller.continuous_rotation_pose_target = np.zeros(20)
+        controller._start_blind_regrasp(2, now=1.1)
+        captured = RIGHT_HAND_BLIND_GRASP_INITIAL_POSE + np.linspace(-0.01, 0.01, 20)
+        controller.sync_joint_state(captured)
+
+        controller._process_continuous_rotation(1.381)
+
+        np.testing.assert_allclose(controller.blind_reverse_base_q, captured)
+        self.assertEqual(controller.continuous_rotation_phase, "blind_pinky_release")
+        controller.blind_rotation_direction = -1
+        np.testing.assert_allclose(controller._blind_rotation_pose_target(), captured)
+
+    def test_first_forward_release_skips_x_feedback_until_reverse_base_exists(self):
+        controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
+        controller.sync_joint_state(RIGHT_HAND_BLIND_GRASP_INITIAL_POSE)
+        controller.blind_sphere_sampled_hand_x = 0.095
+        expected = {
+            finger: controller._blind_release_target(finger)
+            for finger in (2, 4)
+        }
+
+        controller._start_blind_index_ring_release(now=1.0)
+
+        for finger in (2, 4):
+            indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
+            np.testing.assert_allclose(
+                controller.continuous_rotation_pose_target[indices],
+                expected[finger],
+            )
 
     def test_reverse_estimate_advances_after_five_stable_centers(self):
         controller = GraspController(RuntimeConfig(hand_side="right"), log=None)

@@ -88,6 +88,10 @@ class GraspDebugTest(unittest.TestCase):
         self.assertFalse(message.blind_sphere_estimate_valid)
         self.assertEqual(message.sphere_radius_m, 0.0)
         self.assertFalse(message.sphere_center_valid)
+        self.assertEqual(
+            message.sphere_target_hand_x_m,
+            controller._blind_fk_sphere_target_hand_x(),
+        )
         np.testing.assert_array_equal(
             [message.sphere_center.x, message.sphere_center.y, message.sphere_center.z],
             np.zeros(3),

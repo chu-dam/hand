@@ -58,6 +58,7 @@ export interface GraspDebugMessage {
   sphere_fit_rms_m?: number;
   sphere_center?: Point3;
   sphere_center_valid?: boolean;
+  sphere_target_hand_x_m?: number;
   sphere_estimation_state?: string;
   relative_rotation_start_centroid?: Point3;
   relative_rotation_pivot?: Point3;
