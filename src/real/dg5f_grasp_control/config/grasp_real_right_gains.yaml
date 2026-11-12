@@ -52,12 +52,12 @@ grasp_real:
     blind_reverse_pinky_release_deg: 8.0
     blind_sphere_lift_hand_x_threshold_m: 0.1014456
     blind_fk_sphere_target_hand_x_m: 0.097
-    blind_fk_downward_target_x_offset_m: -0.002
+    blind_fk_downward_target_x_offset_m: -0.001
     blind_sphere_min_hand_x_m: 0.0837876
     blind_sphere_max_hand_x_m: 0.1146891
-    blind_fk_hand_x_gain: 1.0
+    blind_fk_hand_x_gain: 1.5
     blind_fk_hand_x_deadband_m: 0.0005
-    blind_fk_hand_x_max_correction_m: 0.006
+    blind_fk_hand_x_max_correction_m: 0.004
     blind_thumb_lift_j1_target_rad: 0.1136
     blind_thumb_lift_j2_target_rad: -1.6558
     blind_thumb_lift_j3_target_rad: -0.2618

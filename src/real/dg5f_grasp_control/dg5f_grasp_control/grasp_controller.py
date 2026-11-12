@@ -97,6 +97,7 @@ TACTILE_FILTER_WINDOW = 5
 TACTILE_FILTER_ALPHA = 0.4
 TACTILE_GEOMETRY_UPDATE_SEC = 0.02
 BLIND_SPHERE_LOG_PERIOD_SEC = 1.0
+BLIND_POSE_ROTATION_MIDDLE_KP_SCALE = 0.7
 BLIND_RELEASE_IK_LIMITS = {
     1: (
         [-0.2792526803, -1.8500490071, -np.pi / 2, -np.pi / 2],
@@ -399,12 +400,6 @@ class GraspController:
         self.last_regular_policy_fingers = ()
 
         self.rotation_hand_to_world = np.eye(3, dtype=np.float64)
-        thumb = np.asarray(FINGER_JOINT_INDEX[1], dtype=int)
-        self.blind_thumb_release_tip_hand = {}
-        for direction in (1, -1):
-            q = np.zeros(JOINT_COUNT, dtype=np.float64)
-            q[thumb] = self._blind_thumb_release_target(direction)
-            self.blind_thumb_release_tip_hand[direction] = tip_position(q, 1)
         self.card_phase = "idle"
         self.card_phase_started_at = None
         self.card_stall_reference_positions = {}
@@ -970,17 +965,21 @@ class GraspController:
 
     def _blind_fk_sphere_target_hand_x(self) -> float:
         target = float(self.cfg.blind_fk_sphere_target_hand_x_m)
+        radius = self.sphere_estimator.radius
+        if radius is not None and np.isfinite(radius) and radius > 0.0:
+            target = float(np.interp(
+                2000.0 * float(radius),
+                [55.0, 75.0],
+                [0.099, target],
+            ))
         if self.rotation_hand_to_world[2, 0] < 0.0:
             target += float(self.cfg.blind_fk_downward_target_x_offset_m)
         return target
 
-    def _blind_fk_thumb_release_target(self) -> np.ndarray:
-        direction = 1 if self.blind_rotation_direction >= 0 else -1
-        return self._blind_fk_release_target(
-            1,
-            self._blind_thumb_release_target(),
-            self.blind_thumb_release_tip_hand[direction],
-        )
+    def _blind_fk_thumb_release_target(self, target=None) -> np.ndarray:
+        if target is None:
+            target = self._blind_thumb_release_target()
+        return self._blind_fk_release_target(1, target)
 
     def _start_blind_forward_sphere_estimate(self, now: float) -> None:
         self.policy = GraspPolicy(self.use_fingers, self.cfg)
@@ -1060,14 +1059,6 @@ class GraspController:
             if lift
             else self._blind_thumb_release_target()
         )
-        if (
-            not self.blind_use_tactile_estimation
-            and (
-                self.blind_rotation_direction < 0
-                or self.blind_reverse_base_q is not None
-            )
-        ):
-            target[thumb] = self._blind_fk_thumb_release_target()
         if down:
             target[thumb] = (
                 [
@@ -1084,6 +1075,15 @@ class GraspController:
                     self.cfg.blind_reverse_thumb_missed_down_j4_target_rad,
                 ]
             )
+        target[thumb[2:4]] = self.hand_q[thumb[2:4]] - np.deg2rad(4.0)
+        if (
+            not self.blind_use_tactile_estimation
+            and (
+                self.blind_rotation_direction < 0
+                or self.blind_reverse_base_q is not None
+            )
+        ):
+            target[thumb] = self._blind_fk_thumb_release_target(target[thumb])
         for finger in (3, 4):
             indices = np.asarray(FINGER_JOINT_INDEX[finger], dtype=int)
             target[indices] = self.hand_q[indices]
@@ -3984,11 +3984,17 @@ class GraspController:
                     dtype=int,
                 )
                 target = self.continuous_rotation_pose_target[indices]
+                kp = self.cfg.blind_grasp_pre_rotation_pose_kp
+                if (
+                    self.continuous_rotation_phase == "blind_pose_rotation"
+                    and released_finger == 3
+                ):
+                    kp *= BLIND_POSE_ROTATION_MIDDLE_KP_SCALE
                 inactive_pd[indices], _ = pose_pd(
                     target,
                     self.hand_q[indices],
                     qdot[indices],
-                    kp=self.cfg.blind_grasp_pre_rotation_pose_kp,
+                    kp=kp,
                     kd=self.cfg.blind_grasp_pre_rotation_pose_kd,
                     limit=self.cfg.pre_rotation_pose_pd_limit,
                 )

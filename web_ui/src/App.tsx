@@ -129,7 +129,7 @@ export function App() {
           <div>
             <strong>ROSBridge WebSocket</strong>
             <small>
-              JointState {fmtAge(jointAge)} · GraspDebug {fmtAge(debugAge)} · Orientation {rotationAge === null ? "DEFAULT I" : fmtAge(rotationAge)}
+              JointState {fmtAge(jointAge)} · GraspDebug {fmtAge(debugAge)} · Orientation {rotationAge === null ? "DEFAULT" : fmtAge(rotationAge)}
             </small>
           </div>
         </div>
@@ -187,9 +187,14 @@ export function App() {
             orientationFromTopic={ros.lastRotationAt !== null}
             rotationControlsEnabled={connected && selectedHand === "right"}
             compensationControlsEnabled={controlsReady}
+            controlsReady={controlsReady}
             onRotationMatrix={ros.setRotationMatrix}
             onCompensationMode={ros.setCompensationMode}
             onSphereCenterHand={ros.setSphereCenterHand}
+            onPose={ros.setPoseType}
+            onGrasp={ros.setGraspType}
+            onContinuousRotation={ros.setContinuousRotation}
+            onBlindDirectionToggle={ros.toggleBlindDirection}
           />
           <ForceHistoryPanel
             debug={ros.debug}

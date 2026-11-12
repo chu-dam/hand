@@ -13,7 +13,7 @@ import {
   type Point3,
   type RotationMatrix3,
 } from "../ros/types";
-import { IDENTITY_ROTATION_MATRIX } from "../ros/frames";
+import { DEMO_ROTATION_MATRIX, IDENTITY_ROTATION_MATRIX } from "../ros/frames";
 
 const EXPECTED_JOINTS = new Set(
   Array.from({ length: 5 }, (_, fingerIndex) =>
@@ -25,11 +25,6 @@ const EXPECTED_JOINTS = new Set(
 
 const FINGER_COLORS = [0xc84b42, 0x0b8f8f, 0x5965bd, 0xd3920b, 0x7d54a5];
 const FORCE_COLOR = 0x0b8f8f;
-const DEMO_ROTATION_MATRIX: RotationMatrix3 = [
-  0.4695, 0, -0.8829,
-  0, 1, 0,
-  0.8829, 0, 0.4695,
-];
 const UPWARD_ROTATION_MATRIX: RotationMatrix3 = [
   0, 0, -1,
   0, 1, 0,
@@ -57,14 +52,17 @@ interface HandScene3DProps {
   orientationFromTopic: boolean;
   rotationControlsEnabled: boolean;
   compensationControlsEnabled: boolean;
+  controlsReady: boolean;
   onRotationMatrix: (value: number[]) => boolean;
   onCompensationMode: (value: number) => boolean;
   onSphereCenterHand: (center: Point3) => boolean;
+  onPose: (value: number) => boolean;
+  onGrasp: (value: number) => boolean;
+  onContinuousRotation: (enable: boolean) => boolean;
+  onBlindDirectionToggle: () => boolean;
 }
 
 interface DebugOverlay {
-  tipStarts: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>[];
-  fkEndpoints: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>[];
   forces: THREE.ArrowHelper[];
   geometricCentroid: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
   virtualCentroid: THREE.Mesh<THREE.OctahedronGeometry, THREE.MeshBasicMaterial>;
@@ -115,20 +113,6 @@ function createDebugOverlay(): DebugOverlay {
   const group = new THREE.Group();
   group.name = "grasp-debug-overlay";
 
-  const referenceMarkers = (name: string, color: number) => FINGER_COLORS.map((_, index) => {
-    const marker = new THREE.Mesh(
-      new THREE.SphereGeometry(0.0015, 18, 12),
-      new THREE.MeshBasicMaterial({ color, depthTest: false, depthWrite: false }),
-    );
-    marker.name = `${name}-${index + 1}`;
-    marker.visible = false;
-    marker.renderOrder = 11;
-    group.add(marker);
-    return marker;
-  });
-  const tipStarts = referenceMarkers("physical-tip-start", 0x2563eb);
-  const fkEndpoints = referenceMarkers("fk-endpoint", 0xff2d55);
-
   const forces = FINGER_COLORS.map((_, index) => {
     const arrow = new THREE.ArrowHelper(
       new THREE.Vector3(0, 0, 1),
@@ -164,9 +148,6 @@ function createDebugOverlay(): DebugOverlay {
     new THREE.SphereGeometry(1, 40, 28),
     new THREE.MeshPhongMaterial({
       color: 0x7c3aed,
-      transparent: true,
-      opacity: 0.24,
-      depthWrite: false,
       side: THREE.DoubleSide,
     }),
   );
@@ -184,8 +165,6 @@ function createDebugOverlay(): DebugOverlay {
   group.add(estimatedCenter);
 
   return {
-    tipStarts,
-    fkEndpoints,
     forces,
     geometricCentroid,
     virtualCentroid,
@@ -264,8 +243,6 @@ function createWorldAxes(): THREE.Group {
 }
 
 function addOverlayToFrame(frame: THREE.Group, overlay: DebugOverlay) {
-  overlay.tipStarts.forEach((marker) => frame.add(marker));
-  overlay.fkEndpoints.forEach((marker) => frame.add(marker));
   overlay.forces.forEach((arrow) => frame.add(arrow));
   frame.add(
     overlay.geometricCentroid,
@@ -280,31 +257,17 @@ function updateDebugOverlay(
   debug: GraspDebugMessage | null,
   forceScaleMillimeters: number,
   worldOrientationAvailable: boolean,
-  robot: URDFRobot | null = null,
-  handFrame: THREE.Group | null = null,
+  presentationMode = false,
 ): THREE.Vector3 | null {
   const frameMatches = debug?.header.frame_id === "link_base";
   const showWorldOverlay = frameMatches && worldOrientationAvailable;
-
-  overlay.fkEndpoints.forEach((marker, index) => {
-    const point = debug?.fingertip_positions[index];
-    marker.visible = showWorldOverlay && isFinitePoint(point);
-    if (marker.visible && point) marker.position.set(point.x, point.y, point.z);
-  });
-  overlay.tipStarts.forEach((marker, index) => {
-    const tipLink = robot?.links[`link_${index + 1}_tip`];
-    marker.visible = Boolean(showWorldOverlay && tipLink && handFrame);
-    if (!marker.visible || !tipLink || !handFrame) return;
-    tipLink.updateMatrixWorld(true);
-    const worldPoint = tipLink.localToWorld(new THREE.Vector3(0.003, 0, 0));
-    marker.position.copy(handFrame.worldToLocal(worldPoint));
-  });
 
   overlay.forces.forEach((arrow, index) => {
     const point = debug?.fingertip_positions[index];
     const force = debug?.total_forces[index];
     const magnitude = vectorMagnitude(force);
-    const visible = showWorldOverlay
+    const visible = !presentationMode
+      && showWorldOverlay
       && isFinitePoint(point)
       && isFinitePoint(force)
       && magnitude > 1e-6;
@@ -323,7 +286,9 @@ function updateDebugOverlay(
     );
   });
 
-  const showCentroids = showWorldOverlay && debug?.controller_state === "GROPED_GRASP";
+  const showCentroids = !presentationMode
+    && showWorldOverlay
+    && debug?.controller_state === "GROPED_GRASP";
   const geometricPoint = debug?.geometric_centroid;
   const virtualPoint = debug?.virtual_centroid;
 
@@ -348,7 +313,7 @@ function updateDebugOverlay(
     && sphereRadius > 0
     && isFinitePoint(sphereCenter);
   overlay.estimatedSphere.visible = showEstimatedSphere;
-  overlay.estimatedCenter.visible = showEstimatedSphere;
+  overlay.estimatedCenter.visible = showEstimatedSphere && !presentationMode;
   if (!showEstimatedSphere || !sphereCenter) return null;
   overlay.estimatedSphere.position.set(sphereCenter.x, sphereCenter.y, sphereCenter.z);
   overlay.estimatedSphere.scale.setScalar(sphereRadius);
@@ -385,11 +350,18 @@ export function HandScene3D({
   orientationFromTopic,
   rotationControlsEnabled,
   compensationControlsEnabled,
+  controlsReady,
   onRotationMatrix,
   onCompensationMode,
   onSphereCenterHand,
+  onPose,
+  onGrasp,
+  onContinuousRotation,
+  onBlindDirectionToggle,
 }: HandScene3DProps) {
+  const panelRef = useRef<HTMLElement | null>(null);
   const mountRef = useRef<HTMLDivElement | null>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
   const robotRef = useRef<URDFRobot | null>(null);
   const handFrameRef = useRef<THREE.Group | null>(null);
   const overlayRef = useRef<DebugOverlay | null>(null);
@@ -397,9 +369,14 @@ export function HandScene3D({
   const latestDebug = useRef(debug);
   const latestHandToWorldRotation = useRef(handToWorldRotation);
   const latestForceScale = useRef(16);
+  const presentationModeRef = useRef(false);
   const renderRef = useRef<() => void>(() => undefined);
   const resetViewRef = useRef<() => void>(() => undefined);
   const [forceScale, setForceScale] = useState(16);
+  const [presentationMode, setPresentationMode] = useState(false);
+  const [lastFullscreenCommand, setLastFullscreenCommand] = useState<
+    "pre-grasp" | "5f" | "rotation" | null
+  >(null);
   const [contactSphereCenter, setContactSphereCenter] = useState<Point3 | null>(null);
   const [viewer, setViewer] = useState<ViewerState>({
     status: "loading",
@@ -415,6 +392,34 @@ export function HandScene3D({
     });
     return observed.size;
   }, [jointState]);
+
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      setPresentationMode(document.fullscreenElement === panelRef.current);
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
+
+  useEffect(() => {
+    presentationModeRef.current = presentationMode;
+    const scene = sceneRef.current;
+    const grid = scene?.getObjectByName("world-grid");
+    const axes = scene?.getObjectByName("world-axes");
+    if (grid) grid.visible = !presentationMode;
+    if (axes) axes.visible = !presentationMode;
+    const overlay = overlayRef.current;
+    if (overlay) {
+      updateDebugOverlay(
+        overlay,
+        latestDebug.current,
+        latestForceScale.current,
+        true,
+        presentationMode,
+      );
+    }
+    renderRef.current();
+  }, [presentationMode]);
 
   useEffect(() => {
     latestJointState.current = jointState;
@@ -435,8 +440,7 @@ export function HandScene3D({
         latestDebug.current,
         latestForceScale.current,
         true,
-        robotRef.current,
-        handFrameRef.current,
+        presentationModeRef.current,
       );
     }
     renderRef.current();
@@ -452,8 +456,7 @@ export function HandScene3D({
       debug,
       forceScale,
       true,
-      robotRef.current,
-      handFrameRef.current,
+      presentationModeRef.current,
     );
     if (center) {
       setContactSphereCenter(center);
@@ -492,6 +495,7 @@ export function HandScene3D({
     mount.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
+    sceneRef.current = scene;
     const camera = new THREE.PerspectiveCamera(38, 1, 0.001, 10);
     camera.position.set(0.38, 0.2, 0.3);
 
@@ -512,6 +516,8 @@ export function HandScene3D({
     scene.add(fillLight);
 
     const grid = new THREE.GridHelper(0.42, 21, 0x90a7af, 0xcbd5d9);
+    grid.name = "world-grid";
+    grid.visible = !presentationModeRef.current;
     grid.position.y = -0.012;
     const gridMaterials = Array.isArray(grid.material) ? grid.material : [grid.material];
     gridMaterials.forEach((material) => {
@@ -527,7 +533,9 @@ export function HandScene3D({
     worldFrame.name = "ros-world-frame";
     worldFrame.rotation.x = -Math.PI / 2;
     scene.add(worldFrame);
-    worldFrame.add(createWorldAxes());
+    const worldAxes = createWorldAxes();
+    worldAxes.visible = !presentationModeRef.current;
+    worldFrame.add(worldAxes);
 
     const handFrame = new THREE.Group();
     handFrame.name = "hand-in-world-frame";
@@ -543,8 +551,7 @@ export function HandScene3D({
       latestDebug.current,
       latestForceScale.current,
       true,
-      robotRef.current,
-      handFrame,
+      presentationModeRef.current,
     );
 
     const render = () => renderer.render(scene, camera);
@@ -740,8 +747,7 @@ export function HandScene3D({
           latestDebug.current,
           latestForceScale.current,
           true,
-          robot,
-          handFrame,
+          presentationModeRef.current,
         );
         render();
       },
@@ -767,6 +773,7 @@ export function HandScene3D({
       if (robotRef.current === robotForCleanup) robotRef.current = null;
       if (handFrameRef.current === handFrame) handFrameRef.current = null;
       if (overlayRef.current === overlay) overlayRef.current = null;
+      if (sceneRef.current === scene) sceneRef.current = null;
       renderRef.current = () => undefined;
       resetViewRef.current = () => undefined;
     };
@@ -780,9 +787,51 @@ export function HandScene3D({
     ? 2 * sphereRadius
     : null;
   const sphereTargetX = debug?.sphere_target_hand_x_m;
+  const continuousRotationActive = (
+    (debug?.controller_phase?.startsWith("continuous_") === true
+      || debug?.controller_phase?.startsWith("blind_") === true)
+    && debug.controller_phase !== "continuous_error"
+  );
+  const fullscreenCommandsReady = (
+    controlsReady
+    && handSide === "right"
+    && !debug?.teaching_mode
+  );
+  const continuousRotationAvailable = (
+    fullscreenCommandsReady
+    && (
+      continuousRotationActive
+      || (
+        debug?.pose_type === 6
+        && (
+          debug?.controller_state === "PRE_GRASP_POSE"
+          || (debug?.controller_state === "GROPED_GRASP" && debug?.grasp_type === 5)
+        )
+      )
+    )
+  );
+  const directionToggleAvailable = (
+    fullscreenCommandsReady
+    && debug?.pose_type === 6
+    && (
+      continuousRotationActive
+      || debug?.controller_state === "GROPED_GRASP"
+    )
+  );
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement === panelRef.current) {
+      void document.exitFullscreen();
+    } else {
+      void panelRef.current?.requestFullscreen();
+    }
+  };
 
   return (
-    <section className="panel scene-panel">
+    <section
+      ref={panelRef}
+      className={`panel scene-panel ${presentationMode ? "presentation-mode" : ""}`}
+    >
       <div className="panel-head hand-scene-head">
         <div>
           <p className="section-kicker">CONTROL GEOMETRY</p>
@@ -791,7 +840,7 @@ export function HandScene3D({
         </div>
         <div className="scene-tools">
           <span className={`world-frame-badge ${orientationFromTopic ? "ready" : "default"}`}>
-            {orientationFromTopic ? "WORLD · TOPIC" : "WORLD · DEFAULT I"}
+            {orientationFromTopic ? "WORLD · TOPIC" : "WORLD · DEFAULT"}
           </span>
           <span className={`model-live-badge ${live ? "live" : viewer.status}`}>
             {viewer.status === "error"
@@ -820,6 +869,14 @@ export function HandScene3D({
 
       <div className="scene-wrap hand-scene-wrap">
         <div ref={mountRef} className="hand-canvas-mount" />
+
+        <button
+          className="scene-fullscreen-button"
+          type="button"
+          onClick={toggleFullscreen}
+        >
+          {presentationMode ? "EXIT FULL SCREEN" : "FULL SCREEN"}
+        </button>
 
         <div className="scene-orientation-controls">
           <button
@@ -873,8 +930,56 @@ export function HandScene3D({
           <div><b>X TARGET</b><strong>{Number.isFinite(sphereTargetX) ? millimeters(sphereTargetX!) : "—"}</strong></div>
           <div><b>Y</b><strong>{sphereCenter ? millimeters(sphereCenter.y) : "—"}</strong></div>
           <div><b>Z</b><strong>{sphereCenter ? millimeters(sphereCenter.z) : "—"}</strong></div>
-          <div><b>Ø</b><strong>{estimatedSphereDiameter ? millimeters(estimatedSphereDiameter) : "—"}</strong></div>
+          <div className="sphere-diameter"><b>BALL DIAMETER</b><strong>{estimatedSphereDiameter ? millimeters(estimatedSphereDiameter) : "—"}</strong></div>
         </div>
+
+        {presentationMode && (
+          <>
+            <button
+              className="fullscreen-direction-button"
+              type="button"
+              disabled={!directionToggleAvailable}
+              onClick={onBlindDirectionToggle}
+            >
+              ↔ SWITCH DIRECTION
+            </button>
+            <div className="fullscreen-command-bar">
+              <button
+                type="button"
+                className={lastFullscreenCommand === "pre-grasp" ? "active" : ""}
+                disabled={!fullscreenCommandsReady}
+                title="Pre-rotation (Blind Grasping)"
+                onClick={() => {
+                  if (onPose(6)) setLastFullscreenCommand("pre-grasp");
+                }}
+              >
+                PRE-GRASP
+              </button>
+              <button
+                type="button"
+                className={lastFullscreenCommand === "5f" ? "active" : ""}
+                disabled={!fullscreenCommandsReady}
+                onClick={() => {
+                  if (onGrasp(5)) setLastFullscreenCommand("5f");
+                }}
+              >
+                5F
+              </button>
+              <button
+                type="button"
+                className={lastFullscreenCommand === "rotation" ? "active" : ""}
+                disabled={!continuousRotationAvailable}
+                onClick={() => {
+                  if (onContinuousRotation(!continuousRotationActive)) {
+                    setLastFullscreenCommand("rotation");
+                  }
+                }}
+              >
+                {continuousRotationActive ? "STOP ROTATION" : "CONTINUOUS ROTATION"}
+              </button>
+            </div>
+          </>
+        )}
 
         {viewer.status !== "ready" && (
           <div className={`model-state-overlay ${viewer.status}`} role="status">
@@ -903,8 +1008,6 @@ export function HandScene3D({
 
       <div className="scene-legend hand-scene-legend">
         <span><i className="legend-model" />URDF hand · JointState</span>
-        <span><i className="legend-dot tip-start" />Physical tip start</span>
-        <span><i className="legend-dot fk-endpoint" />FK endpoint</span>
         <span><i className="legend-dot cg" />Geometric centroid</span>
         <span><i className="legend-diamond" />Virtual centroid</span>
         <span><i className="legend-line" />Calculated total force</span>

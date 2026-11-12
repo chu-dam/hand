@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Ros, Topic } from "roslib";
 
-import { decodeRotationMatrix, IDENTITY_ROTATION_MATRIX } from "./frames";
+import {
+  decodeRotationMatrix,
+  DEMO_ROTATION_MATRIX,
+  IDENTITY_ROTATION_MATRIX,
+} from "./frames";
 import type {
   Float64MultiArrayMessage,
   GraspDebugMessage,
@@ -104,7 +108,7 @@ export function useRosBridge(url: string, handSide: HandSide) {
   const [jointState, setJointState] = useState<JointStateMessage | null>(null);
   const [debug, setDebug] = useState<GraspDebugMessage | null>(null);
   const [handToWorldRotation, setHandToWorldRotation] = useState<RotationMatrix3>(
-    IDENTITY_ROTATION_MATRIX,
+    handSide === "right" ? DEMO_ROTATION_MATRIX : IDENTITY_ROTATION_MATRIX,
   );
   const [lastJointAt, setLastJointAt] = useState<number | null>(null);
   const [lastDebugAt, setLastDebugAt] = useState<number | null>(null);
@@ -125,7 +129,9 @@ export function useRosBridge(url: string, handSide: HandSide) {
     const clearTelemetry = () => {
       setJointState(null);
       setDebug(null);
-      setHandToWorldRotation(IDENTITY_ROTATION_MATRIX);
+      setHandToWorldRotation(
+        handSide === "right" ? DEMO_ROTATION_MATRIX : IDENTITY_ROTATION_MATRIX,
+      );
       setLastJointAt(null);
       setLastDebugAt(null);
       setLastRotationAt(null);
@@ -223,6 +229,12 @@ export function useRosBridge(url: string, handSide: HandSide) {
       jointTopic.subscribe(onJointState);
       debugTopic.subscribe(onDebug);
       rotationTopic.subscribe(onRotationMatrix);
+      if (handSide === "right") {
+        publishers.current.rotation?.publish({
+          layout: { dim: [], data_offset: 0 },
+          data: [...DEMO_ROTATION_MATRIX],
+        });
+      }
     };
     const onError = (event: unknown) => {
       if (disposed) return;

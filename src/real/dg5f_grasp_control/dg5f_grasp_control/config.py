@@ -77,12 +77,12 @@ class RuntimeConfig:
     blind_reverse_pinky_release_deg: float = 8.0
     blind_sphere_lift_hand_x_threshold_m: float = 0.1014456
     blind_fk_sphere_target_hand_x_m: float = 0.100
-    blind_fk_downward_target_x_offset_m: float = -0.002
+    blind_fk_downward_target_x_offset_m: float = -0.001
     blind_sphere_min_hand_x_m: float = 0.0837876
     blind_sphere_max_hand_x_m: float = 0.1146891
-    blind_fk_hand_x_gain: float = 1.0
+    blind_fk_hand_x_gain: float = 1.5
     blind_fk_hand_x_deadband_m: float = 0.0005
-    blind_fk_hand_x_max_correction_m: float = 0.006
+    blind_fk_hand_x_max_correction_m: float = 0.004
     blind_thumb_lift_j1_target_rad: float = 0.1136
     blind_thumb_lift_j2_target_rad: float = -1.6558
     blind_thumb_lift_j3_target_rad: float = -0.2618

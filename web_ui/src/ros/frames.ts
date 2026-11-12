@@ -9,6 +9,12 @@ export const IDENTITY_ROTATION_MATRIX: RotationMatrix3 = [
   0, 0, 1,
 ];
 
+export const DEMO_ROTATION_MATRIX: RotationMatrix3 = [
+  0.4695, 0, -0.8829,
+  0, 1, 0,
+  0.8829, 0, 0.4695,
+];
+
 export function decodeRotationMatrix(values: unknown): RotationMatrix3 | null {
   if (!Array.isArray(values) || values.length !== ROTATION_MATRIX_SIZE) return null;
 
