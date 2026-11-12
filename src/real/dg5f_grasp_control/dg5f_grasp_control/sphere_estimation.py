@@ -8,6 +8,7 @@ import numpy as np
 
 RADIUS_FIT_TIP_RADIUS_M = 0.010
 CENTER_TIP_RADIUS_M = 0.009
+CENTER_CONTINUITY_WEIGHT = 0.05
 
 
 def fit_sphere_radius(points):
@@ -34,13 +35,20 @@ def fit_sphere_radius(points):
     return float(radius), float(rms)
 
 
-def center_from_radius(points, radius):
+def center_from_radius(points, radius, reference_center=None):
     """Use three thumb-based triangles; pinky is not used."""
     points = np.asarray(points, dtype=float)[:4]
     if points.shape != (4, 3) or not np.all(np.isfinite(points)):
         return None
     if not np.isfinite(radius) or radius <= 0:
         return None
+    if reference_center is not None:
+        reference_center = np.asarray(reference_center, dtype=float)
+        if (
+            reference_center.shape != (3,)
+            or not np.all(np.isfinite(reference_center))
+        ):
+            reference_center = None
     distance = radius + CENTER_TIP_RADIUS_M
     centers = []
     for first, second in combinations((1, 2, 3), 2):
@@ -60,17 +68,75 @@ def center_from_radius(points, radius):
             max(0, distance ** 2 - rho ** 2)
         )
         candidates = [circumcenter + offset, circumcenter - offset]
-        other = next(i for i in (1, 2, 3) if i not in (first, second))
-        errors = [
-            abs(np.linalg.norm(candidate - points[other]) - distance)
-            for candidate in candidates
-        ]
+        if reference_center is not None:
+            errors = [
+                np.linalg.norm(candidate - reference_center)
+                for candidate in candidates
+            ]
+        else:
+            other = next(i for i in (1, 2, 3) if i not in (first, second))
+            errors = [
+                abs(np.linalg.norm(candidate - points[other]) - distance)
+                for candidate in candidates
+            ]
         centers.append(candidates[1] if errors[1] < errors[0] else candidates[0])
     return np.mean(centers, axis=0) if centers else None
 
 
+def center_from_radius_five_points(points, radius, reference_center=None):
+    """Fit a fixed-radius center from all five fingertips."""
+    points = np.asarray(points, dtype=float)
+    if points.shape != (5, 3) or not np.all(np.isfinite(points)):
+        return None
+    if not np.isfinite(radius) or radius <= 0:
+        return None
+    reference = None
+    if reference_center is not None:
+        reference = np.asarray(reference_center, dtype=float)
+        if reference.shape != (3,) or not np.all(np.isfinite(reference)):
+            reference = None
+    if reference is None:
+        matrix = 2.0 * (points[1:] - points[0])
+        values = (
+            np.sum(points[1:] ** 2, axis=1)
+            - np.sum(points[0] ** 2)
+        )
+        center, _, rank, _ = np.linalg.lstsq(matrix, values, rcond=None)
+        if rank < 3:
+            center = center_from_radius(points, radius)
+            if center is None:
+                return None
+    else:
+        center = reference.copy()
+
+    distance = radius + CENTER_TIP_RADIUS_M
+    for _ in range(10):
+        vectors = center - points
+        lengths = np.linalg.norm(vectors, axis=1)
+        if np.any(lengths <= 1e-12):
+            return None
+        jacobian = vectors / lengths[:, None]
+        residual = lengths - distance
+        if reference is not None:
+            weight = np.sqrt(CENTER_CONTINUITY_WEIGHT)
+            jacobian = np.vstack((jacobian, weight * np.eye(3)))
+            residual = np.concatenate((residual, weight * (center - reference)))
+        step, _, rank, _ = np.linalg.lstsq(jacobian, -residual, rcond=None)
+        if rank < 3 or not np.all(np.isfinite(step)):
+            return None
+        center += step
+        if np.linalg.norm(step) <= 1e-6:
+            break
+
+    residual = np.linalg.norm(points - center, axis=1) - distance
+    if np.sqrt(np.mean(residual ** 2)) > 0.003:
+        return None
+    return center
+
+
 class SphereEstimator:
-    def __init__(self):
+    def __init__(self, *, use_five_point_center=False):
+        self.use_five_point_center = bool(use_five_point_center)
         self.reset()
 
     def reset(self):
@@ -97,9 +163,13 @@ class SphereEstimator:
             self.last_sample_at = None
             self.samples.clear()
         self.last_update_at = now
-        needed = {1, 2, 3, 4, 5} if self.radius is None else {1, 2, 3, 4}
+        needed = (
+            {1, 2, 3, 4, 5}
+            if self.radius is None or self.use_five_point_center
+            else {1, 2, 3, 4}
+        )
         qdot = np.asarray(qdot, dtype=float)
-        count = 20 if self.radius is None else 16
+        count = 20 if self.radius is None or self.use_five_point_center else 16
         ready = (
             eligible
             and needed.issubset(active_fingers)
@@ -132,7 +202,11 @@ class SphereEstimator:
             radius = float(np.median(radii))
             if np.max(np.abs(radii - radius)) > 0.001:
                 return
-            center = center_from_radius(points, radius)
+            center = (
+                center_from_radius_five_points(points, radius)
+                if self.use_five_point_center
+                else center_from_radius(points, radius)
+            )
             if center is None:
                 self.state = "center_invalid"
                 return
@@ -145,7 +219,11 @@ class SphereEstimator:
             return
         if now - self.stable_since < 0.08:
             return
-        self.center = center_from_radius(points, self.radius)
+        self.center = (
+            center_from_radius_five_points(points, self.radius, self.last_center)
+            if self.use_five_point_center
+            else center_from_radius(points, self.radius, self.last_center)
+        )
         if self.center is not None:
             self.last_center = self.center.copy()
         self.state = "tracking" if self.center is not None else "center_invalid"

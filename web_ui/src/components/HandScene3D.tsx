@@ -802,17 +802,15 @@ export function HandScene3D({
     && (
       continuousRotationActive
       || (
-        debug?.pose_type === 6
-        && (
-          debug?.controller_state === "PRE_GRASP_POSE"
-          || (debug?.controller_state === "GROPED_GRASP" && debug?.grasp_type === 5)
-        )
+        debug?.pose_type === 5
+        && debug?.controller_state === "GROPED_GRASP"
+        && debug?.grasp_type === 5
       )
     )
   );
   const directionToggleAvailable = (
     fullscreenCommandsReady
-    && debug?.pose_type === 6
+    && debug?.pose_type === 5
     && (
       continuousRotationActive
       || debug?.controller_state === "GROPED_GRASP"
@@ -948,9 +946,9 @@ export function HandScene3D({
                 type="button"
                 className={lastFullscreenCommand === "pre-grasp" ? "active" : ""}
                 disabled={!fullscreenCommandsReady}
-                title="Pre-rotation (Blind Grasping)"
+                title="Pre-rotation"
                 onClick={() => {
-                  if (onPose(6)) setLastFullscreenCommand("pre-grasp");
+                  if (onPose(5)) setLastFullscreenCommand("pre-grasp");
                 }}
               >
                 PRE-GRASP

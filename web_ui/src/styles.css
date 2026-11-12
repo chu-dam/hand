@@ -500,7 +500,7 @@ input[type="range"] { accent-color: var(--teal); }
 
 .scene-panel.presentation-mode .sphere-position-overlay .sphere-diameter b,
 .scene-panel.presentation-mode .sphere-position-overlay .sphere-diameter strong {
-  font-size: 32px;
+  font-size: 80px;
 }
 
 .scene-panel.presentation-mode .scene-fullscreen-button {

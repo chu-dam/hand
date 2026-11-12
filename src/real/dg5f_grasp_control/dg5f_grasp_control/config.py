@@ -51,6 +51,7 @@ class RuntimeConfig:
     blind_motion_stable_sec: float = 0.08
     blind_joint_velocity_threshold_rad_s: float = 0.05
     blind_regrasp_speed_drop_ratio: float = 0.80
+    blind_pre_estimate_speed_drop_ratio: float = 0.95
     blind_sphere_stable_sample_count: int = 5
     blind_sphere_stable_max_deviation_m: float = 0.001
     blind_finger_release_deg: float = 8.0
@@ -78,6 +79,7 @@ class RuntimeConfig:
     blind_sphere_lift_hand_x_threshold_m: float = 0.1014456
     blind_fk_sphere_target_hand_x_m: float = 0.100
     blind_fk_downward_target_x_offset_m: float = -0.001
+    blind_fk_reverse_target_x_offset_m: float = 0.0
     blind_sphere_min_hand_x_m: float = 0.0837876
     blind_sphere_max_hand_x_m: float = 0.1146891
     blind_fk_hand_x_gain: float = 1.5

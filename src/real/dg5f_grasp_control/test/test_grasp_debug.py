@@ -15,6 +15,38 @@ FINGER_IDS = [1, 2, 3, 4, 5]
 
 
 class GraspDebugTest(unittest.TestCase):
+    def test_debug_uses_pre_rotation_five_point_estimator(self):
+        controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
+        controller.apply_pose_type(5, now=1.0)
+        output = controller.step(np.zeros(20), np.zeros(20), now=1.1)
+        sphere = controller.pre_rotation_sphere_estimator
+        sphere.radius = 0.0275
+        sphere.rms = 0.0004
+        sphere.center = np.array([0.1, 0.0, 0.08])
+        sphere.last_center = sphere.center.copy()
+        sphere.state = "tracking"
+
+        message = build_grasp_debug_message(
+            controller=controller,
+            q=np.zeros(20),
+            output=output,
+            controller_torques=output.tau,
+            commanded_efforts=output.tau,
+            stamp=Time(),
+            frame_id="link_base",
+        )
+
+        self.assertAlmostEqual(message.sphere_radius_m, 0.0275)
+        self.assertTrue(message.sphere_center_valid)
+        np.testing.assert_allclose(
+            [
+                message.sphere_center.x,
+                message.sphere_center.y,
+                message.sphere_center.z,
+            ],
+            sphere.center,
+        )
+
     def test_policy_force_decomposition_preserves_reference_torque(self):
         q = np.linspace(-0.15, 0.2, 20)
         policy = GraspPolicy([1, 2, 3, 4], RuntimeConfig())

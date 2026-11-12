@@ -196,8 +196,14 @@ export function ControlPanel({
     && (
       continuousRotationActive
       || (
-        debug?.controller_state === "PRE_GRASP_POSE"
-        && debug?.pose_type === 5
+        debug?.pose_type === 5
+        && (
+          debug?.controller_state === "PRE_GRASP_POSE"
+          || (
+            debug?.controller_state === "GROPED_GRASP"
+            && debug?.grasp_type === 5
+          )
+        )
       )
     )
   );
@@ -219,7 +225,7 @@ export function ControlPanel({
     handSide === "right"
     && ready
     && !teaching
-    && debug?.pose_type === 6
+    && (debug?.pose_type === 5 || debug?.pose_type === 6)
     && (
       continuousRotationActive
       || debug?.controller_state === "GROPED_GRASP"
@@ -637,7 +643,7 @@ export function ControlPanel({
               ? continuousRotationActive
                 ? "Stop continuous rotation"
                 : "Start continuous rotation"
-              : "Available only in the right-hand Pre-rotation pose"}
+              : "Available in right-hand Pre-rotation or its active 5F grasp"}
             onClick={() => report(
               onContinuousRotation(!continuousRotationActive),
               continuousRotationActive

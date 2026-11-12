@@ -19,6 +19,12 @@ from dg5f_grasp_control.poses import (
 
 
 class PoseSideTest(unittest.TestCase):
+    def test_pre_rotation_copies_blind_grasping_pose(self):
+        np.testing.assert_array_equal(
+            RIGHT_HAND_PRE_ROTATION_POSE,
+            RIGHT_HAND_BLIND_GRASP_PRE_ROTATION_POSE,
+        )
+
     def test_compensation_effort_modes(self):
         gravity = np.array([1.0, 2.0])
         friction = np.array([0.1, -0.2])
@@ -70,17 +76,6 @@ class PoseSideTest(unittest.TestCase):
         )
         self.assertEqual(RIGHT_HAND_CONTINUOUS_ROTATION_POSE.shape, (20,))
         self.assertTrue(np.all(np.isfinite(RIGHT_HAND_CONTINUOUS_ROTATION_POSE)))
-        np.testing.assert_allclose(
-            RIGHT_HAND_PRE_ROTATION_POSE,
-            [
-                0.3875, -1.3275, -0.0548, 0.8802,
-                -0.3433, 0.6871, 0.5681, 0.4410,
-                0.0668, 0.5852, 0.5589, 0.5121,
-                0.3669, 0.7437, 0.4677, 0.5086,
-                0.5786, 0.9290, 0.6187, 0.9695,
-            ],
-        )
-
     def test_invalid_hand_side_is_rejected(self):
         with self.assertRaises(ValueError):
             get_pose_type_targets("invalid")
