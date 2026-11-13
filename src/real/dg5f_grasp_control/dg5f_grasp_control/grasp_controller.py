@@ -531,10 +531,8 @@ class GraspController:
         self.continuous_rotation_pose_target = None
 
     def request_blind_direction_change(self) -> None:
-        if self.continuous_rotation_active and self.pose_type == 6:
-            self.blind_direction_change_pending = (
-                not self.blind_direction_change_pending
-            )
+        if self.continuous_rotation_active and self.pose_type in (5, 6):
+            self.blind_direction_change_pending = True
 
     def set_ui_sphere_center_hand(self, center_hand) -> None:
         center_hand = np.asarray(center_hand, dtype=np.float64)

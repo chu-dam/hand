@@ -311,6 +311,17 @@ class ContinuousRotationPoseSequenceTest(unittest.TestCase):
         self.assertEqual(controller.use_fingers, [1, 2, 3, 4, 5])
         self.assertEqual(controller.continuous_rotation_phase, "blind_grasp_settle")
 
+    def test_pre_rotation_direction_change_request_is_not_cancelled_by_double_click(self):
+        controller = GraspController(RuntimeConfig(hand_side="right"), log=None)
+        controller.apply_pose_type(5, now=1.0)
+        controller.apply_grasp_type(5, now=1.5)
+        controller.start_continuous_rotation(now=2.0)
+
+        controller.request_blind_direction_change()
+        controller.request_blind_direction_change()
+
+        self.assertTrue(controller.blind_direction_change_pending)
+
     def test_blind_sequence_rotates_without_middle_or_pinky(self):
         logs = []
         controller = GraspController(RuntimeConfig(hand_side="right"), log=logs.append)
